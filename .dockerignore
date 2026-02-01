@@ -1,0 +1,13 @@
+.DS_Store
+.git
+**/.git
+**/__pycache__
+**/*.py[cod]
+**/*.sqlite3
+**/*.db
+**/*.log
+**/.env
+**/.env*
+**/venv
+**/node_modules
+**/dist

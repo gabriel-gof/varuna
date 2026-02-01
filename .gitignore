@@ -1,0 +1,39 @@
+# OS
+.DS_Store
+
+# Horus project
+horus/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+venv/
+.venv/
+env/
+backend/venv/
+backend/varuna_dev
+*.sqlite3
+
+# Node
+frontend/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+*.log
+
+# Build artifacts
+dist/
+frontend/dist/
+
+# Environment files
+.env
+.env.*
+
+# Secrets
+olt-zte-cedrentials

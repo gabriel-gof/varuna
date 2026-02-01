@@ -1,0 +1,9 @@
+Django>=4.2,<5.0
+djangorestframework>=3.14
+django-cors-headers>=4.3
+psycopg2-binary>=2.9
+redis>=5.0
+pysnmp>=5.0
+# pysnmp-lextudio is deprecated and conflicting
+python-decouple>=3.8
+gunicorn>=21.2
