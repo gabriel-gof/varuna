@@ -38,7 +38,8 @@ if [ "${SNMP_API_ONLY:-0}" = "1" ] && [ -n "${SNMP_LOG_PATH:-}" ]; then
 fi
 
 # Wait for PostgreSQL
-if [ "${DB_ENGINE:-sqlite}" = "postgres" ]; then
+db_engine="${DB_ENGINE:-django.db.backends.sqlite3}"
+if [[ "$db_engine" == *postgres* ]]; then
     echo "Waiting for PostgreSQL..."
     python <<'PY'
 import time

@@ -301,10 +301,9 @@ docker-compose -f docker-compose.dev.yml logs -f
 - **Error**: "Apps aren't loaded yet"
 - **Fix**: Removed model imports from `dashboard/__init__.py`, used explicit imports in `admin.py`
 
-### Docker Build
-- **Error**: "open Dockerfile: no such file or directory"
-- **Workaround**: Use Option 1 (manual Python server) for development
-- **Note**: This appears to be a Docker BuildKit cache issue on macOS
+### Docker Dev Compose
+- **Symptom**: `/api/*` returns 404/500 when using Apache + mod_wsgi
+- **Fix**: Run Django dev server in `docker-compose.dev.yml` and proxy Vite to `http://web:8000`
 
 ### PostgreSQL Connection
 - **Error**: "Connection refused on localhost:5432"
