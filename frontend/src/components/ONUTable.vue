@@ -45,6 +45,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { t } from '@/i18n'
 
 const props = defineProps({ onus: { type: Array, default: () => [] } })
 
@@ -53,11 +54,11 @@ const onuList = computed(() => props.onus || [])
 const search = ref('')
 const statusFilter = ref(null)
 
-const statusOptions = [
-  { label: 'Online', value: 'online' },
-  { label: 'Offline', value: 'offline' },
-  { label: 'Unknown', value: 'unknown' }
-]
+const statusOptions = computed(() => [
+  { label: t('topology.online'), value: 'online' },
+  { label: t('topology.offline'), value: 'offline' },
+  { label: t('topology.unknown'), value: 'unknown' }
+])
 
 const normalizedStatus = (item) => {
   if (item.status) return item.status
@@ -86,16 +87,16 @@ const statusColor = (status) => {
 }
 
 const statusLabel = (status) => {
-  if (status === 'online') return 'Online'
-  if (status === 'offline') return 'Offline'
-  return 'Unknown'
+  if (status === 'online') return t('topology.online')
+  if (status === 'offline') return t('topology.offline')
+  return t('topology.unknown')
 }
 
 const reasonLabel = (reason) => {
   const reasons = {
-    link_loss: 'Link Loss',
-    dying_gasp: 'Dying Gasp',
-    unknown: 'Unknown'
+    link_loss: t('status.linkLoss'),
+    dying_gasp: t('status.dyingGasp'),
+    unknown: t('status.unknownReason')
   }
   return reasons[reason] || reason || ''
 }

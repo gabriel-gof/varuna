@@ -97,7 +97,7 @@
               </v-btn>
               <v-btn block variant="outlined" to="/offline-onus" color="error">
                 <v-icon start>mdi-alert-circle</v-icon>
-                Offline ONUs
+                {{ t('offline.title') }}
               </v-btn>
             </v-card-text>
           </v-card>
@@ -118,7 +118,7 @@
                   <v-card variant="outlined" class="mb-4 olt-overview-card" @click="openOlt(olt)">
                     <v-card-title class="text-subtitle-1 pb-1">{{ olt.name }}</v-card-title>
                     <v-card-text class="pt-0">
-                      <div class="text-caption text-grey">{{ olt.vendor_display || 'Unknown Vendor' }} {{ olt.model_display || '' }}</div>
+                      <div class="text-caption text-grey">{{ olt.vendor_display || t('topology.unknown') }} {{ olt.model_display || '' }}</div>
                       <v-divider class="my-2" />
                       <v-row class="text-center" dense>
                         <v-col cols="6">
@@ -144,6 +144,7 @@
 
 <script setup>
 import { onMounted, onUnmounted, computed } from 'vue'
+import { t } from '@/i18n'
 import { useRouter } from 'vue-router'
 import topologyService from '../services/topology'
 import OltCard from '../components/OLTCard.vue'

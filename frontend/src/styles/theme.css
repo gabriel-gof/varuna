@@ -1,0 +1,221 @@
+:root {
+  --varuna-font-display: "IBM Plex Sans", sans-serif;
+  --varuna-font-body: "IBM Plex Sans", sans-serif;
+
+  --varuna-radius-xl: 16px;
+  --varuna-radius-lg: 12px;
+  --varuna-radius-md: 8px;
+  --varuna-radius-sm: 6px;
+
+  --varuna-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --varuna-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --varuna-shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.06);
+
+  /* Status colors - refined for better readability */
+  --varuna-status-online: 16 185 129; /* Emerald green */
+  --varuna-status-offline: 239 68 68; /* Red */
+  --varuna-status-partial: 245 158 11; /* Amber */
+  --varuna-status-neutral: 107 114 128; /* Gray */
+}
+
+/* Light Theme - Clean and professional */
+.v-theme--light {
+  --varuna-bg: #f8fafc;
+  --varuna-surface: #ffffff;
+  --varuna-surface-2: #f1f5f9;
+  --varuna-surface-3: #e2e8f0;
+  --varuna-ink: #0f172a;
+  --varuna-ink-muted: #64748b;
+  --varuna-panel: rgba(255, 255, 255, 0.95);
+  --varuna-panel-strong: #ffffff;
+  --varuna-chip: rgba(15, 23, 42, 0.05);
+
+  --varuna-line: rgba(15, 23, 42, 0.06);
+  --varuna-line-strong: rgba(15, 23, 42, 0.12);
+  --varuna-card-border: rgba(15, 23, 42, 0.08);
+  --varuna-glow: 0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+  --varuna-texture: none;
+
+  /* High emphasis opacity for text readability */
+  --v-high-emphasis-opacity: 0.95;
+  --v-medium-emphasis-opacity: 0.7;
+}
+
+/* Dark Theme - Modern dark UI */
+.v-theme--dark {
+  --varuna-bg: #0f172a;
+  --varuna-surface: #1e293b;
+  --varuna-surface-2: #334155;
+  --varuna-surface-3: #475569;
+  --varuna-ink: #f1f5f9;
+  --varuna-ink-muted: #94a3b8;
+  --varuna-panel: rgba(30, 41, 59, 0.95);
+  --varuna-panel-strong: #1e293b;
+  --varuna-chip: rgba(241, 245, 249, 0.08);
+
+  --varuna-line: rgba(241, 245, 249, 0.06);
+  --varuna-line-strong: rgba(241, 245, 249, 0.12);
+  --varuna-card-border: rgba(241, 245, 249, 0.1);
+  --varuna-glow: 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  --varuna-texture: none;
+
+  /* High emphasis opacity for text readability */
+  --v-high-emphasis-opacity: 0.98;
+  --v-medium-emphasis-opacity: 0.75;
+}
+
+body {
+  margin: 0;
+  background-color: var(--varuna-bg);
+}
+
+.v-application {
+  font-family: var(--varuna-font-body);
+  background-color: var(--varuna-bg);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.v-application h1,
+.v-application h2,
+.v-application h3,
+.v-application .display-font {
+  font-family: var(--varuna-font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.v-application .kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.v-card {
+  border: 1px solid var(--varuna-card-border);
+  box-shadow: var(--varuna-shadow-sm);
+  border-radius: var(--varuna-radius-lg);
+}
+
+.v-theme--light .v-card {
+  background: var(--varuna-surface);
+}
+
+.v-theme--dark .v-card {
+  background: var(--varuna-surface);
+}
+
+.v-field {
+  border-radius: var(--varuna-radius-md);
+}
+
+.v-btn {
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-weight: 500;
+}
+
+.v-btn.v-btn--variant-tonal {
+  border: 1px solid var(--varuna-card-border);
+}
+
+.v-chip {
+  font-weight: 500;
+}
+
+/* Card title contrast */
+.v-card-title {
+  color: rgb(var(--v-theme-on-surface)) !important;
+  opacity: 1 !important;
+  font-weight: 600;
+}
+
+/* Ensure table text is readable */
+.v-data-table {
+  color: rgb(var(--v-theme-on-surface)) !important;
+}
+
+.v-data-table__th,
+.v-data-table__td {
+  color: rgb(var(--v-theme-on-surface)) !important;
+}
+
+/* Status badges with proper contrast */
+.v-theme--light .stat-online,
+.v-theme--light .badge-online,
+.v-theme--light .chip-online {
+  background-color: rgba(16, 185, 129, 0.12) !important;
+  color: #047857 !important;
+  border-color: rgba(16, 185, 129, 0.3) !important;
+}
+
+.v-theme--light .stat-offline,
+.v-theme--light .badge-offline,
+.v-theme--light .chip-offline {
+  background-color: rgba(239, 68, 68, 0.12) !important;
+  color: #b91c1c !important;
+  border-color: rgba(239, 68, 68, 0.3) !important;
+}
+
+.v-theme--dark .stat-online,
+.v-theme--dark .badge-online,
+.v-theme--dark .chip-online {
+  background-color: rgba(16, 185, 129, 0.2) !important;
+  color: #34d399 !important;
+  border-color: rgba(16, 185, 129, 0.4) !important;
+}
+
+.v-theme--dark .stat-offline,
+.v-theme--dark .badge-offline,
+.v-theme--dark .chip-offline {
+  background-color: rgba(239, 68, 68, 0.2) !important;
+  color: #f87171 !important;
+  border-color: rgba(239, 68, 68, 0.4) !important;
+}
+
+/* Navigation drawer styling */
+.v-navigation-drawer {
+  border-right: 1px solid var(--varuna-card-border) !important;
+}
+
+/* List items in navigation */
+.v-list-item--active {
+  font-weight: 500;
+}
+
+/* Expansion panels */
+.v-expansion-panel {
+  border-radius: var(--varuna-radius-md) !important;
+  margin-bottom: 4px;
+}
+
+.v-expansion-panel-title {
+  font-weight: 500;
+}
+
+/* Tooltips */
+.v-tooltip > .v-overlay__content {
+  background: var(--varuna-surface-2) !important;
+  color: rgb(var(--v-theme-on-surface)) !important;
+  border: 1px solid var(--varuna-card-border);
+  box-shadow: var(--varuna-shadow-md);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--varuna-surface-3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--varuna-ink-muted);
+}

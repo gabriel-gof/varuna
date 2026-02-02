@@ -4,7 +4,7 @@
       <v-col cols="8">
         <div class="text-subtitle-1">{{ olt.name || olt.host }}</div>
         <div class="text-caption">
-          {{ olt.vendor_display || olt.vendor_name || 'Unknown' }} {{ olt.model_display || '' }}
+          {{ olt.vendor_display || olt.vendor_name || t('topology.unknown') }} {{ olt.model_display || '' }}
         </div>
       </v-col>
       <v-col cols="4" class="text-right">
@@ -12,8 +12,8 @@
           <span class="text-body-2">{{ statusLabel }}</span>
         </v-badge>
         <div class="mt-2">
-          <v-chip size="small" color="green" class="mr-1">{{ onlineCount }} online</v-chip>
-          <v-chip size="small" color="red" v-if="offlineCount > 0">{{ offlineCount }} offline</v-chip>
+          <v-chip size="small" color="green" class="mr-1">{{ onlineCount }} {{ t('topology.online') }}</v-chip>
+          <v-chip size="small" color="red" v-if="offlineCount > 0">{{ offlineCount }} {{ t('topology.offline') }}</v-chip>
         </div>
       </v-col>
     </v-row>
@@ -28,6 +28,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { t } from '@/i18n'
 
 const props = defineProps({ olt: { type: Object, required: true } })
 

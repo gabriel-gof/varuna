@@ -56,7 +56,7 @@
               <code>{{ item.ip_address }}</code>
             </template>
             <template #item.vendor="{ item }">
-              {{ item.vendor_display || 'Unknown' }} {{ item.model_display || '' }}
+              {{ item.vendor_display || t('topology.unknown') }} {{ item.model_display || '' }}
             </template>
             <template #item.status="{ item }">
               <v-chip :color="item.is_active ? 'green' : 'grey'" size="small">
@@ -103,7 +103,7 @@
             </div>
             <v-spacer />
             <v-chip :color="topology?.olt?.status === 'online' ? 'green' : topology?.olt?.status === 'partial' ? 'orange' : 'grey'" class="mr-2">
-              {{ topology?.olt?.online_count || 0 }} Online / {{ topology?.olt?.offline_count || 0 }} Offline
+              {{ topology?.olt?.online_count || 0 }} {{ t('topology.online') }} / {{ topology?.olt?.offline_count || 0 }} {{ t('topology.offline') }}
             </v-chip>
             <v-btn icon variant="text" @click="loadTopology(selectedOlt)" :loading="loadingTopology">
               <v-icon>mdi-refresh</v-icon>
@@ -232,6 +232,7 @@
 
 <script setup>
 import { onMounted, ref, computed, watch } from 'vue'
+import { t } from '@/i18n'
 import { useRoute } from 'vue-router'
 import topologyService from '../services/topology'
 import api from '../services/api'

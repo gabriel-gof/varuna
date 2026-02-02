@@ -2,8 +2,8 @@
   <v-container class="py-6">
     <v-row>
       <v-col cols="12">
-        <h1 class="text-h4">Offline ONUs</h1>
-        <p class="text-body-1">View currently offline ONUs with disconnect reasons and timestamps.</p>
+        <h1 class="text-h4">{{ t('offline.title') }}</h1>
+        <p class="text-body-1">{{ t('offline.subtitle') }}</p>
       </v-col>
     </v-row>
 
@@ -15,7 +15,7 @@
           :items="oltOptions"
           item-title="name"
           item-value="id"
-          label="Filter by OLT"
+          :label="t('dashboard.filterByOlt')"
           clearable
           density="compact"
         ></v-select>
@@ -26,7 +26,7 @@
           :items="reasonOptions"
           item-title="label"
           item-value="value"
-          label="Filter by Reason"
+          :label="t('offline.filterByReason')"
           clearable
           density="compact"
         ></v-select>
@@ -35,7 +35,7 @@
         <v-text-field
           v-model="search"
           prepend-inner-icon="mdi-magnify"
-          label="Search by name or serial"
+          :label="t('offline.searchByName')"
           clearable
           density="compact"
         ></v-text-field>
@@ -43,7 +43,7 @@
       <v-col cols="12" md="2" class="d-flex align-center">
         <v-btn color="primary" @click="fetchOfflineOnus" :loading="loading">
           <v-icon start>mdi-refresh</v-icon>
-          Refresh
+          {{ t('offline.refresh') }}
         </v-btn>
       </v-col>
     </v-row>
@@ -55,7 +55,7 @@
           <v-card-text class="d-flex align-center justify-space-between">
             <div>
               <div class="text-h4 font-weight-bold text-red">{{ stats.total }}</div>
-              <div class="text-caption">Total Offline</div>
+              <div class="text-caption">{{ t('offline.totalOffline') }}</div>
             </div>
             <v-icon size="48" color="red-lighten-2">mdi-alert-circle</v-icon>
           </v-card-text>
@@ -66,7 +66,7 @@
           <v-card-text class="d-flex align-center justify-space-between">
             <div>
               <div class="text-h4 font-weight-bold text-orange">{{ stats.linkLoss }}</div>
-              <div class="text-caption">Link Loss (LOS)</div>
+              <div class="text-caption">{{ t('offline.linkLoss') }}</div>
             </div>
             <v-icon size="48" color="orange-lighten-2">mdi-link-off</v-icon>
           </v-card-text>
@@ -77,7 +77,7 @@
           <v-card-text class="d-flex align-center justify-space-between">
             <div>
               <div class="text-h4 font-weight-bold text-purple">{{ stats.dyingGasp }}</div>
-              <div class="text-caption">Dying Gasp</div>
+              <div class="text-caption">{{ t('offline.dyingGasp') }}</div>
             </div>
             <v-icon size="48" color="purple-lighten-2">mdi-power-plug-off</v-icon>
           </v-card-text>
@@ -130,7 +130,7 @@
             <template #no-data>
               <div class="text-center pa-6">
                 <v-icon size="64" color="green">mdi-check-circle</v-icon>
-                <p class="mt-4 text-body-1 text-green">All ONUs are online!</p>
+                <p class="mt-4 text-body-1 text-green">{{ t('offline.allOnline') }}</p>
               </div>
             </template>
           </v-data-table>
@@ -142,6 +142,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { t, currentLocale, formatRelativeTime } from '@/i18n'
 import api from '../services/api'
 
 const offlines = ref([])
@@ -152,19 +153,19 @@ const filters = ref({
   reason: null,
 })
 
-const headers = [
-  { title: 'ONU', key: 'onu_name', sortable: true },
-  { title: 'OLT', key: 'olt_name', sortable: true },
-  { title: 'Location', key: 'location', sortable: false },
-  { title: 'Reason', key: 'disconnect_reason', sortable: true },
-  { title: 'Offline Since', key: 'offline_since', sortable: true },
-]
+const headers = computed(() => [
+  { title: t('topology.onu'), key: 'onu_name', sortable: true },
+  { title: t('topology.olt'), key: 'olt_name', sortable: true },
+  { title: t('offline.location'), key: 'location', sortable: false },
+  { title: t('offline.reason'), key: 'disconnect_reason', sortable: true },
+  { title: t('offline.offlineSince'), key: 'offline_since', sortable: true },
+])
 
-const reasonOptions = [
-  { label: 'Link Loss (LOS)', value: 'link_loss' },
-  { label: 'Dying Gasp', value: 'dying_gasp' },
-  { label: 'Unknown', value: 'unknown' },
-]
+const reasonOptions = computed(() => [
+  { label: t('offline.linkLoss'), value: 'link_loss' },
+  { label: t('offline.dyingGasp'), value: 'dying_gasp' },
+  { label: t('status.unknownReason'), value: 'unknown' },
+])
 
 const oltOptions = computed(() => {
   const olts = new Map()
@@ -240,34 +241,18 @@ const getReasonIcon = (reason) => {
 
 const getReasonLabel = (reason) => {
   switch (reason) {
-    case 'link_loss': return 'Link Loss'
-    case 'dying_gasp': return 'Dying Gasp'
-    default: return 'Unknown'
+    case 'link_loss': return t('status.linkLoss')
+    case 'dying_gasp': return t('status.dyingGasp')
+    default: return t('status.unknownReason')
   }
 }
 
 const formatDateTime = (timestamp) => {
   if (!timestamp) return '-'
-  return new Date(timestamp).toLocaleString('pt-BR')
+  return new Date(timestamp).toLocaleString(currentLocale.value || 'pt-BR')
 }
 
-const formatDuration = (timestamp) => {
-  if (!timestamp) return ''
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diffMs = now - date
-  const diffMinutes = Math.floor(diffMs / (1000 * 60))
-  const diffHours = Math.floor(diffMinutes / 60)
-  const diffDays = Math.floor(diffHours / 24)
-
-  if (diffDays > 0) {
-    return `${diffDays}d ${diffHours % 24}h ago`
-  } else if (diffHours > 0) {
-    return `${diffHours}h ${diffMinutes % 60}m ago`
-  } else {
-    return `${diffMinutes}m ago`
-  }
-}
+const formatDuration = (timestamp) => formatRelativeTime(timestamp)
 
 // Auto-refresh
 let refreshInterval = null

@@ -20,7 +20,7 @@
         <span class="disconnect-label">Reason:</span> {{ disconnectReasonLabel }}
       </div>
       <div v-if="!onu.online && onu.offline_since" class="offline-time">
-        Offline: {{ formatOfflineTime(onu.offline_since) }}
+        {{ t('status.offline') }}: {{ formatOfflineTime(onu.offline_since) }}
       </div>
     </v-col>
   </v-row>
@@ -28,6 +28,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { t, formatRelativeTime } from '@/i18n'
 
 const props = defineProps({
   onu: {
@@ -37,8 +38,8 @@ const props = defineProps({
 })
 
 const statusLabel = computed(() => {
-  if (props.onu.online === undefined) return 'Unknown'
-  return props.onu.online ? 'Online' : 'Offline'
+  if (props.onu.online === undefined) return t('topology.unknown')
+  return props.onu.online ? t('topology.online') : t('topology.offline')
 })
 
 const statusColor = computed(() => {
@@ -49,29 +50,15 @@ const statusColor = computed(() => {
 const disconnectReasonLabel = computed(() => {
   if (!props.onu.disconnect_reason) return ''
   const reasons = {
-    link_loss: 'Link Loss',
-    dying_gasp: 'Dying Gasp',
-    unknown: 'Unknown'
+    link_loss: t('status.linkLoss'),
+    dying_gasp: t('status.dyingGasp'),
+    unknown: t('status.unknownReason')
   }
   return reasons[props.onu.disconnect_reason] || props.onu.disconnect_reason
 })
 
 const formatOfflineTime = (timestamp) => {
-  if (!timestamp) return ''
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diffMs = now - date
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
-  const diffDays = Math.floor(diffHours / 24)
-
-  if (diffDays > 0) {
-    return `${diffDays}d ${diffHours % 24}h ago`
-  } else if (diffHours > 0) {
-    return `${diffHours}h ago`
-  } else {
-    const diffMinutes = Math.floor(diffMs / (1000 * 60))
-    return `${diffMinutes}m ago`
-  }
+  return formatRelativeTime(timestamp)
 }
 </script>
 
