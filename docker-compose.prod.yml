@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15-alpine
@@ -33,18 +31,18 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     env_file:
       - docker/prod.env
     environment:
       POSTGRES_HOST: db
       DEBUG: "False"
     ports:
-      - "80:80"
-      - "443:443"
+      - "8080:80"
     volumes:
-      - ./backend:/app
       - static:/var/www/static
       - /etc/letsencrypt:/etc/apache2/ssl:ro
     restart: unless-stopped
@@ -71,8 +69,9 @@ services:
       target: production
     depends_on:
       - web
-    environment:
-      VITE_API_URL: /api
+    ports:
+      - "80:80"
+      - "443:443"
     restart: unless-stopped
     deploy:
       resources:

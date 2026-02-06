@@ -6,8 +6,7 @@
 **/*.sqlite3
 **/*.db
 **/*.log
-**/.env
-**/.env*
 **/venv
 **/node_modules
 **/dist
+horus/

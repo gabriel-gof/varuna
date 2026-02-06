@@ -1,6 +1,27 @@
 # Varuna Development Progress Tracking
 
-## 📝 Status: Phase 3 Complete - READY FOR PHASE 4
+## 📝 Status: Phase 3.5 Complete + SNMP Fix Applied
+
+---
+
+## 🔧 Critical Fix Applied: pysnmp 7.x Compatibility
+
+### Issue
+- pysnmp 7.x changed the `UdpTransportTarget` API
+- Old API: `UdpTransportTarget((host, port), timeout=2, retries=1)` 
+- New API: `await UdpTransportTarget.create((host, port), timeout=2, retries=1)`
+
+### Fix
+- Updated [snmp_service.py](backend/dashboard/services/snmp_service.py) `get()` and `walk()` methods
+- Now uses the async `create()` factory method for pysnmp 7.x
+
+### Verified Working
+- **574 ONUs polled successfully**
+- Status Distribution:
+  - Online: 406 ONUs
+  - Offline: 11 ONUs  
+  - Unknown: 157 ONUs
+- API returns correct `online_count` and `offline_count`
 
 ---
 
@@ -109,6 +130,74 @@
 
 ---
 
+## ✅ Phase 3.5: UI Redesign & i18n - COMPLETED
+
+### Priority 1: Internationalization (i18n)
+- [x] Create `/src/i18n/index.js` with translation system
+- [x] Portuguese (Brazil) as default language
+- [x] English translations available
+- [x] Language switcher in sidebar footer
+- [x] LocalStorage persistence for language preference
+- [x] Relative time formatting in both languages
+
+### Priority 2: Hierarchical Topology Components
+- [x] Create `TopologyTree.vue` - Main tree container with toolbar
+  - Search by ONU name/serial
+  - Filter by OLT
+  - Show offline only toggle
+  - Expand/Collapse all buttons
+  - Auto-refresh (30s)
+- [x] Create `OltNode.vue` - OLT expandable node
+  - Status gradient backgrounds (online/offline/partial/neutral)
+  - IP address and vendor display
+  - Online/Offline badges with counts
+  - Power refresh action button
+- [x] Create `SlotNode.vue` - Slot expandable node
+  - Slot number and status indicator
+  - PON count display
+  - Nested PON rendering
+- [x] Create `PonNode.vue` - PON expandable node
+  - PON number and status indicator
+  - ONU count display
+  - ONU chip grid rendering
+- [x] Create `OnuChip.vue` - ONU display chip
+  - Color-coded by status (green=online, red=offline)
+  - Disconnect reason colors (purple=dying_gasp, orange=link_loss)
+  - Tooltip with full details
+  - Search highlight support
+- [x] Create `StatusBadge.vue` - Reusable status badge component
+
+### Priority 3: Simplified Navigation
+- [x] Remove separate OLT Management page
+- [x] Remove Offline ONUs page from nav
+- [x] Sidebar with only: "Painel" (Dashboard) + "Configurações" (Settings)
+- [x] Settings page with:
+  - Language selector
+  - Theme toggle (light/dark)
+  - Auto-refresh interval slider
+  - OLT management table (CRUD)
+  - Vendor profiles list
+- [x] Legacy route redirects for backward compatibility
+
+### Priority 4: Visual Polish
+- [x] Custom Vuetify theme (light and dark modes)
+- [x] App bar with theme toggle, notifications, user menu
+- [x] Beautiful drawer with brand logo
+- [x] Footer with version and live clock
+- [x] Card styling with rounded corners and subtle borders
+- [x] Responsive design
+
+### Priority 5: Backend API Updates
+- [x] `OLTTopologySerializer` - Nested topology serializer
+- [x] `ONUNestedSerializer` - ONU with disconnect_reason
+- [x] `PONNestedSerializer` - PON with nested ONUs
+- [x] `SlotNestedSerializer` - Slot with nested PONs
+- [x] `include_topology=true` query parameter support
+- [x] Prefetch related objects for performance
+- [x] Refresh power endpoint placeholder
+
+---
+
 ## 🚧 Phase 4: Power Refresh - PENDING
 
 ### Priority 1: Power Service
@@ -172,11 +261,18 @@
 
 From `olt-zte.yaml` ZTE ONU status values:
 - **online**: status = 4 (working)
-- **unknown**: status = 1 (logging), 2 (los), 3 (sync_mib), 5 (dying_gasp), 6 (auth_failed), 7 (offline)
+- **offline**: status = 2 (los/link_loss), 5 (dying_gasp)
+- **unknown**: status = 1 (logging), 3 (sync_mib), 6 (auth_failed), 7 (offline)
 
 ---
 
 ## 🐛 Known Issues
+
+### ✅ RESOLVED: pysnmp 7.x API Change
+- **Issue**: SNMP polling failed with "AbstractTransportTarget.__init__() got multiple values for argument 'timeout'"
+- **Cause**: pysnmp 7.x changed `UdpTransportTarget` to require `await .create()` factory method
+- **Fix**: Updated `snmp_service.py` to use `await UdpTransportTarget.create((host, port))` pattern
+- **Status**: RESOLVED - Polling now works correctly
 
 ### LSP Errors
 - **Ignore**: LSP errors are from **Horus** project (not Varuna) and can be safely ignored

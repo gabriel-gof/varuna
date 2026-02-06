@@ -1,18 +1,16 @@
 import { defineConfig } from 'vite'
 import { fileURLToPath, URL } from 'node:url'
-import vue from '@vitejs/plugin-vue'
-import vuetify from 'vite-plugin-vuetify'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [
-    vue(),
-    vuetify({ autoImport: true }),
-  ],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  assetsInclude: ['**/*.svg', '**/*.csv'],
   server: {
     host: '0.0.0.0',
     port: 3000,

@@ -8,16 +8,16 @@ from dashboard.services.topology_service import TopologyService
 from dashboard.api.serializers import (
     VendorProfileSerializer,
     OLTSerializer,
+    OLTTopologySerializer,
     OLTSlotSerializer,
     OLTPONSerializer,
     ONUSerializer,
 )
 
 
-class VendorProfileViewSet(viewsets.ReadOnlyModelViewSet):
+class VendorProfileViewSet(viewsets.ModelViewSet):
     """
-    ViewSet para Perfis de Fabricante (read-only)
-    Vendor Profile ViewSet (read-only)
+    ViewSet for Vendor Profiles
     """
     queryset = VendorProfile.objects.filter(is_active=True)
     serializer_class = VendorProfileSerializer
@@ -25,16 +25,47 @@ class VendorProfileViewSet(viewsets.ReadOnlyModelViewSet):
 
 class OLTViewSet(viewsets.ModelViewSet):
     """
-    ViewSet para OLTs
-    OLT ViewSet
+    ViewSet for OLTs
+    Supports both flat list and nested topology responses
     """
-    queryset = OLT.objects.filter(is_active=True).select_related('vendor_profile')
     serializer_class = OLTSerializer
+
+    def get_queryset(self):
+        """
+        Optionally prefetch related objects for topology view
+        """
+        include_topology = self.request.query_params.get('include_topology', 'false').lower() == 'true'
+        
+        queryset = OLT.objects.filter(is_active=True).select_related('vendor_profile')
+        
+        if include_topology:
+            # Prefetch nested data for better performance
+            queryset = queryset.prefetch_related(
+                Prefetch(
+                    'slots',
+                    queryset=OLTSlot.objects.filter(is_active=True).order_by('slot_id')
+                ),
+                Prefetch(
+                    'slots__pons',
+                    queryset=OLTPON.objects.filter(is_active=True).order_by('pon_id')
+                ),
+                'slots__pons__onus'
+            )
+        
+        return queryset
+    
+    def get_serializer_class(self):
+        """
+        Use topology serializer when include_topology=true
+        """
+        include_topology = self.request.query_params.get('include_topology', 'false').lower() == 'true'
+        if include_topology and self.action == 'list':
+            return OLTTopologySerializer
+        return OLTSerializer
 
     @action(detail=True, methods=['get'])
     def topology(self, request, pk=None):
         """
-        Retorna topologia completa da OLT
         Returns complete OLT topology
         """
         olt = get_object_or_404(OLT, pk=pk)
@@ -45,14 +76,13 @@ class OLTViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def stats(self, request, pk=None):
         """
-        Retorna estatísticas da OLT
         Returns OLT statistics
         """
         olt = get_object_or_404(OLT, pk=pk)
         onus = ONU.objects.filter(olt=olt)
         
         online_count = onus.filter(status='online').count()
-        offline_count = onus.filter(status='offline').count()
+        offline_count = onus.exclude(status='online').count()
         total_count = onus.count()
         
         return Response({
@@ -63,12 +93,20 @@ class OLTViewSet(viewsets.ModelViewSet):
             'offline_count': offline_count,
             'offline_percentage': round(offline_count / total_count * 100, 2) if total_count > 0 else 0,
         })
+    
+    @action(detail=True, methods=['post'])
+    def refresh_power(self, request, pk=None):
+        """
+        Triggers power refresh for all ONUs in this OLT
+        """
+        olt = get_object_or_404(OLT, pk=pk)
+        # TODO: Implement power refresh logic
+        return Response({'status': 'requested', 'olt_id': olt.id})
 
 
 class ONUViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    ViewSet para ONUs (read-only)
-    ONU ViewSet (read-only)
+    ViewSet for ONUs (read-only)
     """
     serializer_class = ONUSerializer
     filterset_fields = ['olt', 'status', 'slot_id', 'pon_id', 'slot_ref', 'pon_ref']
@@ -81,15 +119,17 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         # Filter by status if provided
         status_filter = self.request.query_params.get('status')
         if status_filter:
-            queryset = queryset.filter(status=status_filter)
+            if status_filter == 'offline':
+                queryset = queryset.exclude(status='online')
+            else:
+                queryset = queryset.filter(status=status_filter)
         
         return queryset.order_by('olt', 'slot_id', 'pon_id', 'onu_id')
 
 
 class OLTSlotViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    ViewSet para Slots (read-only)
-    Slot ViewSet (read-only)
+    ViewSet for Slots (read-only)
     """
     queryset = OLTSlot.objects.filter(olt__is_active=True).select_related('olt')
     serializer_class = OLTSlotSerializer

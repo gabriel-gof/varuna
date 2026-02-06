@@ -98,14 +98,17 @@ class SNMPService:
 
         async def _get():
             try:
+                # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
+                transport = await m['UdpTransportTarget'].create(
+                    (olt.ip_address, olt.snmp_port),
+                    timeout=self.timeout,
+                    retries=self.retries
+                )
+                
                 errorIndication, errorStatus, errorIndex, varBinds = await m['getCmd'](
                     self.engine,
                     m['CommunityData'](olt.snmp_community, mpModel=1),
-                    m['UdpTransportTarget'](
-                        (olt.ip_address, olt.snmp_port),
-                        timeout=self.timeout,
-                        retries=self.retries
-                    ),
+                    transport,
                     m['ContextData'](),
                     *var_binds
                 )
@@ -140,17 +143,20 @@ class SNMPService:
         m = self.pysnmp_modules
 
         async def _walk():
+            # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
+            transport = await m['UdpTransportTarget'].create(
+                (olt.ip_address, olt.snmp_port),
+                timeout=self.timeout,
+                retries=self.retries
+            )
+            
             current_oid = base_oid
             while True:
                 try:
                     errorIndication, errorStatus, errorIndex, varBinds = await m['nextCmd'](
                         self.engine,
                         m['CommunityData'](olt.snmp_community, mpModel=1),
-                        m['UdpTransportTarget'](
-                            (olt.ip_address, olt.snmp_port),
-                            timeout=self.timeout,
-                            retries=self.retries
-                        ),
+                        transport,
                         m['ContextData'](),
                         m['ObjectType'](m['ObjectIdentity'](current_oid)),
                         lexicographicMode=False

@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-psycopg2 \
     gettext-base \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /app && useradd -m -u 1000 appuser && chown -R appuser:appuser /app
@@ -30,9 +31,12 @@ RUN chmod +x /usr/local/bin/varuna-entrypoint.sh
 COPY docker/apache/varuna.conf /opt/varuna/apache/varuna.conf
 COPY docker/apache/varuna-ssl.conf /opt/varuna/apache/varuna-ssl.conf
 
-EXPOSE 80
+EXPOSE 80 8000
 
 RUN a2enmod wsgi rewrite ssl headers expires proxy_http
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:80/api/ || curl -f http://localhost:8000/api/ || exit 1
 
 ENTRYPOINT ["/usr/local/bin/varuna-entrypoint.sh"]
 CMD ["apache2ctl", "-D", "FOREGROUND"]
