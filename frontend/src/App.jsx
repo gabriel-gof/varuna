@@ -2,10 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react'
 import {
   LayoutDashboard,
   Network,
-  ChevronRight,
   LogOut,
   User,
-  ChevronDown
+  ChevronDown,
+  X
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
@@ -22,76 +22,97 @@ const normalizeList = (data) => {
 }
 
 const buildTestTopology = () => {
-  const slotCount = 2
-  const ponsPerSlot = 16
-  const totalOnus = 120
-  const baseOnusPerPon = Math.floor(totalOnus / (slotCount * ponsPerSlot))
-  const extraOnus = totalOnus - baseOnusPerPon * slotCount * ponsPerSlot
-
-  let onuIndex = 1
-  const slots = []
-
-  for (let slotIdx = 1; slotIdx <= slotCount; slotIdx += 1) {
-    const pons = []
-    for (let ponIdx = 1; ponIdx <= ponsPerSlot; ponIdx += 1) {
-      const ponOrder = (slotIdx - 1) * ponsPerSlot + (ponIdx - 1)
-      const onuCount = baseOnusPerPon + (ponOrder < extraOnus ? 1 : 0)
-      const onus = []
-
-      for (let i = 0; i < onuCount; i += 1) {
-        const cycle = onuIndex % 4
-        let status = 'online'
-        let reason = ''
-
-        if (cycle === 1) {
-          status = 'offline'
-          reason = 'dying_gasp'
-        } else if (cycle === 2) {
-          status = 'offline'
-          reason = 'link_loss'
-        } else if (cycle === 3) {
-          status = 'unknown'
-        }
-
-        onus.push({
-          id: `onu-${onuIndex}`,
-          onu_number: onuIndex,
-          onu_id: onuIndex,
-          name: `Cliente ${onuIndex}`,
-          serial_number: `ZTE${String(onuIndex).padStart(6, '0')}`,
-          serial: `ZTE${String(onuIndex).padStart(6, '0')}`,
-          status,
-          disconnect_reason: reason
-        })
-        onuIndex += 1
-      }
-
-      pons.push({
-        id: `pon-${slotIdx}-${ponIdx}`,
-        pon_number: ponIdx,
-        pon_id: ponIdx,
-        onus
-      })
-    }
-
-    slots.push({
-      id: `slot-${slotIdx}`,
-      slot_number: slotIdx,
-      slot_id: slotIdx,
-      pons,
-      pon_count: pons.length
-    })
-  }
-
-  return [
+  const testOlts = [
     {
       id: 'olt-zte-gabisat',
       name: 'OLT-ZTE-GABISAT',
+      slotCount: 2,
+      ponsPerSlot: 16,
+      totalOnus: 120
+    },
+    {
+      id: 'olt-maxprint-gabisat',
+      name: 'OLT-MAXPRINT-GABISAT',
+      slotCount: 2,
+      ponsPerSlot: 16,
+      totalOnus: 96
+    }
+  ]
+
+  let onuIndex = 1
+
+  return testOlts.map((olt) => {
+    const baseOnusPerPon = Math.floor(olt.totalOnus / (olt.slotCount * olt.ponsPerSlot))
+    const extraOnus = olt.totalOnus - baseOnusPerPon * olt.slotCount * olt.ponsPerSlot
+    const slots = []
+
+    for (let slotIdx = 1; slotIdx <= olt.slotCount; slotIdx += 1) {
+      const pons = []
+      for (let ponIdx = 1; ponIdx <= olt.ponsPerSlot; ponIdx += 1) {
+        const ponOrder = (slotIdx - 1) * olt.ponsPerSlot + (ponIdx - 1)
+        const onuCount = baseOnusPerPon + (ponOrder < extraOnus ? 1 : 0)
+        const onus = []
+
+        for (let i = 0; i < onuCount; i += 1) {
+          const cycle = onuIndex % 4
+          let status = 'online'
+          let reason = ''
+
+          if (cycle === 1) {
+            status = 'offline'
+            reason = 'dying_gasp'
+          } else if (cycle === 2) {
+            status = 'offline'
+            reason = 'link_loss'
+          } else if (cycle === 3) {
+            status = 'unknown'
+          }
+
+          onus.push({
+            id: `${olt.id}-onu-${onuIndex}`,
+            onu_number: onuIndex,
+            onu_id: onuIndex,
+            name: `Cliente ${onuIndex}`,
+            serial_number: `ZTE${String(onuIndex).padStart(6, '0')}`,
+            serial: `ZTE${String(onuIndex).padStart(6, '0')}`,
+            status,
+            disconnect_reason: reason
+          })
+          onuIndex += 1
+        }
+
+        pons.push({
+          id: `${olt.id}-pon-${slotIdx}-${ponIdx}`,
+          pon_number: ponIdx,
+          pon_id: ponIdx,
+          // Worst-case visual stress test for PON chip counters
+          stats: {
+            online: 100,
+            dyingGasp: 100,
+            linkLoss: 128,
+            unknown: 128
+          },
+          onus
+        })
+      }
+
+      slots.push({
+        id: `${olt.id}-slot-${slotIdx}`,
+        slot_number: slotIdx,
+        slot_id: slotIdx,
+        pons,
+        pon_count: pons.length
+      })
+    }
+
+    return {
+      id: olt.id,
+      name: olt.name,
       vendor_profile_name: 'ZTE',
       slots,
       slot_count: slots.length
     }
-  ]
+  })
 }
 
 const USE_TEST_DATA = true
@@ -299,6 +320,7 @@ const App = () => {
   const selectedPonLabel = selectedPonData
     ? `${selectedPonData.olt?.name || 'OLT'} · SLOT ${selectedSlotNumber ?? '—'} · PON ${selectedPonNumber ?? '—'}`
     : ''
+  const isPonPanelOpen = activeNav === 'topology' && Boolean(selectedPonId)
 
   const selectedOnus = useMemo(() => {
     const onus = selectedPonData?.pon?.onus || []
@@ -334,7 +356,7 @@ const App = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
+    <div className="h-screen bg-[#FDFDFD] dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
       <nav className="h-16 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 flex items-center px-6 sticky top-0 z-[100] transition-colors shadow-sm">
         <div className="flex items-center gap-3 mr-4 sm:mr-10">
           <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20">
@@ -421,8 +443,15 @@ const App = () => {
         </div>
       </nav>
 
-      <main className="flex-1 flex relative overflow-hidden">
-        <section className="flex-1 overflow-y-auto custom-scrollbar">
+      <main className="flex-1 min-h-0 flex overflow-hidden">
+        <section
+          className={`
+            min-w-0 overflow-y-auto custom-scrollbar transition-all duration-300
+            ${isPonPanelOpen
+              ? 'hidden lg:block lg:w-[52%] border-r border-slate-100 dark:border-slate-800'
+              : 'flex-1'}
+          `}
+        >
           {activeNav === 'dashboard' ? (
             <Dashboard
               stats={overallStats}
@@ -446,99 +475,108 @@ const App = () => {
         {activeNav === 'topology' && (
           <aside
             className={`
-              bg-white dark:bg-slate-900 border-l border-slate-100 dark:border-slate-800 shadow-2xl transition-all duration-500 overflow-y-auto custom-scrollbar fixed right-0 top-16 bottom-0 z-30
-              ${selectedPonId ? 'w-full lg:w-[600px] translate-x-0' : 'w-full lg:w-[600px] translate-x-full'}
+              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 transition-all duration-300 overflow-hidden
+              ${isPonPanelOpen
+                ? 'w-full lg:w-[48%] opacity-100 border-l border-slate-100 dark:border-slate-800'
+                : 'w-0 opacity-0 pointer-events-none border-l-0'}
             `}
           >
             {selectedPonId && (
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-8">
-                  <h3 className="text-2xl font-black text-slate-800 dark:text-white uppercase tracking-tight">
-                    {selectedPonLabel}
-                  </h3>
-                  <button
-                    onClick={() => setSelectedPonId(null)}
-                    className="p-2 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400"
-                  >
-                    <ChevronRight className="w-5 h-5" />
-                  </button>
+              <div className="h-full min-h-0 flex flex-col">
+                <div className="px-6 lg:px-8 py-5 border-b border-slate-100 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm">
+                  <div className="flex items-center justify-between gap-4">
+                    <h3 className="text-[18px] font-black text-slate-800 dark:text-white uppercase tracking-tight truncate">
+                      {selectedPonLabel}
+                    </h3>
+                    <button
+                      onClick={() => setSelectedPonId(null)}
+                      className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 shrink-0"
+                      aria-label={t('Close')}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-4">
+                    <button
+                      onClick={() => setActiveTab('status')}
+                      className={`px-5 py-1.5 rounded-lg text-[11px] font-black transition-all ${
+                        activeTab === 'status' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                      }`}
+                    >
+                      {t('Status')}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('power')}
+                      className={`px-5 py-1.5 rounded-lg text-[11px] font-black transition-all ${
+                        activeTab === 'power' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                      }`}
+                    >
+                      {t('Potência')}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2 mb-6">
-                  <button
-                    onClick={() => setActiveTab('status')}
-                    className={`px-5 py-1.5 rounded-lg text-[11px] font-black transition-all ${
-                      activeTab === 'status' ? 'bg-emerald-600 text-white' : 'bg-slate-50 dark:bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {t('Status')}
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('power')}
-                    className={`px-5 py-1.5 rounded-lg text-[11px] font-black transition-all ${
-                      activeTab === 'power' ? 'bg-emerald-600 text-white' : 'bg-slate-50 dark:bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {t('Potência')}
-                  </button>
-                </div>
-
-                {activeTab === 'status' ? (
-                  <div className="overflow-x-auto rounded-xl border border-slate-100 dark:border-slate-800">
-                    <table className="w-full text-left border-collapse">
-                      <thead className="bg-slate-50/50 dark:bg-slate-800/50">
-                        <tr>
-                          <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Port')}</th>
-                          <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Client')}</th>
-                          <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">{t('Status')}</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {selectedOnus.map((onu) => {
-                          const classification = classifyOnu(onu)
-                          const label = classification.label
-                          const statusKey = classification.status
-                          return (
-                            <tr key={onu.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                              <td className="p-3 text-[11px] font-black text-slate-800 dark:text-slate-200">
-                                {onu.onu_number ?? onu.onu_id ?? '—'}
-                              </td>
-                              <td className="p-3">
-                                <div className="flex flex-col">
-                                  <span className="text-[11px] font-black text-slate-800 dark:text-white uppercase">
-                                    {onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()}
-                                  </span>
-                                  <span className="text-[8px] font-bold text-slate-400 font-mono">
-                                    {onu.serial_number || onu.serial || '—'}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="p-3 text-center">
-                                <span
-                                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[8px] font-black uppercase ${statusStyle(statusKey)}`}
-                                >
-                                  <div className={`w-1 h-1 rounded-full ${statusDot(statusKey)}`} />
-                                  {label}
-                                </span>
-                              </td>
+                <div className="flex-1 min-h-0 overflow-y-auto p-5 lg:p-6 bg-slate-100 dark:bg-slate-950">
+                  {activeTab === 'status' ? (
+                    <div className="min-h-[260px] rounded-2xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex flex-col">
+                      <div className="overflow-auto">
+                        <table className="w-full min-w-[520px] text-left border-collapse">
+                          <thead className="sticky top-0 bg-slate-50/90 dark:bg-slate-800/90 backdrop-blur-sm z-10">
+                            <tr>
+                              <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Port')}</th>
+                              <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Client')}</th>
+                              <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">{t('Status')}</th>
                             </tr>
-                          )
-                        })}
-                        {selectedOnus.length === 0 && (
-                          <tr>
-                            <td colSpan={3} className="p-6 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-                              {t('No ONU data available')}
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="rounded-xl border border-slate-100 dark:border-slate-800 p-6 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-                    {t('Power data not available')}
-                  </div>
-                )}
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {selectedOnus.map((onu) => {
+                              const classification = classifyOnu(onu)
+                              const label = classification.label
+                              const statusKey = classification.status
+                              return (
+                                <tr key={onu.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                                  <td className="p-3 text-[11px] font-black text-slate-800 dark:text-slate-200">
+                                    {onu.onu_number ?? onu.onu_id ?? '—'}
+                                  </td>
+                                  <td className="p-3">
+                                    <div className="flex flex-col">
+                                      <span className="text-[11px] font-black text-slate-800 dark:text-white uppercase">
+                                        {onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()}
+                                      </span>
+                                      <span className="text-[8px] font-bold text-slate-400 font-mono">
+                                        {onu.serial_number || onu.serial || '—'}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="p-3 text-center">
+                                    <span
+                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[8px] font-black uppercase ${statusStyle(statusKey)}`}
+                                    >
+                                      <div className={`w-1 h-1 rounded-full ${statusDot(statusKey)}`} />
+                                      {label}
+                                    </span>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                            {selectedOnus.length === 0 && (
+                              <tr>
+                                <td colSpan={3} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                                  {t('No ONU data available')}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="min-h-[260px] rounded-2xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex items-center justify-center text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                      {t('Power data not available')}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </aside>
