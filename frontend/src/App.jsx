@@ -5,6 +5,7 @@ import {
   LogOut,
   User,
   ChevronDown,
+  ChevronRight,
   X
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -25,6 +26,13 @@ const clampPonPanelWidth = (value) => {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 40
   return Math.min(68, Math.max(32, numeric))
+}
+
+
+
+const normalizeClientDescription = (desc) => {
+  if (!desc || desc === '-' || String(desc).toLowerCase() === 'sem descrição') return null
+  return desc
 }
 
 const formatOfflineSince = (value, language) => {
@@ -219,7 +227,7 @@ const VarunaIcon = ({ className }) => (
 )
 
 const SegmentedControl = ({ options, value, onChange }) => (
-  <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-full">
+  <div className="flex bg-slate-100/50 dark:bg-slate-800/50 p-1 rounded-lg w-full border border-slate-100 dark:border-slate-800">
     {options.map((opt) => (
       <button
         key={opt.id}
@@ -227,10 +235,10 @@ const SegmentedControl = ({ options, value, onChange }) => (
           e.stopPropagation()
           onChange(opt.id)
         }}
-        className={`flex-1 py-2 px-2 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${
+        className={`flex-1 py-1.5 px-2 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
           value === opt.id
-            ? 'bg-white dark:bg-slate-700 text-emerald-600 shadow-sm'
-            : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+            ? 'bg-white dark:bg-slate-700 text-emerald-600 shadow-sm ring-1 ring-black/5 dark:ring-white/5'
+            : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
         }`}
       >
         {opt.label}
@@ -355,9 +363,11 @@ const App = () => {
 
   const selectedSlotNumber = selectedPonData?.slot?.slot_number ?? selectedPonData?.slot?.slot_id
   const selectedPonNumber = selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id
-  const selectedPonLabel = selectedPonData
-    ? `${selectedPonData.olt?.name || 'OLT'} · SLOT ${selectedSlotNumber ?? '—'} · PON ${selectedPonNumber ?? '—'}`
-    : ''
+  const selectedPonPath = [
+    selectedPonData?.olt?.name || 'OLT',
+    `SLOT ${selectedSlotNumber ?? '—'}`,
+    `PON ${selectedPonNumber ?? '—'}`
+  ]
   const isPonPanelOpen = activeNav === 'topology' && Boolean(selectedPonId)
 
   const updatePonPanelWidthByClientX = (clientX) => {
@@ -434,6 +444,15 @@ const App = () => {
     const onus = selectedPonData?.pon?.onus || []
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
+
+  const selectedPonStats = useMemo(() => {
+    return selectedOnus.reduce((acc, onu) => {
+      const { status } = classifyOnu(onu)
+      if (status === 'online') acc.online++
+      else acc.offline++
+      return acc
+    }, { online: 0, offline: 0 })
+  }, [selectedOnus])
 
   const statusStyle = (statusKey) => {
     if (statusKey === 'online') {
@@ -622,94 +641,93 @@ const App = () => {
           >
             {selectedPonId && (
               <div className="h-full min-h-0 flex flex-col">
-                <div className="px-6 lg:px-8 py-5 border-b border-slate-100 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm">
-                  <div className="flex items-center justify-between gap-4">
-                    <h3 className="text-[18px] font-black text-slate-800 dark:text-white uppercase tracking-tight truncate">
-                      {selectedPonLabel}
-                    </h3>
+                <div className="px-6 lg:px-8 pt-5 pb-4 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+                  <div className="flex items-center justify-between gap-4 mb-5">
+                    <div className="min-w-0 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide">
+                      {selectedPonPath.map((part, idx) => (
+                        <React.Fragment key={`${part}-${idx}`}>
+                          {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" strokeWidth={2.5} />}
+                          <span className={`${idx === selectedPonPath.length - 1 ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'} ${idx === 0 ? 'truncate' : 'whitespace-nowrap'}`}>
+                            {part}
+                          </span>
+                        </React.Fragment>
+                      ))}
+                    </div>
                     <button
                       onClick={() => setSelectedPonId(null)}
-                      className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all text-slate-400 shrink-0"
+                      className="p-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-slate-600 shrink-0"
                       aria-label={t('Close')}
                     >
                       <X className="w-4 h-4" />
                     </button>
                   </div>
 
-                  <div className="flex items-center gap-2 mt-4">
-                    <button
-                      onClick={() => setActiveTab('status')}
-                      className={`px-5 py-1.5 rounded-lg text-[11px] font-black transition-all ${
-                        activeTab === 'status' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                      }`}
-                    >
-                      {t('Status')}
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('power')}
-                      className={`px-5 py-1.5 rounded-lg text-[11px] font-black transition-all ${
-                        activeTab === 'power' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                      }`}
-                    >
-                      {t('Potência')}
-                    </button>
-                  </div>
+                  <SegmentedControl
+                    value={activeTab}
+                    onChange={setActiveTab}
+                    options={[
+                      { id: 'status', label: t('Status') },
+                      { id: 'power', label: t('Potência') }
+                    ]}
+                  />
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-y-auto p-5 lg:p-6 bg-slate-100 dark:bg-slate-950">
+                <div className="flex-1 min-h-0 flex flex-col p-5 lg:p-6 bg-slate-100 dark:bg-slate-950 overflow-hidden">
                   {activeTab === 'status' ? (
-                    <div className="min-h-[260px] rounded-2xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex flex-col">
-                      <div className="overflow-auto">
-                        <table className="w-full table-fixed text-left border-collapse">
-                          <thead className="sticky top-0 bg-slate-50/90 dark:bg-slate-800/90 backdrop-blur-sm z-10">
-                            <tr>
-                              <th className="px-2.5 py-2 w-[58px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('ONU ID')}</th>
-                              <th className="px-2.5 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Client')}</th>
-                              <th className="px-2.5 py-2 w-[108px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('Serial')}</th>
-                              <th className="px-2.5 py-2 w-[118px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('Offline Status')}</th>
-                              <th className="px-2.5 py-2 w-[132px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('Offline Since')}</th>
+                    <div className="flex flex-col w-full max-h-full rounded-2xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+                      <div className="overflow-x-auto overflow-y-auto min-h-0">
+                        <table className="w-full text-left border-collapse" style={{ minWidth: '520px' }}>
+                          <thead className="sticky top-0 z-10">
+                            <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
+                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap w-[46px]">{t('ONU ID')}</th>
+                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
+                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {selectedOnus.map((onu) => {
                               const classification = classifyOnu(onu)
                               const label = classification.label
                               const statusKey = classification.status
                               const clientLabel = onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
-                              const clientSubtitle = onu.description || onu.onu_description || t('No description')
+                              const clientSubtitle = normalizeClientDescription(onu.description || onu.onu_description)
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const offlineSince = statusKey === 'online' ? '—' : formatOfflineSince(onu.offline_since, i18n.language)
                               return (
                                 <tr
                                   key={onu.id}
-                                  className="odd:bg-white even:bg-slate-50/70 dark:odd:bg-slate-900 dark:even:bg-slate-900/70 hover:bg-emerald-50/70 dark:hover:bg-slate-800/70 transition-colors"
+                                  className="odd:bg-white even:bg-slate-50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors"
                                 >
-                                  <td className="px-2.5 py-2 text-[10px] font-black text-slate-700 dark:text-slate-200 tabular-nums">
+                                  <td className="px-3 py-2.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
                                     {onuNumber}
                                   </td>
-                                  <td className="px-2.5 py-2">
+                                  <td className="px-3 py-2.5">
                                     <div className="flex flex-col">
-                                      <span className="text-[10.5px] font-black text-slate-800 dark:text-white uppercase leading-tight truncate">
+                                      <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 uppercase leading-tight truncate">
                                         {clientLabel}
                                       </span>
-                                      <span className="text-[7.5px] font-bold text-slate-400 font-mono leading-tight mt-0.5 truncate">
-                                        {clientSubtitle}
-                                      </span>
+                                      {clientSubtitle && (
+                                        <span className="mt-0.5 text-[10px] font-medium text-slate-400 dark:text-slate-500 leading-tight truncate">
+                                          {clientSubtitle}
+                                        </span>
+                                      )}
                                     </div>
                                   </td>
-                                  <td className="px-2.5 py-2 text-[9px] font-bold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap">
+                                  <td className="px-3 py-2.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono whitespace-nowrap">
                                     {serialValue}
                                   </td>
-                                  <td className="px-2.5 py-2 whitespace-nowrap">
+                                  <td className="px-3 py-2.5 whitespace-nowrap">
                                     <span
-                                      className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${statusStyle(statusKey)}`}
+                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${statusStyle(statusKey)}`}
                                     >
-                                      <div className={`w-1 h-1 rounded-full ${statusDot(statusKey)}`} />
+                                      <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
                                       {label}
                                     </span>
                                   </td>
-                                  <td className="px-2.5 py-2 text-[9px] font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap tabular-nums">
+                                  <td className="px-3 py-2.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums">
                                     {offlineSince}
                                   </td>
                                 </tr>
