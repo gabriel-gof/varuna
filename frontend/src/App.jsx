@@ -7,7 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   X,
-  RefreshCw
+  RotateCw
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
@@ -681,8 +681,8 @@ const App = () => {
           >
             {selectedPonId && (
               <div className="h-full min-h-0 flex flex-col">
-                <div className="px-6 lg:px-8 pt-5 pb-4 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
-                  <div className="flex items-center justify-between gap-4 mb-5">
+                <div className="px-8 lg:px-10 h-[74px] border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center">
+                  <div className="w-full flex items-center justify-between gap-4">
                     <div className="min-w-0 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide">
                       {selectedPonPath.map((part, idx) => (
                         <React.Fragment key={`${part}-${idx}`}>
@@ -704,8 +704,10 @@ const App = () => {
                       <X className="w-4 h-4" />
                     </button>
                   </div>
+                </div>
 
-                  <div className="flex items-center gap-3">
+                <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-950 overflow-hidden">
+                  <div className="flex items-center gap-3 mb-3">
                     <SegmentedControl
                       value={activeTab}
                       onChange={setActiveTab}
@@ -720,23 +722,21 @@ const App = () => {
                       aria-label={t('Refresh')}
                       title={t('Refresh')}
                     >
-                      <RefreshCw className="w-3.5 h-3.5" strokeWidth={2.5} />
+                      <RotateCw className="w-3.5 h-3.5" strokeWidth={2.5} />
                     </button>
                   </div>
-                </div>
 
-                <div className="flex-1 min-h-0 flex flex-col p-5 lg:p-6 bg-slate-100 dark:bg-slate-950 overflow-hidden">
                   {activeTab === 'status' ? (
-                    <div className="flex flex-col w-full max-h-full rounded-2xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                    <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-x-auto overflow-y-auto min-h-0">
                         <table className="w-full text-left border-collapse" style={{ minWidth: '520px' }}>
                           <thead className="sticky top-0 z-10">
                             <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
-                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap w-[46px]">{t('ONU ID')}</th>
-                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
-                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
-                              <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
+                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap w-[42px]">{t('ONU ID')}</th>
+                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
+                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
@@ -765,10 +765,10 @@ const App = () => {
                                   `}
                                   style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                                 >
-                                  <td className="px-3 py-2.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
+                                  <td className="px-2.5 py-2 text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
                                     {onuNumber}
                                   </td>
-                                  <td className="px-3 py-2.5">
+                                  <td className="px-2.5 py-2">
                                     <div className="flex flex-col">
                                       <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 uppercase leading-tight truncate">
                                         {clientLabel}
@@ -780,10 +780,10 @@ const App = () => {
                                       )}
                                     </div>
                                   </td>
-                                  <td className="px-3 py-2.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono whitespace-nowrap">
+                                  <td className="px-2.5 py-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono whitespace-nowrap">
                                     {serialValue}
                                   </td>
-                                  <td className="px-3 py-2.5 whitespace-nowrap">
+                                  <td className="px-2.5 py-2 whitespace-nowrap">
                                     <span
                                       className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${statusStyle(statusKey)}`}
                                     >
@@ -791,7 +791,7 @@ const App = () => {
                                       {label}
                                     </span>
                                   </td>
-                                  <td className="px-3 py-2.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums">
+                                  <td className="px-2.5 py-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums">
                                     {offlineSince}
                                   </td>
                                 </tr>
@@ -809,7 +809,7 @@ const App = () => {
                       </div>
                     </div>
                   ) : (
-                    <div className="min-h-[260px] rounded-2xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex items-center justify-center text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                    <div className="min-h-[260px] rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex items-center justify-center text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
                       {t('Power data not available')}
                     </div>
                   )}
