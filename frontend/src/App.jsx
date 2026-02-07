@@ -25,7 +25,7 @@ const normalizeList = (data) => {
 
 const clampPonPanelWidth = (value) => {
   const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return 40
+  if (!Number.isFinite(numeric)) return 42
   return Math.min(68, Math.max(32, numeric))
 }
 
@@ -96,14 +96,14 @@ const buildTestTopology = () => {
   const testOlts = [
     {
       id: 'olt-zte-gabisat',
-      name: 'OLT-ZTE-GABISAT',
+      name: 'OLT-ZTE',
       slotCount: 2,
       ponsPerSlot: 16,
       totalOnus: 680
     },
     {
       id: 'olt-maxprint-gabisat',
-      name: 'OLT-MAX-GABISAT',
+      name: 'OLT-MAXPRINT',
       slotCount: 2,
       ponsPerSlot: 16,
       totalOnus: 420
@@ -308,7 +308,7 @@ const SegmentedControl = ({ options, value, onChange }) => (
           e.stopPropagation()
           onChange(opt.id)
         }}
-        className={`w-24 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
+        className={`w-24 py-2 text-[11px] font-bold uppercase tracking-wider rounded-md transition-all ${
           value === opt.id
             ? 'bg-white dark:bg-slate-700 text-emerald-600 shadow-sm ring-1 ring-black/5 dark:ring-white/5'
             : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
@@ -330,11 +330,11 @@ const App = () => {
   const [isResizingPonPanel, setIsResizingPonPanel] = useState(false)
   const [ponPanelWidth, setPonPanelWidth] = useState(() => {
     try {
-      if (typeof window === 'undefined') return 40
+      if (typeof window === 'undefined') return 42
       const saved = window.localStorage.getItem('varuna.ponSidebarWidth')
-      return clampPonPanelWidth(saved ?? 40)
+      return clampPonPanelWidth(saved ?? 42)
     } catch (_err) {
-      return 40
+      return 42
     }
   })
   const [olts, setOlts] = useState([])
@@ -582,7 +582,7 @@ const App = () => {
             className={`flex items-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'dashboard' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <LayoutDashboard className="w-[18px] h-[18px]" />
-            <span className="text-[11px] font-black uppercase tracking-wider hidden sm:block">{t('Dashboard')}</span>
+            <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Dashboard')}</span>
             {activeNav === 'dashboard' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
           <button
@@ -590,7 +590,7 @@ const App = () => {
             className={`flex items-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <Network className="w-[18px] h-[18px] shrink-0" />
-            <span className="text-[11px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
+            <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
             {activeNav === 'topology' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
         </div>
@@ -704,7 +704,7 @@ const App = () => {
               onPointerUp={handlePonResizePointerUp}
               onPointerCancel={handlePonResizePointerUp}
               onLostPointerCapture={stopPonPanelResize}
-              onDoubleClick={() => setPonPanelWidth(40)}
+              onDoubleClick={() => setPonPanelWidth(42)}
               aria-label={t('Resize PON sidebar')}
               className="relative h-full w-full cursor-ew-resize touch-none focus:outline-none group"
               style={{ cursor: 'ew-resize' }}
@@ -733,9 +733,9 @@ const App = () => {
           >
             {selectedPonId && (
               <div className="h-full min-h-0 flex flex-col">
-                <div className="px-8 lg:px-10 h-[74px] border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center">
+                <div className="px-8 lg:px-10 h-[78px] border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center">
                   <div className="w-full flex items-center justify-between gap-4">
-                    <div className="min-w-0 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide">
+                    <div className="min-w-0 flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
                       {selectedPonPath.map((part, idx) => (
                         <React.Fragment key={`${part}-${idx}`}>
                           {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" strokeWidth={2.5} />}
@@ -770,11 +770,11 @@ const App = () => {
                     />
                     <button
                       onClick={() => { /* TODO: trigger refresh */ }}
-                      className="shrink-0 ml-auto p-2 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
+                      className="shrink-0 ml-auto p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
                       aria-label={t('Refresh')}
                       title={t('Refresh')}
                     >
-                      <RotateCw className="w-3.5 h-3.5" strokeWidth={2.5} />
+                      <RotateCw className="w-4 h-4" strokeWidth={2.5} />
                     </button>
                   </div>
 
@@ -784,11 +784,11 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <thead className="sticky top-0 z-10">
                             <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
-                              <th className="w-[10%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
-                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="w-[22%] pl-4 pr-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
-                              <th className="w-[26%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
+                              <th className="w-[10%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="w-[24%] pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
@@ -827,9 +827,9 @@ const App = () => {
                                   <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
                                     {serialValue}
                                   </td>
-                                  <td className="pl-4 pr-2.5 py-0 align-middle whitespace-nowrap">
+                                  <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
                                     <span
-                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${statusStyle(statusKey)}`}
+                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}
                                     >
                                       <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
                                       {label}
@@ -858,11 +858,11 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <thead className="sticky top-0 z-10">
                             <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
-                              <th className="w-[10%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
-                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="w-[22%] pl-4 pr-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('Power')}</th>
-                              <th className="w-[26%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('Leitura')}</th>
+                              <th className="w-[10%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="w-[24%] pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Power')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('Leitura')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
@@ -901,15 +901,15 @@ const App = () => {
                                   <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
                                     {serialValue}
                                   </td>
-                                  <td className="pl-4 pr-2.5 py-0 align-middle text-right">
+                                  <td className="pl-4 pr-6 py-0 align-middle">
                                     {!hasOnuRx && !hasOltRx ? (
-                                      <span className="inline-block w-full text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">—</span>
+                                      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">—</span>
                                     ) : (
-                                      <div className="flex flex-col items-end gap-0.5 leading-tight text-right tabular-nums">
-                                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                                      <div className="flex flex-col items-start gap-1 leading-snug text-left tabular-nums">
+                                        <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           {t('ONU')} <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                         </span>
-                                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                                        <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           {t('OLT')} <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
                                         </span>
                                       </div>
@@ -923,7 +923,7 @@ const App = () => {
                             })}
                             {selectedOnus.length === 0 && (
                               <tr>
-                                <td colSpan={5} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                                <td colSpan={5} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
                                 </td>
                               </tr>
