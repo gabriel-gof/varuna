@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X } from 'lucide-react'
+import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X, Check } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getOnuStats } from '../utils/stats'
 
@@ -421,7 +421,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
 
   return (
     <div className="flex flex-col w-full h-full pt-8">
-      <div className="flex items-center gap-2 mb-6 px-10">
+      <div className="flex items-center gap-2 mb-8 px-10">
         <div ref={searchContainerRef} className="relative w-full max-w-[268px]">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300" />
           <input
@@ -473,7 +473,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
           )}
         </div>
 
-        <div className="relative">
+        <div className="relative order-first">
           <button
             title={t('Filter OLTs')}
             onClick={() => {
@@ -490,44 +490,74 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
           </button>
 
           {oltFilterOpen && (
-            <div className="absolute left-0 top-11 z-30 w-[260px] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
-              <p className="text-[12px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 mb-3">{t('Filter OLTs')}</p>
+            <div className="absolute left-0 top-11 z-30 w-[272px] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-[11px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">{t('Filter OLTs')}</p>
+                <button
+                  onClick={() => setOltFilterOpen(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                  aria-label={t('Close')}
+                  title={t('Close')}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
 
-              <div className="flex items-center gap-2 mb-3">
+              <div className="flex items-center gap-1.5 mb-2.5">
                 <button
                   onClick={() => setSelectedOltIds(olts.map((olt) => String(olt.id)))}
-                  className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-[11px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-300"
+                  className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[9px] font-black uppercase tracking-wide text-slate-600 dark:text-slate-300"
                 >
                   {t('All')}
                 </button>
                 <button
                   onClick={() => setSelectedOltIds([])}
-                  className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-[11px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-300"
+                  className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[9px] font-black uppercase tracking-wide text-slate-600 dark:text-slate-300"
                 >
                   {t('Clear')}
                 </button>
               </div>
 
-              <div className="max-h-[220px] overflow-auto space-y-2 pr-1">
-                {olts.map((olt) => (
-                  <label key={olt.id} className="flex items-center gap-2 text-[12px] text-slate-700 dark:text-slate-200 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={selectedOltIds.includes(String(olt.id))}
-                      onChange={(e) => {
-                        setSelectedOltIds((prev) => {
-                          const id = String(olt.id)
-                          if (e.target.checked) {
-                            return prev.includes(id) ? prev : [...prev, id]
-                          }
-                          return prev.filter((currentId) => currentId !== id)
-                        })
-                      }}
-                      className="accent-emerald-600"
-                    />
-                    <span className="truncate">{olt.name}</span>
-                  </label>
-                ))}
+              <div className="max-h-[220px] overflow-auto space-y-1.5 pr-1">
+                {olts.map((olt) => {
+                  const isChecked = selectedOltIds.includes(String(olt.id))
+                  return (
+                    <label
+                      key={olt.id}
+                      className={`
+                        flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition-colors
+                        ${isChecked
+                          ? 'bg-slate-50/70 dark:bg-slate-800/40'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/30'}
+                      `}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={(e) => {
+                          setSelectedOltIds((prev) => {
+                            const id = String(olt.id)
+                            if (e.target.checked) {
+                              return prev.includes(id) ? prev : [...prev, id]
+                            }
+                            return prev.filter((currentId) => currentId !== id)
+                          })
+                        }}
+                        className="sr-only"
+                      />
+                      <span className="h-4 w-4 flex items-center justify-center">
+                        {isChecked ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={3} />
+                        ) : (
+                          <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
+                        )}
+                      </span>
+                      <span className="truncate text-[12px] font-semibold text-slate-700 dark:text-slate-200">
+                        {olt.name}
+                      </span>
+                    </label>
+                  )
+                })}
               </div>
             </div>
           )}

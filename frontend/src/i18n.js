@@ -68,7 +68,7 @@ const resources = {
       'Only show PONs with offline ONUs': 'Mostrar apenas PONs com ONUs offline',
       'Offline reasons': 'Motivos offline',
       'Minimum ONU count': 'Mínimo de ONUs',
-      All: 'Todos',
+      All: 'Todas',
       Clear: 'Limpar',
       Close: 'Fechar',
       Status: 'Status',

@@ -862,7 +862,7 @@ const App = () => {
                               <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
                               <th className="w-[18%] pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="w-[24%] pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Power')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('Leitura')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
@@ -907,10 +907,12 @@ const App = () => {
                                     ) : (
                                       <div className="flex flex-col items-start gap-1 leading-snug text-left tabular-nums">
                                         <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
-                                          {t('ONU')} <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
+                                          <span className="inline-block w-8">{t('ONU')}</span>
+                                          <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                         </span>
                                         <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
-                                          {t('OLT')} <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                          <span className="inline-block w-8">{t('OLT')}</span>
+                                          <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
                                         </span>
                                       </div>
                                     )}
