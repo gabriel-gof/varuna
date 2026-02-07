@@ -28,6 +28,10 @@ const resources = {
       Port: 'Port',
       Client: 'Client',
       Serial: 'Serial',
+      Power: 'Power',
+      Leitura: 'Reading',
+      'ONU RX': 'ONU RX',
+      'OLT RX': 'OLT RX',
       'ONU ID': 'ONU ID',
       'Offline Status': 'Offline Status',
       'No description': 'No description',
@@ -44,7 +48,11 @@ const resources = {
       'No PON matches alarm filter': 'No PON matches alarm filter',
       'No ONU data available': 'No ONU data available',
       'Select a PON to view details': 'Select a PON to view details',
-      'Power data not available': 'Power data not available'
+      'Power data not available': 'Power data not available',
+      Desconexão: 'Disconnection',
+      Refresh: 'Refresh',
+      'No clients found': 'No clients found',
+      Cliente: 'Client'
     }
   },
   pt: {
@@ -73,6 +81,10 @@ const resources = {
       Port: 'Porta',
       Client: 'Cliente',
       Serial: 'Serial',
+      Power: 'Potência',
+      Leitura: 'Leitura',
+      'ONU RX': 'ONU RX',
+      'OLT RX': 'OLT RX',
       'ONU ID': 'ONU ID',
       'Offline Status': 'Status Offline',
       'No description': 'Sem descrição',
@@ -89,7 +101,11 @@ const resources = {
       'No PON matches alarm filter': 'Nenhuma PON corresponde ao filtro de alarme',
       'No ONU data available': 'Nenhum dado de ONU disponível',
       'Select a PON to view details': 'Selecione uma PON para ver detalhes',
-      'Power data not available': 'Dados de potência indisponíveis'
+      'Power data not available': 'Dados de potência indisponíveis',
+      Desconexão: 'Desconexão',
+      Refresh: 'Atualizar',
+      'No clients found': 'Nenhum cliente encontrado',
+      Cliente: 'Cliente'
     }
   }
 }

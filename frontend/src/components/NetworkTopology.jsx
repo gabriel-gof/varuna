@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, ChevronsUpDown, X } from 'lucide-react'
+import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getOnuStats } from '../utils/stats'
 
@@ -461,14 +461,14 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                   onClick={() => handleSearchSuggestionSelect(suggestion)}
                   className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                 >
-                  <p className="text-[10px] font-black uppercase tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
+                  <p className="text-[10px] font-black tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
                     {renderHighlightedText(suggestion.clientName, normalizedSearchTerm)}
                   </p>
                   <p className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis">
                     {renderHighlightedText(suggestion.serial, normalizedSearchTerm)}
                   </p>
                   <p className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 leading-tight break-words">
-                    {suggestion.oltName} > SLOT {pad2(suggestion.slotNumber)} > PON {pad2(suggestion.ponNumber)} > ONU ID {suggestion.onuId}
+                    {suggestion.oltName} {'>'} SLOT {pad2(suggestion.slotNumber)} {'>'} PON {pad2(suggestion.ponNumber)} {'>'} ONU ID {suggestion.onuId}
                   </p>
                 </button>
               ))}
@@ -542,7 +542,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
             onClick={collapseAllNodes}
             className="h-9 px-3 flex items-center justify-center gap-1.5 bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl text-slate-500 shadow-sm hover:text-emerald-600 transition-all"
           >
-            <ChevronsUpDown className="w-3.5 h-3.5" />
+            <svg className="w-[18px] h-[18px] shrink-0" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
             <span className="text-[10px] font-black uppercase tracking-wider hidden md:block">{t('Collapse')}</span>
           </button>
 

@@ -29,14 +29,21 @@ const clampPonPanelWidth = (value) => {
   return Math.min(68, Math.max(32, numeric))
 }
 
+const normalizeMatchValue = (value) => String(value || '').trim().toLowerCase()
 
-
-const normalizeClientDescription = (desc) => {
-  if (!desc || desc === '-' || String(desc).toLowerCase() === 'sem descrição') return null
-  return desc
+const formatPowerValue = (value) => {
+  if (value === null || value === undefined || value === '') return '—'
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return String(value)
+  return `${numeric.toFixed(2)} dBm`
 }
 
-const normalizeMatchValue = (value) => String(value || '').trim().toLowerCase()
+const getOnuPowerSnapshot = (onu) => {
+  const onuRx = onu?.onu_rx_power ?? onu?.onu_rx ?? onu?.rx_onu ?? null
+  const oltRx = onu?.olt_rx_power ?? onu?.olt_rx ?? onu?.rx_olt ?? null
+  const readAt = onu?.power_read_at ?? onu?.read_at ?? onu?.power_timestamp ?? null
+  return { onuRx, oltRx, readAt }
+}
 
 const formatOfflineSince = (value, language) => {
   if (!value) return '—'
@@ -49,6 +56,40 @@ const formatOfflineSince = (value, language) => {
     hour: '2-digit',
     minute: '2-digit'
   }).format(parsed)
+}
+
+const formatReadingAt = (value, language) => {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return new Intl.DateTimeFormat(language === 'pt' ? 'pt-BR' : 'en-US', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(parsed)
+}
+
+const buildClientLogin = (index) => {
+  if (index === 1) return 'gabriel.gomes'
+  if (index === 2) return 'alexandre.nunes'
+  if (index === 3) return 'paula.macedo22'
+
+  const firstNames = [
+    'carlos', 'fernanda', 'bruno', 'mariana', 'ricardo', 'camila', 'thiago', 'renata',
+    'lucas', 'juliana', 'rodrigo', 'beatriz', 'rafael', 'patricia', 'vinicius', 'larissa'
+  ]
+  const lastNames = [
+    'silva', 'souza', 'oliveira', 'santos', 'lima', 'pereira', 'almeida', 'costa',
+    'rocha', 'martins', 'barbosa', 'cardoso', 'dias', 'teixeira', 'fonseca', 'ribeiro'
+  ]
+
+  const first = firstNames[(index - 1) % firstNames.length]
+  const last = lastNames[Math.floor((index - 1) / firstNames.length) % lastNames.length]
+  const withNumericSuffix = index % 5 === 0 || index % 9 === 0
+  const suffix = withNumericSuffix ? String((index % 90) + 10) : ''
+  return `${first}.${last}${suffix}`
 }
 
 const buildTestTopology = () => {
@@ -120,16 +161,25 @@ const buildTestTopology = () => {
             status = 'unknown'
           }
 
+          // Keep mock serials in realistic 12-char vendor format (e.g. FHTT106169C8).
+          const simulatedSerial = `FHTT${(0x10616900 + onuIndex).toString(16).toUpperCase()}`
+          const simulatedLogin = buildClientLogin(onuIndex)
+
           onus.push({
             id: `${olt.id}-onu-${onuIndex}`,
             onu_number: onuIndex,
             onu_id: onuIndex,
-            client_name: `Cliente ${onuIndex}`,
-            name: `Cliente ${onuIndex}`,
-            serial_number: `ZTE${String(onuIndex).padStart(6, '0')}`,
-            serial: `ZTE${String(onuIndex).padStart(6, '0')}`,
+            client_name: simulatedLogin,
+            name: simulatedLogin,
+            serial_number: simulatedSerial,
+            serial: simulatedSerial,
             status,
             disconnect_reason: reason,
+            onu_rx_power: status === 'online' ? Number((-17.2 - (onuIndex % 14) * 0.27).toFixed(2)) : null,
+            olt_rx_power: status === 'online' ? Number((-16.4 - (onuIndex % 11) * 0.24).toFixed(2)) : null,
+            power_read_at: status === 'online'
+              ? new Date(Date.now() - ((onuIndex % 30) + 1) * 60000).toISOString()
+              : null,
             offline_since: status === 'online'
               ? null
               : new Date(Date.now() - ((onuIndex % 96) + 1) * 300000).toISOString()
@@ -180,15 +230,18 @@ const mapTopologyToSlots = (olt, topology) => {
         name: pon.pon_name,
         onus: (pon.onus || []).map((onu) => ({
           id: onu.id,
-          onu_number: onu.onu_id,
-          onu_id: onu.onu_id,
+          onu_number: onu.onu_number ?? onu.onu_id,
+          onu_id: onu.onu_id ?? onu.onu_number,
           client_name: onu.client_name || onu.name,
           name: onu.name,
-          serial_number: onu.serial,
-          serial: onu.serial,
+          serial_number: onu.serial_number ?? onu.serial,
+          serial: onu.serial ?? onu.serial_number,
           status: onu.status,
           disconnect_reason: onu.disconnect_reason,
-          offline_since: onu.offline_since
+          offline_since: onu.offline_since,
+          onu_rx_power: onu.onu_rx_power ?? onu.onu_rx ?? onu.rx_onu ?? null,
+          olt_rx_power: onu.olt_rx_power ?? onu.olt_rx ?? onu.rx_olt ?? null,
+          power_read_at: onu.power_read_at ?? onu.read_at ?? onu.power_timestamp ?? null
         }))
       }
     })
@@ -469,13 +522,12 @@ const App = () => {
   useEffect(() => {
     if (!selectedSearchMatch) return
     if (!selectedPonId || String(selectedSearchMatch.ponId) !== String(selectedPonId)) return
-    if (activeTab !== 'status') return
 
     const row = document.querySelector('[data-onu-highlight="true"]')
     if (row) {
       row.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
-  }, [selectedSearchMatch, selectedPonId, activeTab, selectedOnus])
+  }, [selectedSearchMatch, selectedPonId, selectedOnus, activeTab])
 
   const selectedPonStats = useMemo(() => {
     return selectedOnus.reduce((acc, onu) => {
@@ -537,7 +589,7 @@ const App = () => {
             onClick={() => setActiveNav('topology')}
             className={`flex items-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
-            <Network className="w-[18px] h-[18px]" />
+            <Network className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[11px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
             {activeNav === 'topology' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
@@ -707,7 +759,7 @@ const App = () => {
                 </div>
 
                 <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-950 overflow-hidden">
-                  <div className="flex items-center gap-3 mb-3">
+                  <div className="flex items-center gap-2 mb-3">
                     <SegmentedControl
                       value={activeTab}
                       onChange={setActiveTab}
@@ -729,14 +781,14 @@ const App = () => {
                   {activeTab === 'status' ? (
                     <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-x-auto overflow-y-auto min-h-0">
-                        <table className="w-full text-left border-collapse" style={{ minWidth: '520px' }}>
+                        <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <thead className="sticky top-0 z-10">
                             <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
-                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap w-[42px]">{t('ONU ID')}</th>
-                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
-                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
-                              <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
+                              <th className="w-[10%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="w-[22%] pl-4 pr-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
+                              <th className="w-[26%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
@@ -745,7 +797,6 @@ const App = () => {
                               const label = classification.label
                               const statusKey = classification.status
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
-                              const clientSubtitle = normalizeClientDescription(onu.description || onu.onu_description)
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const offlineSince = statusKey === 'online' ? '—' : formatOfflineSince(onu.offline_since, i18n.language)
@@ -760,30 +811,23 @@ const App = () => {
                                   key={onu.id}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    odd:bg-white even:bg-slate-50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
                                   style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                                 >
-                                  <td className="px-2.5 py-2 text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
+                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
                                   </td>
-                                  <td className="px-2.5 py-2">
-                                    <div className="flex flex-col">
-                                      <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 uppercase leading-tight truncate">
-                                        {clientLabel}
-                                      </span>
-                                      {clientSubtitle && (
-                                        <span className="mt-0.5 text-[10px] font-medium text-slate-400 dark:text-slate-500 leading-tight truncate">
-                                          {clientSubtitle}
-                                        </span>
-                                      )}
-                                    </div>
+                                  <td className="px-2.5 py-0 align-middle">
+                                    <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
+                                      {clientLabel}
+                                    </span>
                                   </td>
-                                  <td className="px-2.5 py-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono whitespace-nowrap">
+                                  <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
                                     {serialValue}
                                   </td>
-                                  <td className="px-2.5 py-2 whitespace-nowrap">
+                                  <td className="pl-4 pr-2.5 py-0 align-middle whitespace-nowrap">
                                     <span
                                       className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${statusStyle(statusKey)}`}
                                     >
@@ -791,7 +835,7 @@ const App = () => {
                                       {label}
                                     </span>
                                   </td>
-                                  <td className="px-2.5 py-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums">
+                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-right">
                                     {offlineSince}
                                   </td>
                                 </tr>
@@ -809,8 +853,84 @@ const App = () => {
                       </div>
                     </div>
                   ) : (
-                    <div className="min-h-[260px] rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex items-center justify-center text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-                      {t('Power data not available')}
+                    <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                      <div className="overflow-x-auto overflow-y-auto min-h-0">
+                        <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
+                          <thead className="sticky top-0 z-10">
+                            <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
+                              <th className="w-[10%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="w-[22%] pl-4 pr-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('Power')}</th>
+                              <th className="w-[26%] px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('Leitura')}</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
+                            {selectedOnus.map((onu) => {
+                              const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                              const serialValue = onu.serial_number || onu.serial || '—'
+                              const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                              const { onuRx, oltRx, readAt } = getOnuPowerSnapshot(onu)
+                              const hasOnuRx = onuRx !== null && onuRx !== undefined && onuRx !== ''
+                              const hasOltRx = oltRx !== null && oltRx !== undefined && oltRx !== ''
+                              const readingAt = formatReadingAt(readAt, i18n.language)
+                              const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
+                              const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
+                                (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
+                                (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
+                                (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                              ))
+                              return (
+                                <tr
+                                  key={`power-${onu.id}`}
+                                  data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
+                                  className={`
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors
+                                    ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
+                                  `}
+                                  style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
+                                >
+                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
+                                    {onuNumber}
+                                  </td>
+                                  <td className="px-2.5 py-0 align-middle">
+                                    <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
+                                      {clientLabel}
+                                    </span>
+                                  </td>
+                                  <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
+                                    {serialValue}
+                                  </td>
+                                  <td className="pl-4 pr-2.5 py-0 align-middle text-right">
+                                    {!hasOnuRx && !hasOltRx ? (
+                                      <span className="inline-block w-full text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">—</span>
+                                    ) : (
+                                      <div className="flex flex-col items-end gap-0.5 leading-tight text-right tabular-nums">
+                                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                                          {t('ONU')} <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
+                                        </span>
+                                        <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                                          {t('OLT')} <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                        </span>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-right">
+                                    {readingAt}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                            {selectedOnus.length === 0 && (
+                              <tr>
+                                <td colSpan={5} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                                  {t('No ONU data available')}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   )}
                 </div>
