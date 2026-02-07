@@ -55,43 +55,65 @@ const buildTestTopology = () => {
       name: 'OLT-ZTE-GABISAT',
       slotCount: 2,
       ponsPerSlot: 16,
-      totalOnus: 120
+      totalOnus: 680
     },
     {
       id: 'olt-maxprint-gabisat',
-      name: 'OLT-MAXPRINT-GABISAT',
+      name: 'OLT-MAX-GABISAT',
       slotCount: 2,
       ponsPerSlot: 16,
-      totalOnus: 96
+      totalOnus: 420
     }
   ]
+
+  // Seeded pseudo-random for deterministic test data
+  let seed = 42
+  const rand = () => {
+    seed = (seed * 16807 + 0) % 2147483647
+    return (seed - 1) / 2147483646
+  }
 
   let onuIndex = 1
 
   return testOlts.map((olt) => {
-    const baseOnusPerPon = Math.floor(olt.totalOnus / (olt.slotCount * olt.ponsPerSlot))
-    const extraOnus = olt.totalOnus - baseOnusPerPon * olt.slotCount * olt.ponsPerSlot
+    // Distribute ONUs across PONs with realistic variation
+    const totalPons = olt.slotCount * olt.ponsPerSlot
+    const ponOnuCounts = []
+    let remaining = olt.totalOnus
+    for (let i = 0; i < totalPons; i += 1) {
+      if (i === totalPons - 1) {
+        ponOnuCounts.push(Math.min(128, remaining))
+      } else {
+        const avg = remaining / (totalPons - i)
+        const count = Math.min(128, Math.max(0, Math.round(avg + (rand() - 0.5) * avg * 0.8)))
+        ponOnuCounts.push(count)
+        remaining -= count
+      }
+    }
+
+    let ponIdx2 = 0
     const slots = []
 
     for (let slotIdx = 1; slotIdx <= olt.slotCount; slotIdx += 1) {
       const pons = []
       for (let ponIdx = 1; ponIdx <= olt.ponsPerSlot; ponIdx += 1) {
-        const ponOrder = (slotIdx - 1) * olt.ponsPerSlot + (ponIdx - 1)
-        const onuCount = baseOnusPerPon + (ponOrder < extraOnus ? 1 : 0)
+        const onuCount = ponOnuCounts[ponIdx2] || 0
+        ponIdx2 += 1
         const onus = []
 
         for (let i = 0; i < onuCount; i += 1) {
-          const cycle = onuIndex % 4
+          // Realistic distribution: ~75% online, ~10% dying_gasp, ~10% link_loss, ~5% unknown
+          const roll = rand()
           let status = 'online'
           let reason = ''
 
-          if (cycle === 1) {
+          if (roll < 0.10) {
             status = 'offline'
             reason = 'dying_gasp'
-          } else if (cycle === 2) {
+          } else if (roll < 0.20) {
             status = 'offline'
             reason = 'link_loss'
-          } else if (cycle === 3) {
+          } else if (roll < 0.25) {
             status = 'unknown'
           }
 
@@ -115,13 +137,6 @@ const buildTestTopology = () => {
           id: `${olt.id}-pon-${slotIdx}-${ponIdx}`,
           pon_number: ponIdx,
           pon_id: ponIdx,
-          // Worst-case visual stress test for PON chip counters
-          stats: {
-            online: 100,
-            dyingGasp: 100,
-            linkLoss: 128,
-            unknown: 128
-          },
           onus
         })
       }

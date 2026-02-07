@@ -9,6 +9,13 @@ const asCount = (value) => {
   return Number.isFinite(numeric) ? numeric : 0
 }
 
+const NODE_CARD_STYLE = {
+  // Keep all hierarchy levels visually coherent.
+  pon: 'w-[202px] h-[58px] rounded-[12px]',
+  olt: 'w-[202px] h-[58px] rounded-[12px]',
+  slot: 'w-[202px] h-[58px] rounded-[12px]'
+}
+
 const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel }) => {
   const isVisualActive = type === 'pon' ? active : isOpen
 
@@ -19,14 +26,14 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
   }
   const Icon = icons[type]
 
-  const cardStyle = 'w-[244px] h-[64px] rounded-[14px]'
+  const cardStyle = NODE_CARD_STYLE[type] || NODE_CARD_STYLE.pon
 
   return (
     <div className="flex flex-col relative">
       <div
         onClick={onToggle}
         className={`
-          relative flex items-center gap-2 p-2 bg-white dark:bg-slate-900 border transition-all duration-300 cursor-pointer group/node shrink-0
+          relative flex items-center gap-1.5 px-2.5 py-1.5 bg-white dark:bg-slate-900 border transition-all duration-300 cursor-pointer group/node shrink-0
           ${cardStyle}
           ${isVisualActive
             ? 'border-emerald-500/35 shadow-md shadow-emerald-500/10'
@@ -35,14 +42,14 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       >
         <div
           className={`
-            absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 rounded-r-full transition-all duration-300
+            absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full transition-all duration-300
             ${isVisualActive ? 'bg-emerald-500 scale-y-100' : 'bg-slate-100 dark:bg-slate-800 group-hover/node:bg-slate-300 scale-y-50'}
           `}
         />
 
         <div
           className={`
-            flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-[11px] transition-all duration-300
+            flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-[10px] transition-all duration-300
             ${isVisualActive
               ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
               : 'bg-[#F8FAFB] dark:bg-slate-800 text-slate-400 group-hover/node:text-slate-500'}
@@ -53,7 +60,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
 
         <div className="flex-1 min-w-0 flex flex-col justify-center">
           <p
-            className={`text-[11px] font-black uppercase tracking-tight leading-none mb-0.5 transition-colors ${
+            className={`text-[11px] font-black uppercase tracking-tight leading-none mb-0.5 transition-colors whitespace-nowrap overflow-hidden text-ellipsis ${
               isVisualActive ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-900 dark:text-white'
             }`}
           >
@@ -61,14 +68,14 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
           </p>
 
           {stats ? (
-            <div className="flex items-center justify-between gap-1 w-full pr-1">
-              <StatusItem color="bg-emerald-500" count={stats.online} />
-              <StatusItem color="bg-blue-500" count={stats.dyingGasp} />
-              <StatusItem color="bg-rose-500" count={stats.linkLoss} />
-              <StatusItem color="bg-purple-500" count={stats.unknown} />
+            <div className="mt-0.5 flex items-center gap-2 w-full pr-1">
+              {stats.online > 0 && <StatusItem color="bg-emerald-500" count={stats.online} />}
+              {stats.dyingGasp > 0 && <StatusItem color="bg-blue-500" count={stats.dyingGasp} />}
+              {stats.linkLoss > 0 && <StatusItem color="bg-rose-500" count={stats.linkLoss} />}
+              {stats.unknown > 0 && <StatusItem color="bg-purple-500" count={stats.unknown} />}
             </div>
           ) : (
-            <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest opacity-80">{sublabel}</p>
+            <p className="mt-0.5 text-[8px] font-black text-slate-400 uppercase tracking-widest opacity-80 whitespace-nowrap overflow-hidden text-ellipsis">{sublabel}</p>
           )}
         </div>
 
@@ -80,7 +87,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       </div>
 
       {isOpen && children && (
-        <div className="relative mt-3 ml-5 pl-9 border-l-[1.5px] border-slate-100 dark:border-slate-800 flex flex-col gap-3.5 animate-in slide-in-from-top-2 duration-300">
+        <div className="relative mt-2.5 ml-4 pl-8 border-l-[1.5px] border-slate-100 dark:border-slate-800 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
           {children}
         </div>
       )}
@@ -90,8 +97,8 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
 
 const StatusItem = ({ color, count }) => (
   <div className="flex items-center gap-1 min-w-0">
-    <div className={`w-1.5 h-1.5 rounded-full ${color} shadow-sm shadow-current/20 shrink-0`} />
-    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 tabular-nums leading-none">{count}</span>
+    <div className={`w-2 h-2 rounded-full ${color} shadow-sm shadow-current/20 shrink-0`} />
+    <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200 tabular-nums leading-none">{count}</span>
   </div>
 )
 
