@@ -25,18 +25,40 @@ class ONUNestedSerializer(serializers.ModelSerializer):
     onu_number = serializers.IntegerField(source='onu_id', read_only=True)
     serial_number = serializers.CharField(source='serial', read_only=True)
     disconnect_reason = serializers.SerializerMethodField()
+    offline_since = serializers.SerializerMethodField()
     
     class Meta:
         model = ONU
         fields = ['id', 'onu_number', 'name', 'serial_number', 'status', 'disconnect_reason',
-                  'last_discovered_at']
+                  'offline_since', 'last_discovered_at']
         read_only_fields = fields
+
+    def _get_active_log(self, obj):
+        cache_key = '_active_log_cache'
+        if not hasattr(self, cache_key):
+            setattr(self, cache_key, {})
+        cache = getattr(self, cache_key)
+        if obj.id in cache:
+            return cache[obj.id]
+
+        log = ONULog.objects.filter(
+            onu=obj,
+            offline_until__isnull=True
+        ).order_by('-offline_since').first()
+        cache[obj.id] = log
+        return log
     
     def get_disconnect_reason(self, obj):
         # Get the most recent active offline log
-        log = ONULog.objects.filter(onu=obj, offline_until__isnull=True).first()
+        log = self._get_active_log(obj)
         if log:
             return log.disconnect_reason
+        return None
+
+    def get_offline_since(self, obj):
+        log = self._get_active_log(obj)
+        if log and log.offline_since:
+            return log.offline_since.isoformat()
         return None
 
 

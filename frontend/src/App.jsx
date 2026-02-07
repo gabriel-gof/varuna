@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard,
   Network,
@@ -19,6 +19,25 @@ const normalizeList = (data) => {
   if (Array.isArray(data)) return data
   if (data && Array.isArray(data.results)) return data.results
   return []
+}
+
+const clampPonPanelWidth = (value) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 40
+  return Math.min(68, Math.max(32, numeric))
+}
+
+const formatOfflineSince = (value, language) => {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return new Intl.DateTimeFormat(language === 'pt' ? 'pt-BR' : 'en-US', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(parsed)
 }
 
 const buildTestTopology = () => {
@@ -76,7 +95,10 @@ const buildTestTopology = () => {
             serial_number: `ZTE${String(onuIndex).padStart(6, '0')}`,
             serial: `ZTE${String(onuIndex).padStart(6, '0')}`,
             status,
-            disconnect_reason: reason
+            disconnect_reason: reason,
+            offline_since: status === 'online'
+              ? null
+              : new Date(Date.now() - ((onuIndex % 96) + 1) * 300000).toISOString()
           })
           onuIndex += 1
         }
@@ -137,7 +159,8 @@ const mapTopologyToSlots = (olt, topology) => {
           serial_number: onu.serial,
           serial: onu.serial,
           status: onu.status,
-          disconnect_reason: onu.disconnect_reason
+          disconnect_reason: onu.disconnect_reason,
+          offline_since: onu.offline_since
         }))
       }
     })
@@ -222,10 +245,25 @@ const App = () => {
   const [isDarkMode, setIsDarkMode] = useState(false)
   const [activeTab, setActiveTab] = useState('status')
   const [activeNav, setActiveNav] = useState('dashboard')
+  const [isResizingPonPanel, setIsResizingPonPanel] = useState(false)
+  const [ponPanelWidth, setPonPanelWidth] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return 40
+      const saved = window.localStorage.getItem('varuna.ponSidebarWidth')
+      return clampPonPanelWidth(saved ?? 40)
+    } catch (_err) {
+      return 40
+    }
+  })
   const [olts, setOlts] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const mainLayoutRef = useRef(null)
+  const resizePointerIdRef = useRef(null)
+  const previousBodyCursorRef = useRef('')
+  const previousBodyUserSelectRef = useRef('')
+  const previousHtmlCursorRef = useRef('')
 
   useEffect(() => {
     if (isDarkMode) {
@@ -321,6 +359,76 @@ const App = () => {
     ? `${selectedPonData.olt?.name || 'OLT'} · SLOT ${selectedSlotNumber ?? '—'} · PON ${selectedPonNumber ?? '—'}`
     : ''
   const isPonPanelOpen = activeNav === 'topology' && Boolean(selectedPonId)
+
+  const updatePonPanelWidthByClientX = (clientX) => {
+    const container = mainLayoutRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    if (!rect.width) return
+    const widthFromRight = ((rect.right - clientX) / rect.width) * 100
+    setPonPanelWidth(clampPonPanelWidth(widthFromRight))
+  }
+
+  const stopPonPanelResize = () => {
+    resizePointerIdRef.current = null
+    setIsResizingPonPanel(false)
+  }
+
+  const handlePonResizePointerDown = (event) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    resizePointerIdRef.current = event.pointerId
+    setIsResizingPonPanel(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+    updatePonPanelWidthByClientX(event.clientX)
+  }
+
+  const handlePonResizePointerMove = (event) => {
+    if (!isResizingPonPanel) return
+    if (resizePointerIdRef.current !== event.pointerId) return
+    updatePonPanelWidthByClientX(event.clientX)
+  }
+
+  const handlePonResizePointerUp = (event) => {
+    if (resizePointerIdRef.current !== event.pointerId) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    stopPonPanelResize()
+  }
+
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return
+      window.localStorage.setItem('varuna.ponSidebarWidth', String(ponPanelWidth))
+    } catch (_err) {
+      // noop
+    }
+  }, [ponPanelWidth])
+
+  useEffect(() => {
+    if (!isPonPanelOpen && isResizingPonPanel) {
+      stopPonPanelResize()
+    }
+  }, [isPonPanelOpen, isResizingPonPanel])
+
+  useEffect(() => {
+    if (!isResizingPonPanel) return undefined
+
+    previousBodyCursorRef.current = document.body.style.cursor
+    previousBodyUserSelectRef.current = document.body.style.userSelect
+    previousHtmlCursorRef.current = document.documentElement.style.cursor
+
+    document.body.style.cursor = 'ew-resize'
+    document.body.style.userSelect = 'none'
+    document.documentElement.style.cursor = 'ew-resize'
+
+    return () => {
+      document.body.style.cursor = previousBodyCursorRef.current
+      document.body.style.userSelect = previousBodyUserSelectRef.current
+      document.documentElement.style.cursor = previousHtmlCursorRef.current
+    }
+  }, [isResizingPonPanel])
 
   const selectedOnus = useMemo(() => {
     const onus = selectedPonData?.pon?.onus || []
@@ -443,12 +551,16 @@ const App = () => {
         </div>
       </nav>
 
-      <main className="flex-1 min-h-0 flex overflow-hidden">
+      <main
+        ref={mainLayoutRef}
+        className="flex-1 min-h-0 flex overflow-hidden"
+        style={isPonPanelOpen ? { '--pon-panel-width': `${ponPanelWidth}%` } : undefined}
+      >
         <section
           className={`
-            min-w-0 overflow-y-auto custom-scrollbar transition-all duration-300
+            min-w-0 overflow-y-auto custom-scrollbar ${isResizingPonPanel ? '' : 'transition-[width] duration-150'}
             ${isPonPanelOpen
-              ? 'hidden lg:block lg:w-[52%] border-r border-slate-100 dark:border-slate-800'
+              ? 'hidden lg:block lg:w-[calc(100%-var(--pon-panel-width))] border-r border-slate-100 dark:border-slate-800'
               : 'flex-1'}
           `}
         >
@@ -472,12 +584,39 @@ const App = () => {
           )}
         </section>
 
+        {activeNav === 'topology' && isPonPanelOpen && (
+          <div className="hidden lg:flex relative w-4 -mx-1 flex-shrink-0 items-stretch z-20">
+            <button
+              type="button"
+              onPointerDown={handlePonResizePointerDown}
+              onPointerMove={handlePonResizePointerMove}
+              onPointerUp={handlePonResizePointerUp}
+              onPointerCancel={handlePonResizePointerUp}
+              onLostPointerCapture={stopPonPanelResize}
+              onDoubleClick={() => setPonPanelWidth(40)}
+              aria-label={t('Resize PON sidebar')}
+              className="relative h-full w-full cursor-ew-resize touch-none focus:outline-none group"
+              style={{ cursor: 'ew-resize' }}
+            >
+              <span
+                className={`
+                  absolute inset-y-0 left-1/2 -translate-x-1/2 w-[2px] rounded-full transition-colors
+                  ${isResizingPonPanel
+                    ? 'bg-emerald-500'
+                    : 'bg-slate-200 dark:bg-slate-700 group-hover:bg-emerald-400/80'}
+                `}
+                style={{ cursor: 'ew-resize' }}
+              />
+            </button>
+          </div>
+        )}
+
         {activeNav === 'topology' && (
           <aside
             className={`
-              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 transition-all duration-300 overflow-hidden
+              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width] duration-150'}
               ${isPonPanelOpen
-                ? 'w-full lg:w-[48%] opacity-100 border-l border-slate-100 dark:border-slate-800'
+                ? 'w-full lg:w-[var(--pon-panel-width)] opacity-100 border-l border-slate-100 dark:border-slate-800'
                 : 'w-0 opacity-0 pointer-events-none border-l-0'}
             `}
           >
@@ -521,12 +660,14 @@ const App = () => {
                   {activeTab === 'status' ? (
                     <div className="min-h-[260px] rounded-2xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex flex-col">
                       <div className="overflow-auto">
-                        <table className="w-full min-w-[520px] text-left border-collapse">
+                        <table className="w-full table-fixed text-left border-collapse">
                           <thead className="sticky top-0 bg-slate-50/90 dark:bg-slate-800/90 backdrop-blur-sm z-10">
                             <tr>
-                              <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Port')}</th>
-                              <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Client')}</th>
-                              <th className="p-3 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">{t('Status')}</th>
+                              <th className="px-2.5 py-2 w-[58px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('ONU ID')}</th>
+                              <th className="px-2.5 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest">{t('Client')}</th>
+                              <th className="px-2.5 py-2 w-[108px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('Serial')}</th>
+                              <th className="px-2.5 py-2 w-[118px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('Offline Status')}</th>
+                              <th className="px-2.5 py-2 w-[132px] text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{t('Offline Since')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -534,35 +675,49 @@ const App = () => {
                               const classification = classifyOnu(onu)
                               const label = classification.label
                               const statusKey = classification.status
+                              const clientLabel = onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                              const clientSubtitle = onu.description || onu.onu_description || t('No description')
+                              const serialValue = onu.serial_number || onu.serial || '—'
+                              const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                              const offlineSince = statusKey === 'online' ? '—' : formatOfflineSince(onu.offline_since, i18n.language)
                               return (
-                                <tr key={onu.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                                  <td className="p-3 text-[11px] font-black text-slate-800 dark:text-slate-200">
-                                    {onu.onu_number ?? onu.onu_id ?? '—'}
+                                <tr
+                                  key={onu.id}
+                                  className="odd:bg-white even:bg-slate-50/70 dark:odd:bg-slate-900 dark:even:bg-slate-900/70 hover:bg-emerald-50/70 dark:hover:bg-slate-800/70 transition-colors"
+                                >
+                                  <td className="px-2.5 py-2 text-[10px] font-black text-slate-700 dark:text-slate-200 tabular-nums">
+                                    {onuNumber}
                                   </td>
-                                  <td className="p-3">
+                                  <td className="px-2.5 py-2">
                                     <div className="flex flex-col">
-                                      <span className="text-[11px] font-black text-slate-800 dark:text-white uppercase">
-                                        {onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()}
+                                      <span className="text-[10.5px] font-black text-slate-800 dark:text-white uppercase leading-tight truncate">
+                                        {clientLabel}
                                       </span>
-                                      <span className="text-[8px] font-bold text-slate-400 font-mono">
-                                        {onu.serial_number || onu.serial || '—'}
+                                      <span className="text-[7.5px] font-bold text-slate-400 font-mono leading-tight mt-0.5 truncate">
+                                        {clientSubtitle}
                                       </span>
                                     </div>
                                   </td>
-                                  <td className="p-3 text-center">
+                                  <td className="px-2.5 py-2 text-[9px] font-bold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap">
+                                    {serialValue}
+                                  </td>
+                                  <td className="px-2.5 py-2 whitespace-nowrap">
                                     <span
-                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[8px] font-black uppercase ${statusStyle(statusKey)}`}
+                                      className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${statusStyle(statusKey)}`}
                                     >
                                       <div className={`w-1 h-1 rounded-full ${statusDot(statusKey)}`} />
                                       {label}
                                     </span>
+                                  </td>
+                                  <td className="px-2.5 py-2 text-[9px] font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap tabular-nums">
+                                    {offlineSince}
                                   </td>
                                 </tr>
                               )
                             })}
                             {selectedOnus.length === 0 && (
                               <tr>
-                                <td colSpan={3} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                                <td colSpan={5} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
                                 </td>
                               </tr>
