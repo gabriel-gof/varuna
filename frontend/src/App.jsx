@@ -6,7 +6,8 @@ import {
   User,
   ChevronDown,
   ChevronRight,
-  X
+  X,
+  RefreshCw
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
@@ -246,7 +247,7 @@ const VarunaIcon = ({ className }) => (
 )
 
 const SegmentedControl = ({ options, value, onChange }) => (
-  <div className="flex bg-slate-100/50 dark:bg-slate-800/50 p-1 rounded-lg w-full border border-slate-100 dark:border-slate-800">
+  <div className="inline-flex bg-slate-100/50 dark:bg-slate-800/50 p-0.5 rounded-lg border border-slate-100 dark:border-slate-800">
     {options.map((opt) => (
       <button
         key={opt.id}
@@ -254,7 +255,7 @@ const SegmentedControl = ({ options, value, onChange }) => (
           e.stopPropagation()
           onChange(opt.id)
         }}
-        className={`flex-1 py-1.5 px-2 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
+        className={`w-24 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
           value === opt.id
             ? 'bg-white dark:bg-slate-700 text-emerald-600 shadow-sm ring-1 ring-black/5 dark:ring-white/5'
             : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
@@ -704,19 +705,29 @@ const App = () => {
                     </button>
                   </div>
 
-                  <SegmentedControl
-                    value={activeTab}
-                    onChange={setActiveTab}
-                    options={[
-                      { id: 'status', label: t('Status') },
-                      { id: 'power', label: t('Potência') }
-                    ]}
-                  />
+                  <div className="flex items-center gap-3">
+                    <SegmentedControl
+                      value={activeTab}
+                      onChange={setActiveTab}
+                      options={[
+                        { id: 'status', label: t('Status') },
+                        { id: 'power', label: t('Potência') }
+                      ]}
+                    />
+                    <button
+                      onClick={() => { /* TODO: trigger refresh */ }}
+                      className="shrink-0 ml-auto p-2 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
+                      aria-label={t('Refresh')}
+                      title={t('Refresh')}
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" strokeWidth={2.5} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex-1 min-h-0 flex flex-col p-5 lg:p-6 bg-slate-100 dark:bg-slate-950 overflow-hidden">
                   {activeTab === 'status' ? (
-                    <div className="flex flex-col w-full max-h-full rounded-2xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+                    <div className="flex flex-col w-full max-h-full rounded-2xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-x-auto overflow-y-auto min-h-0">
                         <table className="w-full text-left border-collapse" style={{ minWidth: '520px' }}>
                           <thead className="sticky top-0 z-10">
