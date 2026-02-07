@@ -35,6 +35,8 @@ const normalizeClientDescription = (desc) => {
   return desc
 }
 
+const normalizeMatchValue = (value) => String(value || '').trim().toLowerCase()
+
 const formatOfflineSince = (value, language) => {
   if (!value) return '—'
   const parsed = new Date(value)
@@ -121,6 +123,7 @@ const buildTestTopology = () => {
             id: `${olt.id}-onu-${onuIndex}`,
             onu_number: onuIndex,
             onu_id: onuIndex,
+            client_name: `Cliente ${onuIndex}`,
             name: `Cliente ${onuIndex}`,
             serial_number: `ZTE${String(onuIndex).padStart(6, '0')}`,
             serial: `ZTE${String(onuIndex).padStart(6, '0')}`,
@@ -178,6 +181,7 @@ const mapTopologyToSlots = (olt, topology) => {
           id: onu.id,
           onu_number: onu.onu_id,
           onu_id: onu.onu_id,
+          client_name: onu.client_name || onu.name,
           name: onu.name,
           serial_number: onu.serial,
           serial: onu.serial,
@@ -265,6 +269,7 @@ const SegmentedControl = ({ options, value, onChange }) => (
 const App = () => {
   const { t, i18n } = useTranslation()
   const [selectedPonId, setSelectedPonId] = useState(null)
+  const [selectedSearchMatch, setSelectedSearchMatch] = useState(null)
   const [isDarkMode, setIsDarkMode] = useState(false)
   const [activeTab, setActiveTab] = useState('status')
   const [activeNav, setActiveNav] = useState('dashboard')
@@ -460,6 +465,17 @@ const App = () => {
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
 
+  useEffect(() => {
+    if (!selectedSearchMatch) return
+    if (!selectedPonId || String(selectedSearchMatch.ponId) !== String(selectedPonId)) return
+    if (activeTab !== 'status') return
+
+    const row = document.querySelector('[data-onu-highlight="true"]')
+    if (row) {
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [selectedSearchMatch, selectedPonId, activeTab, selectedOnus])
+
   const selectedPonStats = useMemo(() => {
     return selectedOnus.reduce((acc, onu) => {
       const { status } = classifyOnu(onu)
@@ -613,7 +629,15 @@ const App = () => {
               loading={displayLoading}
               error={displayError}
               selectedPonId={selectedPonId}
-              onPonSelect={(id) => setSelectedPonId((prev) => (prev === id ? null : id))}
+              onSearchMatchSelect={setSelectedSearchMatch}
+              onPonSelect={(id, options = {}) => {
+                if (options?.force) {
+                  setSelectedPonId(id)
+                  return
+                }
+                setSelectedSearchMatch(null)
+                setSelectedPonId((prev) => (prev === id ? null : id))
+              }}
             />
           )}
         </section>
@@ -669,7 +693,10 @@ const App = () => {
                       ))}
                     </div>
                     <button
-                      onClick={() => setSelectedPonId(null)}
+                      onClick={() => {
+                        setSelectedSearchMatch(null)
+                        setSelectedPonId(null)
+                      }}
                       className="p-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-slate-600 shrink-0"
                       aria-label={t('Close')}
                     >
@@ -706,15 +733,26 @@ const App = () => {
                               const classification = classifyOnu(onu)
                               const label = classification.label
                               const statusKey = classification.status
-                              const clientLabel = onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                              const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const clientSubtitle = normalizeClientDescription(onu.description || onu.onu_description)
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const offlineSince = statusKey === 'online' ? '—' : formatOfflineSince(onu.offline_since, i18n.language)
+                              const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
+                              const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
+                                (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
+                                (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
+                                (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                              ))
                               return (
                                 <tr
                                   key={onu.id}
-                                  className="odd:bg-white even:bg-slate-50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors"
+                                  data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
+                                  className={`
+                                    odd:bg-white even:bg-slate-50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors
+                                    ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
+                                  `}
+                                  style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                                 >
                                   <td className="px-3 py-2.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
                                     {onuNumber}

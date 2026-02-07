@@ -9,6 +9,62 @@ const asCount = (value) => {
   return Number.isFinite(numeric) ? numeric : 0
 }
 
+const normalizeSearch = (value) => String(value || '').toLowerCase().trim()
+
+const scoreSearchMatch = (rawValue, term) => {
+  const value = normalizeSearch(rawValue)
+  if (!value || !term) return -1
+  if (value === term) return 1000
+  if (value.startsWith(term)) return 700
+  const index = value.indexOf(term)
+  if (index === -1) return -1
+  return Math.max(200 - index, 1)
+}
+
+const renderHighlightedText = (value, term) => {
+  const source = String(value || '')
+  const normalizedTerm = normalizeSearch(term)
+  if (!normalizedTerm || !source) return source
+
+  const lowerSource = source.toLowerCase()
+  const parts = []
+  let cursor = 0
+  let key = 0
+
+  while (cursor < source.length) {
+    const matchIndex = lowerSource.indexOf(normalizedTerm, cursor)
+    if (matchIndex === -1) {
+      parts.push(
+        <span key={`plain-${key++}`}>
+          {source.slice(cursor)}
+        </span>
+      )
+      break
+    }
+
+    if (matchIndex > cursor) {
+      parts.push(
+        <span key={`plain-${key++}`}>
+          {source.slice(cursor, matchIndex)}
+        </span>
+      )
+    }
+
+    const matchEnd = matchIndex + normalizedTerm.length
+    parts.push(
+      <mark
+        key={`match-${key++}`}
+        className="px-[1px] rounded-[3px] bg-emerald-100 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300"
+      >
+        {source.slice(matchIndex, matchEnd)}
+      </mark>
+    )
+    cursor = matchEnd
+  }
+
+  return parts
+}
+
 const NODE_CARD_STYLE = {
   // Keep all hierarchy levels visually coherent.
   pon: 'w-[180px] h-[56px] rounded-[12px]',
@@ -102,9 +158,10 @@ const StatusItem = ({ color, count }) => (
   </div>
 )
 
-export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSelect }) => {
+export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSelect, onSearchMatchSelect }) => {
   const { t } = useTranslation()
   const [searchTerm, setSearchTerm] = useState('')
+  const [searchFocused, setSearchFocused] = useState(false)
   const [openNodes, setOpenNodes] = useState({})
   const [oltFilterOpen, setOltFilterOpen] = useState(false)
   const [selectedOltIds, setSelectedOltIds] = useState([])
@@ -116,7 +173,9 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     dyingGasp: true,
     unknown: true,
   })
+  const searchContainerRef = useRef(null)
   const oltFilterInitializedRef = useRef(false)
+  const normalizedSearchTerm = normalizeSearch(searchTerm)
 
   useEffect(() => {
     const allIds = olts.map((olt) => String(olt.id))
@@ -146,6 +205,17 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     })
   }, [olts])
 
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
+        setSearchFocused(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [])
+
   const toggleNode = (id) => {
     setOpenNodes((prev) => ({ ...prev, [id]: !prev[id] }))
   }
@@ -174,25 +244,83 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     return activeAlarmReasons.some((reason) => counts[reason] >= alarmMinCount)
   }
 
+  const searchSuggestions = useMemo(() => {
+    if (!normalizedSearchTerm) return []
+
+    const suggestions = []
+    olts.forEach((olt) => {
+      ;(olt.slots || []).forEach((slot) => {
+        ;(slot.pons || []).forEach((pon) => {
+          ;(pon.onus || []).forEach((onu) => {
+            const clientName = onu?.client_name || onu?.name || ''
+            const serial = onu?.serial || onu?.serial_number || ''
+            const rawOnuId = asCount(onu?.onu_number ?? onu?.onu_id)
+            const onuId = rawOnuId >= 1 && rawOnuId <= 128 ? rawOnuId : '-'
+            const loginScore = scoreSearchMatch(clientName, normalizedSearchTerm)
+            const serialScore = scoreSearchMatch(serial, normalizedSearchTerm)
+            const bestScore = Math.max(loginScore, serialScore)
+            if (bestScore < 0) return
+
+            const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
+            const ponNumber = pon.pon_number ?? pon.pon_id ?? pon.id
+            suggestions.push({
+              key: `${olt.id}-${slot.id}-${pon.id}-${onu?.id || serial || clientName}`,
+              clientName: clientName || `ONU ${onuId}`,
+              serial: serial || '-',
+              oltId: olt.id,
+              oltName: olt.name,
+              slotId: slot.id,
+              slotNumber,
+              ponId: pon.id,
+              ponNumber,
+              onuId,
+              matchType: serialScore > loginScore ? 'serial' : 'login',
+              score: bestScore + (serialScore > loginScore ? 10 : 0),
+            })
+          })
+        })
+      })
+    })
+
+    return suggestions
+      .sort((a, b) => b.score - a.score || a.clientName.localeCompare(b.clientName))
+      .slice(0, 7)
+  }, [olts, normalizedSearchTerm])
+
+  const handleSearchSuggestionSelect = (suggestion) => {
+    setSearchTerm(suggestion.matchType === 'serial' ? suggestion.serial : suggestion.clientName)
+    setSearchFocused(false)
+    setSelectedOltIds((prev) => (prev.includes(String(suggestion.oltId)) ? prev : [...prev, String(suggestion.oltId)]))
+    setOpenNodes((prev) => ({
+      ...prev,
+      [`olt-${suggestion.oltId}`]: true,
+      [`slot-${suggestion.slotId}`]: true,
+    }))
+    onSearchMatchSelect?.({
+      ponId: suggestion.ponId,
+      onuId: suggestion.onuId,
+      serial: suggestion.serial,
+      clientName: suggestion.clientName,
+    })
+    onPonSelect(suggestion.ponId, { force: true })
+  }
+
   const filteredOlts = useMemo(() => {
     const oltVisible = olts.filter((olt) => selectedOltIds.includes(String(olt.id)))
-    const term = searchTerm.toLowerCase().trim()
+    const term = normalizedSearchTerm
     const searchFiltered = !term
       ? oltVisible
       : oltVisible.filter((olt) => {
-          const name = (olt?.name || '').toLowerCase()
-          const ip = (olt?.ip_address || '').toLowerCase()
-          const vendor = (olt?.vendor_profile_name || '').toLowerCase()
           const matchOnu = (olt?.slots || []).some((slot) =>
             (slot?.pons || []).some((pon) =>
               (pon?.onus || []).some((onu) => {
-                const onuName = (onu?.name || '').toLowerCase()
-                const onuSerial = (onu?.serial || onu?.serial_number || '').toLowerCase()
-                return onuName.includes(term) || onuSerial.includes(term)
+                const onuLogin = normalizeSearch(onu?.client_name || onu?.name || '')
+                const onuSerial = normalizeSearch(onu?.serial || onu?.serial_number || '')
+                return onuLogin.includes(term) || onuSerial.includes(term)
               })
             )
           )
-          return name.includes(term) || ip.includes(term) || vendor.includes(term) || matchOnu
+          return matchOnu
         })
 
     if (!alarmEnabled) return searchFiltered
@@ -218,7 +346,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
         }
       })
       .filter((olt) => (olt.slots || []).length > 0)
-  }, [olts, selectedOltIds, searchTerm, alarmEnabled, alarmMinCount, activeAlarmReasons])
+  }, [olts, selectedOltIds, normalizedSearchTerm, alarmEnabled, alarmMinCount, activeAlarmReasons])
 
   useEffect(() => {
     if (!alarmEnabled) return
@@ -294,15 +422,58 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
   return (
     <div className="flex flex-col w-full h-full pt-8">
       <div className="flex items-center gap-2 mb-6 px-10">
-        <div className="relative w-full max-w-[340px]">
+        <div ref={searchContainerRef} className="relative w-full max-w-[280px]">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300" />
           <input
             type="text"
             placeholder={t('Search')}
             value={searchTerm}
+            onFocus={() => setSearchFocused(true)}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-9 w-full bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl pl-9 pr-3 text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+            className="h-9 w-full bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl pl-9 pr-8 text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
           />
+
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchTerm('')
+                setSearchFocused(false)
+                onSearchMatchSelect?.(null)
+              }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              aria-label={t('Clear')}
+              title={t('Clear')}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {searchFocused && normalizedSearchTerm && (
+            <div className="absolute left-0 top-11 z-30 w-full p-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
+              {searchSuggestions.length === 0 && (
+                <p className="px-2 py-2 text-[10px] font-semibold text-slate-400">{t('No clients found')}</p>
+              )}
+              {searchSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion.key}
+                  type="button"
+                  onClick={() => handleSearchSuggestionSelect(suggestion)}
+                  className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <p className="text-[10px] font-black uppercase tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
+                    {renderHighlightedText(suggestion.clientName, normalizedSearchTerm)}
+                  </p>
+                  <p className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis">
+                    {renderHighlightedText(suggestion.serial, normalizedSearchTerm)}
+                  </p>
+                  <p className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 leading-tight break-words">
+                    {suggestion.oltName} > SLOT {pad2(suggestion.slotNumber)} > PON {pad2(suggestion.ponNumber)} > ONU ID {suggestion.onuId}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="relative">

@@ -23,13 +23,14 @@ class ONUNestedSerializer(serializers.ModelSerializer):
     Nested serializer for ONU within topology tree
     """
     onu_number = serializers.IntegerField(source='onu_id', read_only=True)
+    client_name = serializers.CharField(source='name', read_only=True)
     serial_number = serializers.CharField(source='serial', read_only=True)
     disconnect_reason = serializers.SerializerMethodField()
     offline_since = serializers.SerializerMethodField()
     
     class Meta:
         model = ONU
-        fields = ['id', 'onu_number', 'name', 'serial_number', 'status', 'disconnect_reason',
+        fields = ['id', 'onu_number', 'name', 'client_name', 'serial_number', 'status', 'disconnect_reason',
                   'offline_since', 'last_discovered_at']
         read_only_fields = fields
 
@@ -247,6 +248,7 @@ class ONUSerializer(serializers.ModelSerializer):
     Serializer for ONU
     """
     olt_name = serializers.CharField(source='olt.name', read_only=True)
+    client_name = serializers.CharField(source='name', read_only=True)
     slot = serializers.IntegerField(source='slot_ref_id', read_only=True)
     pon = serializers.IntegerField(source='pon_ref_id', read_only=True)
     slot_key = serializers.CharField(source='slot_ref.slot_key', read_only=True)
@@ -258,7 +260,7 @@ class ONUSerializer(serializers.ModelSerializer):
         model = ONU
         fields = ['id', 'olt', 'olt_name', 'slot_id', 'slot', 'slot_key', 'slot_name',
                   'pon_id', 'pon', 'pon_key', 'pon_name', 'onu_id',
-                  'snmp_index', 'name', 'serial_number', 'status', 'last_discovered_at']
+                  'snmp_index', 'name', 'client_name', 'serial_number', 'status', 'last_discovered_at']
         read_only_fields = ['id', 'last_discovered_at']
 
 
