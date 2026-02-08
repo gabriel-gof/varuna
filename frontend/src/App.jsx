@@ -325,7 +325,7 @@ const SegmentedControl = ({ options, value, onChange, compact = false }) => (
         }}
         className={`${compact ? 'h-[26px] flex-1 min-w-0 px-1 text-[9px] tracking-[0.05em]' : 'h-8 min-w-[86px] px-3 text-[10px] tracking-[0.06em]'} font-bold uppercase rounded-md transition-all whitespace-nowrap overflow-hidden text-ellipsis ${
           value === opt.id
-            ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+            ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
             : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
         }`}
       >
@@ -784,7 +784,7 @@ const App = () => {
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all group outline-none">
-                <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 transition-colors group-hover:bg-emerald-200 dark:group-hover:bg-emerald-800/40">
+                <div className="w-8 h-8 rounded-[10px] bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400 transition-colors group-hover:bg-emerald-200 dark:group-hover:bg-emerald-500/20">
                   <User className="w-[18px] h-[18px]" />
                 </div>
                 <ChevronDown className="w-3.5 h-3.5 text-slate-400 transition-transform duration-200 group-data-[state=open]:rotate-180" />
@@ -798,7 +798,7 @@ const App = () => {
               >
                 <div className="px-2 py-2 mb-1.5 border-b border-slate-100 dark:border-slate-800">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-[10px] bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600">
+                    <div className="w-8 h-8 rounded-[10px] bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
                       <User className="w-[17px] h-[17px]" />
                     </div>
                     <div>
@@ -984,7 +984,7 @@ const App = () => {
                             className={`
                               h-7 min-w-[88px] px-3 rounded-md text-[10px] font-black uppercase tracking-[0.06em] transition-all
                               ${isActive
-                                ? 'bg-white dark:bg-slate-800 text-emerald-700 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                                ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                                 : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/60'}
                             `}
                           >
