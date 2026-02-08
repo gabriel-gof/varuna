@@ -87,11 +87,11 @@ const NODE_HEALTH_STYLE = {
   },
   yellow: {
     borderActive: 'border-yellow-500/40 shadow-md shadow-yellow-500/10',
-    borderIdle: 'border-yellow-200/50 dark:border-yellow-500/20 hover:border-yellow-300 dark:hover:border-yellow-500/40 shadow-sm',
+    borderIdle: 'border-yellow-300 dark:border-yellow-500/20 hover:border-yellow-400 dark:hover:border-yellow-500/40 shadow-sm',
     accentActive: 'bg-yellow-500 scale-y-100',
-    accentIdle: 'bg-yellow-100 dark:bg-yellow-500/20 group-hover/node:bg-yellow-300 dark:group-hover/node:bg-yellow-400 scale-y-60',
-    iconActive: 'bg-yellow-400 dark:bg-yellow-500 text-yellow-950 dark:text-yellow-950 shadow-lg shadow-yellow-400/40',
-    iconIdle: 'bg-yellow-50 dark:bg-yellow-500/15 text-yellow-700 dark:text-yellow-400 ring-1 ring-inset ring-yellow-600/10 dark:ring-yellow-400/20',
+    accentIdle: 'bg-yellow-200/60 dark:bg-yellow-500/20 group-hover/node:bg-yellow-300 dark:group-hover/node:bg-yellow-400 scale-y-60',
+    iconActive: 'bg-yellow-500 text-white shadow-lg shadow-yellow-500/30',
+    iconIdle: 'bg-yellow-100 dark:bg-yellow-500/15 text-yellow-800 dark:text-yellow-400 ring-1 ring-inset ring-yellow-600/20 dark:ring-yellow-400/20',
     labelActive: 'text-yellow-950 dark:text-yellow-50',
     chevronOpen: 'text-yellow-600 dark:text-yellow-400'
   },
