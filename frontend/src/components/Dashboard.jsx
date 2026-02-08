@@ -33,7 +33,7 @@ const StatColumn = ({ label, value, color }) => (
   </div>
 )
 
-const ExpandableOltRow = ({ name, authorized, online, offline, dyingGasp, linkLoss, unknown }) => {
+const ExpandableOltRow = ({ name, authorized, online, offline, dyingGasp, linkLoss, unknown, onlineLabel, offlineLabel, offlineTrendLabel }) => {
   const [isExpanded, setIsExpanded] = useState(false)
 
   return (
@@ -57,8 +57,8 @@ const ExpandableOltRow = ({ name, authorized, online, offline, dyingGasp, linkLo
 
         <div className="items-center gap-6 lg:gap-10 mr-8 hidden md:flex">
           <StatColumn label="AUTH" value={authorized} color="text-slate-900 dark:text-white" />
-          <StatColumn label="ON" value={online} color="text-emerald-500" />
-          <StatColumn label="OFF" value={offline} color="text-rose-500" />
+          <StatColumn label={onlineLabel} value={online} color="text-emerald-500" />
+          <StatColumn label={offlineLabel} value={offline} color="text-rose-500" />
           <StatColumn label="GASP" value={dyingGasp} color="text-blue-500" />
           <StatColumn label="LOSS" value={linkLoss} color="text-rose-400" />
           <StatColumn label="UNK" value={unknown} color="text-purple-500" />
@@ -81,7 +81,7 @@ const ExpandableOltRow = ({ name, authorized, online, offline, dyingGasp, linkLo
               <div className="flex-1 bg-white dark:bg-slate-900 p-8 rounded-[28px] shadow-sm border border-slate-50 dark:border-slate-800">
                 <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-10 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-rose-500" />
-                  OFFLINE TREND ANALYSIS
+                  {offlineTrendLabel}
                 </h4>
                 <div className="h-[240px] w-full flex items-center justify-center text-[11px] font-black text-slate-300 uppercase tracking-[0.2em]">
                   No history data
@@ -164,8 +164,8 @@ export const Dashboard = ({ stats, oltStats, loading, error, onRefresh, isRefres
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
         <StatCard title="Total Authorized" value={safeStats.authorized} icon={Users} accentBg="bg-slate-500/10" accentText="text-slate-600" subtext="Units" />
-        <StatCard title="Total Online" value={safeStats.online} icon={Wifi} accentBg="bg-emerald-500/10" accentText="text-emerald-500" subtext="Active" />
-        <StatCard title="Total Offline" value={safeStats.offline} icon={WifiOff} accentBg="bg-rose-500/10" accentText="text-rose-500" subtext="Inactive" />
+        <StatCard title={`Total ${t('Online')}`} value={safeStats.online} icon={Wifi} accentBg="bg-emerald-500/10" accentText="text-emerald-500" subtext={t('Online')} />
+        <StatCard title={`Total ${t('Offline')}`} value={safeStats.offline} icon={WifiOff} accentBg="bg-rose-500/10" accentText="text-rose-500" subtext={t('Offline')} />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-8">
@@ -204,7 +204,13 @@ export const Dashboard = ({ stats, oltStats, loading, error, onRefresh, isRefres
         <h3 className="text-2xl font-black text-slate-800 dark:text-white uppercase tracking-tight">Per OLT Breakdown</h3>
         <div className="flex flex-col gap-6">
           {oltStats.map((olt) => (
-            <ExpandableOltRow key={olt.id} {...olt} />
+            <ExpandableOltRow
+              key={olt.id}
+              {...olt}
+              onlineLabel={t('Online')}
+              offlineLabel={t('Offline')}
+              offlineTrendLabel={t('Offline trend analysis')}
+            />
           ))}
         </div>
       </div>

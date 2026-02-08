@@ -126,8 +126,8 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
           {stats ? (
             <div className="mt-0.5 flex items-center gap-2.5 w-full pr-0.5">
               {asCount(stats.online) > 0 && <StatusItem color="bg-emerald-500" count={asCount(stats.online)} />}
-              {asCount(stats.dyingGasp) > 0 && <StatusItem color="bg-blue-500" count={asCount(stats.dyingGasp)} />}
               {asCount(stats.linkLoss) > 0 && <StatusItem color="bg-rose-500" count={asCount(stats.linkLoss)} />}
+              {asCount(stats.dyingGasp) > 0 && <StatusItem color="bg-blue-500" count={asCount(stats.dyingGasp)} />}
               {asCount(stats.unknown) > 0 && <StatusItem color="bg-purple-500" count={asCount(stats.unknown)} />}
             </div>
           ) : (
@@ -240,10 +240,6 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     setOpenNodes((prev) => ({ ...prev, [id]: !prev[id] }))
   }
 
-  useEffect(() => {
-    onAlarmModeChange?.(alarmEnabled)
-  }, [alarmEnabled, onAlarmModeChange])
-
   const collapseAllNodes = () => {
     setOpenNodes({})
   }
@@ -258,6 +254,14 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     if (!Number.isFinite(value)) return 1
     return Math.min(128, Math.max(1, Math.trunc(value)))
   }, [alarmMinCountInput])
+
+  useEffect(() => {
+    onAlarmModeChange?.({
+      enabled: alarmEnabled,
+      reasons: activeAlarmReasons,
+      minCount: effectiveAlarmMinCount
+    })
+  }, [alarmEnabled, activeAlarmReasons, effectiveAlarmMinCount, onAlarmModeChange])
 
   const toggleAlarmReason = (reasonKey) => {
     setAlarmReasons((prev) => {
@@ -281,7 +285,12 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
       unknown: asCount(stats.unknown),
     }
 
-    return activeAlarmReasons.some((reason) => counts[reason] >= effectiveAlarmMinCount)
+    const selectedOfflineCount = activeAlarmReasons.reduce(
+      (total, reason) => total + (counts[reason] || 0),
+      0
+    )
+
+    return selectedOfflineCount >= effectiveAlarmMinCount
   }
 
   const searchSuggestions = useMemo(() => {
@@ -410,7 +419,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
         <NetworkNode
           type="olt"
           label={olt.name}
-          sublabel={`${slotCount} SLOTS`}
+          sublabel={`${slotCount} ${t('SLOTS')}`}
           isOpen={openNodes[oltId]}
           onToggle={() => toggleNode(oltId)}
         >
@@ -424,7 +433,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                 <NetworkNode
                   key={slotId}
                   type="slot"
-                  label={`SLOT ${pad2(slotNumber)}`}
+                  label={`${t('SLOT')} ${pad2(slotNumber)}`}
                   sublabel={`${ponCount} PONS`}
                   isOpen={openNodes[slotId]}
                   onToggle={() => toggleNode(slotId)}
@@ -635,7 +644,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
             </button>
 
             {alarmMenuOpen && (
-              <div className="absolute right-0 top-11 z-30 w-[304px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
+              <div className="absolute right-0 top-11 z-30 w-[280px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
               <div className="flex items-center justify-between mb-3.5">
                 <p className="text-[12px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">{t('Alarm settings')}</p>
                 <button
@@ -646,7 +655,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                 </button>
               </div>
 
-              <p className="mb-3 text-[10px] leading-snug text-slate-400 dark:text-slate-500">
+              <p className="mb-3 text-[11px] leading-snug text-slate-400 dark:text-slate-500">
                 {t('Alarm settings intro')}
               </p>
 
@@ -688,38 +697,40 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
 
               <div className="h-px bg-slate-200/80 dark:bg-slate-700/80 mb-3.5" />
 
-              <div className="grid grid-cols-2 items-end gap-3">
+              <div className="grid grid-cols-2 items-start gap-3">
                 <div>
-                  <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500 mb-1.5">
+                  <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">
                     {t('Minimum ONU count')}
                   </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={128}
-                    step={1}
-                    value={alarmMinCountInput}
-                    onChange={(e) => {
-                      const nextValue = e.target.value
-                      if (!/^\d{0,3}$/.test(nextValue)) return
-                      setAlarmMinCountInput(nextValue)
-                    }}
-                    onBlur={() => {
-                      const value = Number(alarmMinCountInput)
-                      if (!Number.isFinite(value) || value < 1) {
-                        setAlarmMinCountInput('1')
-                        return
-                      }
-                      setAlarmMinCountInput(String(Math.min(128, Math.trunc(value))))
-                    }}
-                    className="h-8 w-24 rounded-lg border border-slate-200 dark:border-slate-800 bg-[#F8FAFB] dark:bg-slate-800 px-2 text-center tabular-nums text-[12px] font-semibold text-slate-700 dark:text-slate-200"
-                  />
+                  <div className="h-9 flex items-center">
+                    <input
+                      type="number"
+                      min={1}
+                      max={128}
+                      step={1}
+                      value={alarmMinCountInput}
+                      onChange={(e) => {
+                        const nextValue = e.target.value
+                        if (!/^\d{0,3}$/.test(nextValue)) return
+                        setAlarmMinCountInput(nextValue)
+                      }}
+                      onBlur={() => {
+                        const value = Number(alarmMinCountInput)
+                        if (!Number.isFinite(value) || value < 1) {
+                          setAlarmMinCountInput('1')
+                          return
+                        }
+                        setAlarmMinCountInput(String(Math.min(128, Math.trunc(value))))
+                      }}
+                      className="h-9 w-24 rounded-lg border border-slate-200 dark:border-slate-800 bg-[#F8FAFB] dark:bg-slate-800 px-2 text-center tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
+                    />
+                  </div>
                 </div>
 
                 <div className="flex flex-col items-end">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 mb-1.5">{t('Alarm Mode')}</p>
-                  <div className="h-8 flex items-center gap-2.5">
-                    <span className={`text-[11px] font-black tabular-nums ${alarmEnabled ? 'text-rose-600' : 'text-slate-400'}`}>
+                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">{t('Alarm Mode')}</p>
+                  <div className="h-9 flex items-center justify-end gap-2.5">
+                    <span className={`text-[12px] font-black leading-none tabular-nums ${alarmEnabled ? 'text-rose-600' : 'text-slate-400'}`}>
                       {alarmEnabled ? t('Enabled') : t('Disabled')}
                     </span>
                     <button

@@ -32,6 +32,12 @@ const clampPonPanelWidth = (value) => {
 }
 
 const normalizeMatchValue = (value) => String(value || '').trim().toLowerCase()
+const ALARM_REASON_PRIORITY = ['linkLoss', 'dyingGasp', 'unknown']
+const ALARM_REASON_TO_STATUS_SORT = {
+  linkLoss: 'link_loss',
+  dyingGasp: 'dying_gasp',
+  unknown: 'unknown'
+}
 
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
@@ -334,7 +340,11 @@ const App = () => {
   const [isDarkMode, setIsDarkMode] = useState(false)
   const [activeTab, setActiveTab] = useState('status')
   const [statusSortMode, setStatusSortMode] = useState('onu_id')
-  const [powerSortMode, setPowerSortMode] = useState('worst_olt_rx')
+  const [powerSortMode, setPowerSortMode] = useState('default')
+  const [alarmSortConfig, setAlarmSortConfig] = useState({
+    enabled: false,
+    reasons: ALARM_REASON_PRIORITY
+  })
   const [activeNav, setActiveNav] = useState('dashboard')
   const [isResizingPonPanel, setIsResizingPonPanel] = useState(false)
   const [ponPanelWidth, setPonPanelWidth] = useState(() => {
@@ -448,7 +458,7 @@ const App = () => {
   const selectedPonNumber = selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id
   const selectedPonPath = [
     selectedPonData?.olt?.name || 'OLT',
-    `SLOT ${selectedSlotNumber ?? '—'}`,
+    `${t('SLOT')} ${selectedSlotNumber ?? '—'}`,
     `PON ${selectedPonNumber ?? '—'}`
   ]
   const isPonPanelOpen = activeNav === 'topology' && Boolean(selectedPonId)
@@ -528,20 +538,59 @@ const App = () => {
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
 
+  const availableStatusCounts = useMemo(() => {
+    return selectedOnus.reduce((acc, onu) => {
+      const statusKey = classifyOnu(onu).status
+      if (statusKey === 'online') {
+        acc.online += 1
+      } else {
+        acc.offline += 1
+      }
+      if (Object.prototype.hasOwnProperty.call(acc, statusKey)) {
+        acc[statusKey] += 1
+      }
+      return acc
+    }, {
+      online: 0,
+      offline: 0,
+      link_loss: 0,
+      dying_gasp: 0,
+      unknown: 0,
+    })
+  }, [selectedOnus])
+
+  const resolveStatusSortMode = (requestedMode) => {
+    const hasAny = (statusKey) => (availableStatusCounts[statusKey] || 0) > 0
+
+    if (requestedMode === 'onu_id') return 'onu_id'
+    if (requestedMode === 'offline') return hasAny('offline') ? 'offline' : 'onu_id'
+    if (requestedMode === 'online') return hasAny('online') ? 'online' : (hasAny('offline') ? 'offline' : 'onu_id')
+
+    if (requestedMode === 'link_loss' || requestedMode === 'dying_gasp' || requestedMode === 'unknown') {
+      if (hasAny(requestedMode)) return requestedMode
+      if (hasAny('offline')) return 'offline'
+      if (hasAny('online')) return 'online'
+      return 'onu_id'
+    }
+
+    return 'onu_id'
+  }
+
   const statusSortOptions = [
-    { id: 'onu_id', label: t('Default') },
-    { id: 'dying_gasp', label: t('Dying Gasp') },
+    { id: 'onu_id', label: t('Default order') },
     { id: 'link_loss', label: t('Link Loss') },
+    { id: 'dying_gasp', label: t('Dying Gasp') },
     { id: 'unknown', label: t('Unknown') },
     { id: 'offline', label: t('Offline') },
     { id: 'online', label: t('Online') }
   ]
 
   const powerSortOptions = [
-    { id: 'worst_olt_rx', label: t('Worst OLT RX') },
+    { id: 'default', label: t('Default order') },
     { id: 'worst_onu_rx', label: t('Worst ONU RX') },
-    { id: 'best_olt_rx', label: t('Best OLT RX') },
-    { id: 'best_onu_rx', label: t('Best ONU RX') }
+    { id: 'worst_olt_rx', label: t('Worst OLT RX') },
+    { id: 'best_onu_rx', label: t('Best ONU RX') },
+    { id: 'best_olt_rx', label: t('Best OLT RX') }
   ]
 
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
@@ -552,8 +601,24 @@ const App = () => {
       setPowerSortMode(mode)
       return
     }
-    setStatusSortMode(mode)
+    setStatusSortMode(resolveStatusSortMode(mode))
   }
+
+  useEffect(() => {
+    if (!alarmSortConfig.enabled) return
+
+    const activeReasons = ALARM_REASON_PRIORITY.filter((reason) => alarmSortConfig.reasons.includes(reason))
+    let desiredStatusMode = 'offline'
+
+    if (activeReasons.length === 1) {
+      desiredStatusMode = ALARM_REASON_TO_STATUS_SORT[activeReasons[0]]
+    } else if (activeReasons.length === 0) {
+      desiredStatusMode = 'onu_id'
+    }
+
+    const nextMode = resolveStatusSortMode(desiredStatusMode)
+    setStatusSortMode((prev) => (prev === nextMode ? prev : nextMode))
+  }, [alarmSortConfig.enabled, alarmSortConfig.reasons, availableStatusCounts])
 
   const statusRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
@@ -572,45 +637,17 @@ const App = () => {
       return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
     }
 
-    const priorityByMode = {
-      online: {
-        online: 0,
-        link_loss: 1,
-        dying_gasp: 2,
-        unknown: 3,
-        offline: 4
-      },
-      offline: {
-        link_loss: 0,
-        dying_gasp: 0,
-        unknown: 0,
-        offline: 0,
-        online: 9
-      },
-      link_loss: {
-        link_loss: 0,
-        dying_gasp: 1,
-        unknown: 1,
-        offline: 1,
-        online: 9
-      },
-      dying_gasp: {
-        dying_gasp: 0,
-        link_loss: 1,
-        unknown: 1,
-        offline: 1,
-        online: 9
-      },
-      unknown: {
-        unknown: 0,
-        link_loss: 1,
-        dying_gasp: 1,
-        offline: 1,
-        online: 9
-      }
+    const baseOrder = ['online', 'link_loss', 'dying_gasp', 'unknown', 'offline']
+    let orderedStatuses = baseOrder
+    if (statusSortMode === 'offline') {
+      orderedStatuses = ['link_loss', 'dying_gasp', 'unknown', 'offline', 'online']
+    } else if (statusSortMode !== 'online') {
+      orderedStatuses = [statusSortMode, ...baseOrder.filter((status) => status !== statusSortMode)]
     }
-
-    const priorities = priorityByMode[statusSortMode] || priorityByMode.offline
+    const priorities = orderedStatuses.reduce((acc, status, index) => {
+      acc[status] = index
+      return acc
+    }, {})
 
     return [...baseRows].sort((a, b) => {
       const statusDelta = (priorities[a.statusKey] ?? 9) - (priorities[b.statusKey] ?? 9)
@@ -657,6 +694,7 @@ const App = () => {
       })
     }
 
+    if (powerSortMode === 'default') return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
     if (powerSortMode === 'worst_olt_rx') return sortBy('oltRx', 'asc')
     if (powerSortMode === 'worst_onu_rx') return sortBy('onuRx', 'asc')
     if (powerSortMode === 'best_olt_rx') return sortBy('oltRx', 'desc')
@@ -827,6 +865,15 @@ const App = () => {
               loading={displayLoading}
               error={displayError}
               selectedPonId={selectedPonId}
+              onAlarmModeChange={(config) => {
+                const reasons = Array.isArray(config?.reasons)
+                  ? config.reasons.filter((reason) => ALARM_REASON_PRIORITY.includes(reason))
+                  : ALARM_REASON_PRIORITY
+                setAlarmSortConfig({
+                  enabled: Boolean(config?.enabled),
+                  reasons: reasons.length ? reasons : ALARM_REASON_PRIORITY
+                })
+              }}
               onSearchMatchSelect={setSelectedSearchMatch}
               onPonSelect={(id, options = {}) => {
                 if (options?.force) {
@@ -917,20 +964,20 @@ const App = () => {
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger asChild>
                           <button
-                            className="h-9 px-3 flex items-center gap-1.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all"
+                            className="relative h-9 w-[156px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all"
                             aria-label={t('Sort by')}
                             title={t('Sort by')}
                           >
-                            <ArrowDownUp className="w-3.5 h-3.5 shrink-0" />
-                            <span className="text-[10px] font-black uppercase tracking-wide whitespace-nowrap">
+                            <ArrowDownUp className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 shrink-0" />
+                            <span className="absolute left-7 right-7 top-1/2 -translate-y-1/2 text-center text-[10px] font-black uppercase tracking-[0.03em] whitespace-nowrap overflow-hidden text-ellipsis">
                               {currentSortLabel}
                             </span>
-                            <ChevronDown className="w-3.5 h-3.5" />
+                            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" />
                           </button>
                         </DropdownMenu.Trigger>
                         <DropdownMenu.Portal>
                           <DropdownMenu.Content
-                            className="min-w-[188px] bg-white dark:bg-slate-900 rounded-xl p-1.5 shadow-xl border border-slate-200 dark:border-slate-800 z-[220] animate-in fade-in zoom-in-95 duration-150"
+                            className="w-[156px] bg-white dark:bg-slate-900 rounded-xl p-1 shadow-xl border border-slate-200 dark:border-slate-800 z-[220] animate-in fade-in zoom-in-95 duration-150"
                             sideOffset={8}
                             align="end"
                           >
@@ -939,20 +986,20 @@ const App = () => {
                                 key={option.id}
                                 onSelect={() => setCurrentSortMode(option.id)}
                                 className={`
-                                  flex items-center gap-2 px-2.5 py-2 rounded-lg outline-none cursor-pointer transition-colors
+                                  relative flex items-center justify-center px-2 py-[5px] rounded-lg outline-none cursor-pointer transition-colors
                                   ${currentSortMode === option.id
                                     ? 'bg-slate-50 dark:bg-slate-800/60'
                                     : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'}
                                 `}
                               >
-                                <span className="h-4 w-4 flex items-center justify-center">
+                                <span className="absolute left-2 h-4 w-4 flex items-center justify-center">
                                   {currentSortMode === option.id ? (
                                     <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={3} />
                                   ) : (
                                     <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
                                   )}
                                 </span>
-                                <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                                <span className="text-[10px] font-black uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200 text-center">
                                   {option.label}
                                 </span>
                               </DropdownMenu.Item>
