@@ -8,6 +8,8 @@ const asCount = (value) => {
   const numeric = Number(value)
   return Number.isFinite(numeric) ? numeric : 0
 }
+const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
+const isActiveEntity = (entity) => Boolean(entity) && entity.is_active !== false
 
 const normalizeSearch = (value) => String(value || '').toLowerCase().trim()
 
@@ -74,34 +76,44 @@ const NODE_CARD_STYLE = {
 
 const NODE_HEALTH_STYLE = {
   green: {
-    borderActive: 'border-emerald-400/25 shadow-sm shadow-emerald-500/6',
-    borderIdle: 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm',
+    borderActive: 'border-emerald-500/35 shadow-md shadow-emerald-500/10',
+    borderIdle: 'border-emerald-200/40 dark:border-emerald-500/20 hover:border-emerald-300 dark:hover:border-emerald-500/40 shadow-sm',
     accentActive: 'bg-emerald-500 scale-y-100',
-    accentIdle: 'bg-emerald-200/60 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300/70 dark:group-hover/node:bg-emerald-500/35 scale-y-60',
-    iconActive: 'bg-emerald-500 text-white shadow-md shadow-emerald-500/15',
-    iconIdle: 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
-    labelActive: 'text-emerald-600 dark:text-emerald-400',
-    chevronOpen: 'text-emerald-500 dark:text-emerald-400'
+    accentIdle: 'bg-emerald-100 dark:bg-emerald-500/20 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-400 scale-y-60',
+    iconActive: 'bg-emerald-600 dark:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20',
+    iconIdle: 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/10 dark:ring-emerald-400/20',
+    labelActive: 'text-emerald-950 dark:text-emerald-50',
+    chevronOpen: 'text-emerald-600 dark:text-emerald-400'
   },
   yellow: {
-    borderActive: 'border-amber-300/25 shadow-sm shadow-amber-400/5',
-    borderIdle: 'border-amber-100/50 dark:border-amber-500/15 hover:border-amber-200/70 dark:hover:border-amber-500/25 shadow-sm',
-    accentActive: 'bg-amber-400 scale-y-100',
-    accentIdle: 'bg-amber-200/50 dark:bg-amber-500/18 group-hover/node:bg-amber-300/60 dark:group-hover/node:bg-amber-500/25 scale-y-60',
-    iconActive: 'bg-amber-500 text-white shadow-md shadow-amber-500/12',
-    iconIdle: 'bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400',
-    labelActive: 'text-amber-600 dark:text-amber-400',
-    chevronOpen: 'text-amber-500 dark:text-amber-400'
+    borderActive: 'border-yellow-500/40 shadow-md shadow-yellow-500/10',
+    borderIdle: 'border-yellow-200/50 dark:border-yellow-500/20 hover:border-yellow-300 dark:hover:border-yellow-500/40 shadow-sm',
+    accentActive: 'bg-yellow-500 scale-y-100',
+    accentIdle: 'bg-yellow-100 dark:bg-yellow-500/20 group-hover/node:bg-yellow-300 dark:group-hover/node:bg-yellow-400 scale-y-60',
+    iconActive: 'bg-yellow-400 dark:bg-yellow-500 text-yellow-950 dark:text-yellow-950 shadow-lg shadow-yellow-400/40',
+    iconIdle: 'bg-yellow-50 dark:bg-yellow-500/15 text-yellow-700 dark:text-yellow-400 ring-1 ring-inset ring-yellow-600/10 dark:ring-yellow-400/20',
+    labelActive: 'text-yellow-950 dark:text-yellow-50',
+    chevronOpen: 'text-yellow-600 dark:text-yellow-400'
   },
   red: {
-    borderActive: 'border-rose-300/25 shadow-sm shadow-rose-400/5',
-    borderIdle: 'border-rose-100/50 dark:border-rose-500/15 hover:border-rose-200/70 dark:hover:border-rose-500/25 shadow-sm',
-    accentActive: 'bg-rose-400 scale-y-100',
-    accentIdle: 'bg-rose-200/45 dark:bg-rose-500/18 group-hover/node:bg-rose-300/55 dark:group-hover/node:bg-rose-500/25 scale-y-60',
-    iconActive: 'bg-rose-500 text-white shadow-md shadow-rose-500/12',
-    iconIdle: 'bg-rose-50 dark:bg-rose-500/15 text-rose-500 dark:text-rose-400',
-    labelActive: 'text-rose-500 dark:text-rose-400',
-    chevronOpen: 'text-rose-400 dark:text-rose-400'
+    borderActive: 'border-rose-500/35 shadow-md shadow-rose-500/10',
+    borderIdle: 'border-rose-200/40 dark:border-rose-500/20 hover:border-rose-300 dark:hover:border-rose-500/40 shadow-sm',
+    accentActive: 'bg-rose-500 scale-y-100',
+    accentIdle: 'bg-rose-100 dark:bg-rose-500/20 group-hover/node:bg-rose-300 dark:group-hover/node:bg-rose-400 scale-y-60',
+    iconActive: 'bg-rose-600 dark:bg-rose-500 text-white shadow-lg shadow-rose-600/20',
+    iconIdle: 'bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 ring-1 ring-inset ring-rose-600/10 dark:ring-rose-400/20',
+    labelActive: 'text-rose-950 dark:text-rose-50',
+    chevronOpen: 'text-rose-600 dark:text-rose-400'
+  },
+  neutral: {
+    borderActive: 'border-slate-500/35 shadow-md shadow-slate-500/10',
+    borderIdle: 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-sm',
+    accentActive: 'bg-slate-500 scale-y-100',
+    accentIdle: 'bg-slate-200 dark:bg-slate-700 group-hover/node:bg-slate-300 dark:group-hover/node:bg-slate-600 scale-y-60',
+    iconActive: 'bg-slate-600 dark:bg-slate-500 text-white shadow-lg shadow-slate-600/20',
+    iconIdle: 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ring-1 ring-inset ring-slate-600/10 dark:ring-slate-400/20',
+    labelActive: 'text-slate-950 dark:text-slate-50',
+    chevronOpen: 'text-slate-600 dark:text-slate-400'
   }
 }
 
@@ -118,31 +130,37 @@ const ALARM_REASON_STAT_KEY = {
 }
 
 const getSelectedOfflineCount = (stats, selectedReasons = []) => {
-  if (!selectedReasons.length) return 0
-  return selectedReasons.reduce((total, reason) => {
-    const statKey = ALARM_REASON_STAT_KEY[reason]
-    if (!statKey) return total
-    return total + asCount(stats?.[statKey])
-  }, 0)
+     return selectedReasons.reduce((acc, reason) => {
+       const key = ALARM_REASON_STAT_KEY[reason]
+       return acc + (asCount(stats?.[key]) || 0)
+     }, 0)
 }
 
 const getPonHealthState = (pon, selectedReasons, minCount) => {
   const stats = pon?.stats || getOnuStats(pon?.onus || [])
+  if (!pon || pon?.is_active === false) {
+    return {
+      state: 'green',
+      stats,
+      selectedOfflineCount: 0
+    }
+  }
+
   const total = asCount(stats.total)
   const online = asCount(stats.online)
-  const selectedOfflineCount = getSelectedOfflineCount(stats, selectedReasons)
+  const offlineCount = getSelectedOfflineCount(stats, selectedReasons)
   const isRed = total > 0 && online === 0
-  const isYellow = !isRed && selectedReasons.length > 0 && selectedOfflineCount >= minCount
+  const isYellow = !isRed && selectedReasons.length > 0 && offlineCount >= minCount
 
   return {
     state: isRed ? 'red' : isYellow ? 'yellow' : 'green',
     stats,
-    selectedOfflineCount
+    selectedOfflineCount: offlineCount
   }
 }
 
 const getSlotHealthState = (slot, selectedReasons, minCount) => {
-  const activePons = (slot?.pons || []).filter((pon) => pon?.is_active !== false)
+  const activePons = asList(slot?.pons).filter(isActiveEntity)
   if (!activePons.length) return 'green'
 
   const redPonCount = activePons.reduce((count, pon) => (
@@ -155,7 +173,7 @@ const getSlotHealthState = (slot, selectedReasons, minCount) => {
 }
 
 const getOltHealthState = (olt, selectedReasons, minCount) => {
-  const activeSlots = (olt?.slots || []).filter((slot) => slot?.is_active !== false)
+  const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   if (!activeSlots.length) return 'green'
 
   const redSlotCount = activeSlots.reduce((count, slot) => (
@@ -166,6 +184,7 @@ const getOltHealthState = (olt, selectedReasons, minCount) => {
   if (redSlotCount > 0) return 'yellow'
   return 'green'
 }
+
 
 const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel, healthState = 'green' }) => {
   const isVisualActive = type === 'pon' ? active : isOpen
@@ -291,7 +310,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     setOpenNodes((prev) => {
       if (Object.keys(prev).length) return prev
       const firstOlt = olts[0]
-      const firstSlot = firstOlt?.slots?.[0]
+      const firstSlot = asList(firstOlt?.slots)[0]
       const initial = {}
       if (firstOlt?.id) {
         initial[`olt-${firstOlt.id}`] = true
@@ -393,9 +412,9 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
 
     const suggestions = []
     olts.forEach((olt) => {
-      ;(olt.slots || []).forEach((slot) => {
-        ;(slot.pons || []).forEach((pon) => {
-          ;(pon.onus || []).forEach((onu) => {
+      asList(olt?.slots).forEach((slot) => {
+        asList(slot?.pons).forEach((pon) => {
+          asList(pon?.onus).forEach((onu) => {
             const clientName = onu?.client_name || onu?.name || ''
             const serial = onu?.serial || onu?.serial_number || ''
             const rawOnuId = asCount(onu?.onu_number ?? onu?.onu_id)
@@ -455,9 +474,9 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     return !term
       ? oltVisible
       : oltVisible.filter((olt) => {
-          const matchOnu = (olt?.slots || []).some((slot) =>
-            (slot?.pons || []).some((pon) =>
-              (pon?.onus || []).some((onu) => {
+          const matchOnu = asList(olt?.slots).some((slot) =>
+            asList(slot?.pons).some((pon) =>
+              asList(pon?.onus).some((onu) => {
                 const onuLogin = normalizeSearch(onu?.client_name || onu?.name || '')
                 const onuSerial = normalizeSearch(onu?.serial || onu?.serial_number || '')
                 return onuLogin.includes(term) || onuSerial.includes(term)
@@ -473,17 +492,17 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
 
     return searchedOlts
       .map((olt) => {
-        const slots = (olt.slots || [])
-          .filter((slot) => slot?.is_active !== false)
+        const slots = asList(olt?.slots)
+          .filter(isActiveEntity)
           .map((slot) => {
-            const pons = (slot.pons || []).filter((pon) => pon?.is_active !== false).filter((pon) => passesAlarmFilter(pon))
+            const pons = asList(slot?.pons).filter(isActiveEntity).filter((pon) => passesAlarmFilter(pon))
             return {
               ...slot,
               pons,
               pon_count: pons.length,
             }
           })
-          .filter((slot) => (slot.pons || []).length > 0)
+          .filter((slot) => asList(slot?.pons).length > 0)
 
         return {
           ...olt,
@@ -491,7 +510,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
           slot_count: slots.length,
         }
       })
-      .filter((olt) => (olt.slots || []).length > 0)
+      .filter((olt) => asList(olt?.slots).length > 0)
   }, [searchedOlts, alarmEnabled, effectiveAlarmMinCount, activeAlarmReasons])
 
   const searchedOltMap = useMemo(() => {
@@ -504,7 +523,8 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
       const next = { ...prev }
       filteredOlts.forEach((olt) => {
         next[`olt-${olt.id}`] = true
-        ;(olt.slots || []).forEach((slot) => {
+        asList(olt?.slots).filter(Boolean).forEach((slot) => {
+          if (!slot?.id) return
           next[`slot-${slot.id}`] = true
         })
       })
@@ -517,7 +537,11 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     const oltId = `olt-${olt.id}`
     const oltHealthState = getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount)
     const slotCount = olt.slot_count ?? olt.slots?.length ?? 0
-    const sourceSlotMap = new Map((sourceOlt?.slots || []).map((slot) => [String(slot.id), slot]))
+    const sourceSlotMap = new Map(
+      asList(sourceOlt?.slots)
+        .filter(Boolean)
+        .map((slot) => [String(slot.id), slot])
+    )
     return (
       <div key={oltId} className="flex-shrink-0">
         <NetworkNode
@@ -528,12 +552,16 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
           onToggle={() => toggleNode(oltId)}
           healthState={oltHealthState}
         >
-          {(olt.slots || [])
-            .filter((slot) => slot?.is_active !== false)
+          {asList(olt?.slots)
+            .filter(isActiveEntity)
             .map((slot) => {
               const slotId = `slot-${slot.id}`
               const sourceSlot = sourceSlotMap.get(String(slot.id)) || slot
-              const sourcePonMap = new Map((sourceSlot?.pons || []).map((pon) => [String(pon.id), pon]))
+              const sourcePonMap = new Map(
+                asList(sourceSlot?.pons)
+                  .filter(Boolean)
+                  .map((pon) => [String(pon.id), pon])
+              )
               const slotHealthState = getSlotHealthState(sourceSlot, activeAlarmReasons, effectiveAlarmMinCount)
               const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
               const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
@@ -547,8 +575,8 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                   onToggle={() => toggleNode(slotId)}
                   healthState={slotHealthState}
                 >
-                  {(slot.pons || [])
-                    .filter((pon) => pon?.is_active !== false)
+                  {asList(slot?.pons)
+                    .filter(isActiveEntity)
                     .map((pon) => {
                       const sourcePon = sourcePonMap.get(String(pon.id)) || pon
                       const ponHealth = getPonHealthState(sourcePon, activeAlarmReasons, effectiveAlarmMinCount)

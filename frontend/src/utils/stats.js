@@ -21,6 +21,7 @@ export const classifyOnu = (onu) => {
 }
 
 export const getOnuStats = (onus = []) => {
+  const normalizedOnus = Array.isArray(onus) ? onus : Object.values(onus || {})
   const stats = {
     total: 0,
     online: 0,
@@ -30,7 +31,7 @@ export const getOnuStats = (onus = []) => {
     unknown: 0,
   }
 
-  onus.forEach((onu) => {
+  normalizedOnus.forEach((onu) => {
     stats.total += 1
     const { status } = classifyOnu(onu)
     if (status === 'online') {
