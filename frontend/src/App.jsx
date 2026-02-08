@@ -925,8 +925,8 @@ const App = () => {
           >
             {selectedPonId && (
               <div className="h-full min-h-0 flex flex-col">
-                <div className="px-8 lg:px-10 h-[78px] border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center">
-                  <div className="w-full flex items-center justify-between gap-4">
+                <div className="pl-6 lg:pl-8 pr-3 lg:pr-4 h-[78px] border-b border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center">
+                  <div className="w-full flex items-center justify-between gap-3">
                     <div className="min-w-0 flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
                       {selectedPonPath.map((part, idx) => (
                         <React.Fragment key={`${part}-${idx}`}>
@@ -942,24 +942,39 @@ const App = () => {
                         setSelectedSearchMatch(null)
                         setSelectedPonId(null)
                       }}
-                      className="p-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-slate-600 shrink-0"
+                      className="h-9 w-9 self-center flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
                       aria-label={t('Close')}
                     >
-                      <X className="w-4 h-4" />
+                      <X className="w-[18px] h-[18px]" />
                     </button>
                   </div>
                 </div>
 
                 <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-950 overflow-hidden">
                   <div className="flex items-center gap-2 mb-3">
-                    <SegmentedControl
-                      value={activeTab}
-                      onChange={setActiveTab}
-                      options={[
+                    <div className="inline-flex h-9 items-center gap-1 p-1 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-900/70">
+                      {[
                         { id: 'status', label: t('Status') },
                         { id: 'power', label: t('Potência') }
-                      ]}
-                    />
+                      ].map((tab) => {
+                        const isActive = activeTab === tab.id
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setActiveTab(tab.id)}
+                            className={`
+                              h-7 min-w-[88px] px-3 rounded-md text-[10px] font-black uppercase tracking-[0.06em] transition-all
+                              ${isActive
+                                ? 'bg-white dark:bg-slate-800 text-emerald-700 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                                : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/60'}
+                            `}
+                          >
+                            {tab.label}
+                          </button>
+                        )
+                      })}
+                    </div>
                     <div className="ml-auto flex items-center gap-2">
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger asChild>
