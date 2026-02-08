@@ -74,33 +74,33 @@ const NODE_CARD_STYLE = {
 
 const NODE_HEALTH_STYLE = {
   green: {
-    borderActive: 'border-emerald-400/30 shadow-md shadow-emerald-500/8',
+    borderActive: 'border-emerald-400/25 shadow-sm shadow-emerald-500/6',
     borderIdle: 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm',
     accentActive: 'bg-emerald-500 scale-y-100',
-    accentIdle: 'bg-emerald-200 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-500/35 scale-y-60',
-    iconActive: 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20',
-    iconIdle: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-    labelActive: 'text-emerald-700 dark:text-emerald-400',
-    chevronOpen: 'text-emerald-500'
+    accentIdle: 'bg-emerald-200/60 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300/70 dark:group-hover/node:bg-emerald-500/35 scale-y-60',
+    iconActive: 'bg-emerald-500 text-white shadow-md shadow-emerald-500/15',
+    iconIdle: 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+    labelActive: 'text-emerald-600 dark:text-emerald-400',
+    chevronOpen: 'text-emerald-500 dark:text-emerald-400'
   },
   yellow: {
-    borderActive: 'border-amber-300/30 shadow-md shadow-amber-400/6',
-    borderIdle: 'border-amber-100/60 dark:border-amber-500/15 hover:border-amber-200/80 dark:hover:border-amber-500/25 shadow-sm',
+    borderActive: 'border-amber-300/25 shadow-sm shadow-amber-400/5',
+    borderIdle: 'border-amber-100/50 dark:border-amber-500/15 hover:border-amber-200/70 dark:hover:border-amber-500/25 shadow-sm',
     accentActive: 'bg-amber-400 scale-y-100',
-    accentIdle: 'bg-amber-200/60 dark:bg-amber-500/20 group-hover/node:bg-amber-300/70 dark:group-hover/node:bg-amber-500/30 scale-y-60',
-    iconActive: 'bg-amber-500 text-white shadow-lg shadow-amber-500/15',
-    iconIdle: 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400',
-    labelActive: 'text-amber-700 dark:text-amber-400',
+    accentIdle: 'bg-amber-200/50 dark:bg-amber-500/18 group-hover/node:bg-amber-300/60 dark:group-hover/node:bg-amber-500/25 scale-y-60',
+    iconActive: 'bg-amber-500 text-white shadow-md shadow-amber-500/12',
+    iconIdle: 'bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400',
+    labelActive: 'text-amber-600 dark:text-amber-400',
     chevronOpen: 'text-amber-500 dark:text-amber-400'
   },
   red: {
-    borderActive: 'border-rose-300/30 shadow-md shadow-rose-400/6',
-    borderIdle: 'border-rose-100/60 dark:border-rose-500/15 hover:border-rose-200/80 dark:hover:border-rose-500/25 shadow-sm',
+    borderActive: 'border-rose-300/25 shadow-sm shadow-rose-400/5',
+    borderIdle: 'border-rose-100/50 dark:border-rose-500/15 hover:border-rose-200/70 dark:hover:border-rose-500/25 shadow-sm',
     accentActive: 'bg-rose-400 scale-y-100',
-    accentIdle: 'bg-rose-200/50 dark:bg-rose-500/20 group-hover/node:bg-rose-300/60 dark:group-hover/node:bg-rose-500/30 scale-y-60',
-    iconActive: 'bg-rose-500 text-white shadow-lg shadow-rose-500/15',
-    iconIdle: 'bg-rose-50 dark:bg-rose-500/10 text-rose-500 dark:text-rose-400',
-    labelActive: 'text-rose-600 dark:text-rose-400',
+    accentIdle: 'bg-rose-200/45 dark:bg-rose-500/18 group-hover/node:bg-rose-300/55 dark:group-hover/node:bg-rose-500/25 scale-y-60',
+    iconActive: 'bg-rose-500 text-white shadow-md shadow-rose-500/12',
+    iconIdle: 'bg-rose-50 dark:bg-rose-500/15 text-rose-500 dark:text-rose-400',
+    labelActive: 'text-rose-500 dark:text-rose-400',
     chevronOpen: 'text-rose-400 dark:text-rose-400'
   }
 }
