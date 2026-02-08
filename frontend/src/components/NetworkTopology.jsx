@@ -74,34 +74,34 @@ const NODE_CARD_STYLE = {
 
 const NODE_HEALTH_STYLE = {
   green: {
-    borderActive: 'border-emerald-500/35 shadow-md shadow-emerald-500/10',
+    borderActive: 'border-emerald-400/30 shadow-md shadow-emerald-500/8',
     borderIdle: 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm',
     accentActive: 'bg-emerald-500 scale-y-100',
     accentIdle: 'bg-emerald-200 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-500/35 scale-y-60',
     iconActive: 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20',
-    iconIdle: 'bg-emerald-100 dark:bg-emerald-500/12 text-emerald-700 dark:text-emerald-400',
+    iconIdle: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
     labelActive: 'text-emerald-700 dark:text-emerald-400',
     chevronOpen: 'text-emerald-500'
   },
   yellow: {
-    borderActive: 'border-yellow-300/55 shadow-md shadow-yellow-500/6',
-    borderIdle: 'border-yellow-200/80 dark:border-yellow-500/25 hover:border-yellow-300 dark:hover:border-yellow-500/35 shadow-sm',
-    accentActive: 'bg-yellow-300 scale-y-100',
-    accentIdle: 'bg-yellow-300 dark:bg-yellow-500/35 group-hover/node:bg-yellow-400 dark:group-hover/node:bg-yellow-500/45 scale-y-60',
-    iconActive: 'bg-yellow-300 text-yellow-900 shadow-md shadow-yellow-500/10',
-    iconIdle: 'bg-yellow-100 dark:bg-yellow-500/15 text-yellow-700 dark:text-yellow-300',
-    labelActive: 'text-yellow-700 dark:text-yellow-200',
-    chevronOpen: 'text-yellow-500 dark:text-yellow-300'
+    borderActive: 'border-amber-300/30 shadow-md shadow-amber-400/6',
+    borderIdle: 'border-amber-100/60 dark:border-amber-500/15 hover:border-amber-200/80 dark:hover:border-amber-500/25 shadow-sm',
+    accentActive: 'bg-amber-400 scale-y-100',
+    accentIdle: 'bg-amber-200/60 dark:bg-amber-500/20 group-hover/node:bg-amber-300/70 dark:group-hover/node:bg-amber-500/30 scale-y-60',
+    iconActive: 'bg-amber-500 text-white shadow-lg shadow-amber-500/15',
+    iconIdle: 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    labelActive: 'text-amber-700 dark:text-amber-400',
+    chevronOpen: 'text-amber-500 dark:text-amber-400'
   },
   red: {
-    borderActive: 'border-red-300/55 shadow-md shadow-red-500/8',
-    borderIdle: 'border-red-200/80 dark:border-red-500/25 hover:border-red-300 dark:hover:border-red-500/35 shadow-sm',
-    accentActive: 'bg-red-400 scale-y-100',
-    accentIdle: 'bg-red-300 dark:bg-red-500/35 group-hover/node:bg-red-400 dark:group-hover/node:bg-red-500/45 scale-y-60',
-    iconActive: 'bg-red-400 text-white shadow-lg shadow-red-500/16',
-    iconIdle: 'bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-300',
-    labelActive: 'text-red-700 dark:text-red-200',
-    chevronOpen: 'text-red-500 dark:text-red-400'
+    borderActive: 'border-rose-300/30 shadow-md shadow-rose-400/6',
+    borderIdle: 'border-rose-100/60 dark:border-rose-500/15 hover:border-rose-200/80 dark:hover:border-rose-500/25 shadow-sm',
+    accentActive: 'bg-rose-400 scale-y-100',
+    accentIdle: 'bg-rose-200/50 dark:bg-rose-500/20 group-hover/node:bg-rose-300/60 dark:group-hover/node:bg-rose-500/30 scale-y-60',
+    iconActive: 'bg-rose-500 text-white shadow-lg shadow-rose-500/15',
+    iconIdle: 'bg-rose-50 dark:bg-rose-500/10 text-rose-500 dark:text-rose-400',
+    labelActive: 'text-rose-600 dark:text-rose-400',
+    chevronOpen: 'text-rose-400 dark:text-rose-400'
   }
 }
 
@@ -222,7 +222,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
           {stats ? (
             <div className="mt-0.5 flex items-center gap-2.5 w-full pr-0.5">
               {asCount(stats.online) > 0 && <StatusItem color="bg-emerald-500" count={asCount(stats.online)} />}
-              {asCount(stats.linkLoss) > 0 && <StatusItem color="bg-red-500" count={asCount(stats.linkLoss)} />}
+              {asCount(stats.linkLoss) > 0 && <StatusItem color="bg-rose-500" count={asCount(stats.linkLoss)} />}
               {asCount(stats.dyingGasp) > 0 && <StatusItem color="bg-blue-500" count={asCount(stats.dyingGasp)} />}
               {asCount(stats.unknown) > 0 && <StatusItem color="bg-purple-500" count={asCount(stats.unknown)} />}
             </div>
