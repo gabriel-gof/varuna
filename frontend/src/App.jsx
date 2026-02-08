@@ -1059,17 +1059,35 @@ const App = () => {
 
                   {activeTab === 'status' ? (
                     <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-                      <div className="overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
+                      <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
-                          <thead className="sticky top-0 z-10">
-                            <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
-                              <th className="w-[10%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
-                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="w-[24%] pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Desconexão')}</th>
+                          <colgroup>
+                            <col style={{ width: '10%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '24%' }} />
+                          </colgroup>
+                          <thead>
+                            <tr className="bg-slate-50 dark:bg-slate-800/90">
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Desconexão')}</th>
                             </tr>
                           </thead>
+                        </table>
+                      </div>
+                      <div className="overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
+                        <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
+                          <colgroup>
+                            <col style={{ width: '10%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '24%' }} />
+                          </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {statusRows.map(({ onu, statusKey }) => {
                               const statusLabel = statusKey === 'online'
@@ -1096,7 +1114,7 @@ const App = () => {
                                   key={onu.id}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
                                   style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
@@ -1139,17 +1157,35 @@ const App = () => {
                     </div>
                   ) : (
                     <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-                      <div className="overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
+                      <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
-                          <thead className="sticky top-0 z-10">
-                            <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
-                              <th className="w-[10%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
-                              <th className="w-[18%] pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Power')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
+                          <colgroup>
+                            <col style={{ width: '10%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '24%' }} />
+                          </colgroup>
+                          <thead>
+                            <tr className="bg-slate-50 dark:bg-slate-800/90">
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Power')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
                             </tr>
                           </thead>
+                        </table>
+                      </div>
+                      <div className="overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
+                        <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
+                          <colgroup>
+                            <col style={{ width: '10%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '24%' }} />
+                          </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {powerRows.map(({ onu }) => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
@@ -1170,7 +1206,7 @@ const App = () => {
                                   key={`power-${onu.id}`}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 hover:bg-emerald-50/80 dark:hover:bg-slate-800/70 transition-colors
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
                                   style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
