@@ -57,13 +57,21 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--olt-id", type=int, help="Run polling for a specific OLT id")
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
+        parser.add_argument("--force", action="store_true", help="Ignore polling_enabled for the selected OLT(s)")
 
     def handle(self, *args, **options):
-        olt_qs = OLT.objects.filter(
-            is_active=True,
-            polling_enabled=True,
-            vendor_profile__is_active=True,
-        ).select_related("vendor_profile")
+        force = bool(options.get("force", False))
+        if force:
+            olt_qs = OLT.objects.filter(
+                is_active=True,
+                vendor_profile__is_active=True,
+            ).select_related("vendor_profile")
+        else:
+            olt_qs = OLT.objects.filter(
+                is_active=True,
+                polling_enabled=True,
+                vendor_profile__is_active=True,
+            ).select_related("vendor_profile")
 
         olt_id = options.get("olt_id")
         if olt_id:

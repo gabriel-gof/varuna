@@ -3,6 +3,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q, Prefetch
+from django.core.management import call_command
+from io import StringIO
 from dashboard.models import OLT, OLTSlot, OLTPON, ONU, VendorProfile
 from dashboard.services.topology_service import TopologyService
 from dashboard.api.serializers import (
@@ -19,7 +21,7 @@ class VendorProfileViewSet(viewsets.ModelViewSet):
     """
     ViewSet for Vendor Profiles
     """
-    queryset = VendorProfile.objects.filter(is_active=True)
+    queryset = VendorProfile.objects.filter(is_active=True).order_by('id')
     serializer_class = VendorProfileSerializer
 
 
@@ -36,7 +38,7 @@ class OLTViewSet(viewsets.ModelViewSet):
         """
         include_topology = self.request.query_params.get('include_topology', 'false').lower() == 'true'
         
-        queryset = OLT.objects.filter(is_active=True).select_related('vendor_profile')
+        queryset = OLT.objects.filter(is_active=True).select_related('vendor_profile').order_by('id')
         
         if include_topology:
             # Prefetch nested data for better performance
@@ -102,6 +104,48 @@ class OLTViewSet(viewsets.ModelViewSet):
         olt = get_object_or_404(OLT, pk=pk)
         # TODO: Implement power refresh logic
         return Response({'status': 'requested', 'olt_id': olt.id})
+
+    @action(detail=True, methods=['post'])
+    def run_discovery(self, request, pk=None):
+        """
+        Run ONU discovery immediately for one OLT.
+        """
+        olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        output = StringIO()
+        try:
+            call_command('discover_onus', olt_id=olt.id, force=True, stdout=output)
+        except Exception as exc:
+            return Response(
+                {'status': 'error', 'olt_id': olt.id, 'detail': str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response({
+            'status': 'completed',
+            'olt_id': olt.id,
+            'output': output.getvalue().strip()
+        })
+
+    @action(detail=True, methods=['post'])
+    def run_polling(self, request, pk=None):
+        """
+        Run ONU status polling immediately for one OLT.
+        """
+        olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        output = StringIO()
+        try:
+            call_command('poll_onu_status', olt_id=olt.id, force=True, stdout=output)
+        except Exception as exc:
+            return Response(
+                {'status': 'error', 'olt_id': olt.id, 'detail': str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response({
+            'status': 'completed',
+            'olt_id': olt.id,
+            'output': output.getvalue().strip()
+        })
 
 
 class ONUViewSet(viewsets.ReadOnlyModelViewSet):

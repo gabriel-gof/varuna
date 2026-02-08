@@ -102,7 +102,7 @@ const ExpandableOltRow = ({ name, authorized, online, offline, dyingGasp, linkLo
   )
 }
 
-export const Dashboard = ({ stats, oltStats, loading, error, onRefresh, isRefreshing }) => {
+export const Dashboard = ({ stats, oltStats, clientRows, loading, error, onRefresh, isRefreshing }) => {
   const { t } = useTranslation()
   const [historyInterval, setHistoryInterval] = useState('6h')
   const intervals = ['5m', '1h', '6h', '24h', '7d', '30d']
@@ -197,6 +197,55 @@ export const Dashboard = ({ stats, oltStats, loading, error, onRefresh, isRefres
             <h4 className="text-[11px] font-black text-purple-400 uppercase tracking-widest">{t('Unknown')}</h4>
             <p className="text-2xl font-black text-purple-700 dark:text-purple-300">{safeStats.unknown}</p>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+          <h3 className="text-[12px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">{t('Client snapshot')}</h3>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{t('Top clients in monitored topology')}</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full">
+            <thead className="bg-slate-50/80 dark:bg-slate-900/50">
+              <tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-500">
+                <th className="px-6 py-3">{t('Client')}</th>
+                <th className="px-6 py-3">{t('Serial')}</th>
+                <th className="px-6 py-3">{t('OLT')}</th>
+                <th className="px-6 py-3">{t('Port')}</th>
+                <th className="px-6 py-3">{t('Status')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(clientRows || []).map((row) => (
+                <tr key={row.key} className="border-t border-slate-100 dark:border-slate-800">
+                  <td className="px-6 py-3 text-[12px] font-black text-slate-900 dark:text-white">{row.clientName}</td>
+                  <td className="px-6 py-3 text-[11px] font-semibold text-slate-600 dark:text-slate-300">{row.serial}</td>
+                  <td className="px-6 py-3 text-[11px] font-semibold text-slate-600 dark:text-slate-300">{row.oltName}</td>
+                  <td className="px-6 py-3 text-[11px] font-semibold text-slate-600 dark:text-slate-300">{row.portLabel}</td>
+                  <td className="px-6 py-3">
+                    <span
+                      className={`
+                        inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wide
+                        ${row.statusKey === 'online'
+                          ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30'
+                          : 'bg-rose-50 text-rose-600 ring-1 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'}
+                      `}
+                    >
+                      {row.statusLabel}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {!loading && !error && (!clientRows || clientRows.length === 0) && (
+                <tr>
+                  <td colSpan={5} className="px-6 py-8 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                    {t('No clients found')}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -20,7 +20,6 @@ class SNMPService:
     def __init__(self):
         self.timeout = 2.0
         self.retries = 1
-        self._engine = None
         self._pysnmp = None
 
     @property
@@ -33,7 +32,7 @@ class SNMPService:
             try:
                 from pysnmp.hlapi.asyncio import (
                     SnmpEngine, CommunityData, UdpTransportTarget, ContextData,
-                    ObjectType, ObjectIdentity, getCmd, nextCmd
+                    ObjectType, ObjectIdentity, getCmd, nextCmd, bulkCmd
                 )
                 self._pysnmp = {
                     'SnmpEngine': SnmpEngine,
@@ -43,14 +42,16 @@ class SNMPService:
                     'ObjectType': ObjectType,
                     'ObjectIdentity': ObjectIdentity,
                     'getCmd': getCmd,
-                    'nextCmd': nextCmd
+                    'nextCmd': nextCmd,
+                    'bulkCmd': bulkCmd,
                 }
             except ImportError:
                 # Try alternate names for newer pysnmp versions
                 try:
                     from pysnmp.hlapi.asyncio import (
                         SnmpEngine, CommunityData, UdpTransportTarget, ContextData,
-                        ObjectType, ObjectIdentity, get_cmd as getCmd, next_cmd as nextCmd
+                        ObjectType, ObjectIdentity, get_cmd as getCmd, next_cmd as nextCmd,
+                        bulk_cmd as bulkCmd
                     )
                     self._pysnmp = {
                         'SnmpEngine': SnmpEngine,
@@ -60,7 +61,8 @@ class SNMPService:
                         'ObjectType': ObjectType,
                         'ObjectIdentity': ObjectIdentity,
                         'getCmd': getCmd,
-                        'nextCmd': nextCmd
+                        'nextCmd': nextCmd,
+                        'bulkCmd': bulkCmd,
                     }
                 except ImportError:
                     logger.error("Failed to import pysnmp.hlapi.asyncio. Please verify pysnmp version.")
@@ -69,9 +71,9 @@ class SNMPService:
 
     @property
     def engine(self):
-        if self._engine is None:
-            self._engine = self.pysnmp_modules['SnmpEngine']()
-        return self._engine
+        # pysnmp asyncio engine is event-loop bound; create per request
+        # to avoid cross-loop deadlocks when sync wrappers spawn loops.
+        return self.pysnmp_modules['SnmpEngine']()
 
     def _run(self, coro):
         try:
@@ -151,16 +153,30 @@ class SNMPService:
             )
             
             current_oid = base_oid
+            bulk_cmd = m.get('bulkCmd')
+            max_repetitions = 25
             while True:
                 try:
-                    errorIndication, errorStatus, errorIndex, varBinds = await m['nextCmd'](
-                        self.engine,
-                        m['CommunityData'](olt.snmp_community, mpModel=1),
-                        transport,
-                        m['ContextData'](),
-                        m['ObjectType'](m['ObjectIdentity'](current_oid)),
-                        lexicographicMode=False
-                    )
+                    if bulk_cmd:
+                        errorIndication, errorStatus, errorIndex, varBinds = await bulk_cmd(
+                            self.engine,
+                            m['CommunityData'](olt.snmp_community, mpModel=1),
+                            transport,
+                            m['ContextData'](),
+                            0,
+                            max_repetitions,
+                            m['ObjectType'](m['ObjectIdentity'](current_oid)),
+                            lexicographicMode=False
+                        )
+                    else:
+                        errorIndication, errorStatus, errorIndex, varBinds = await m['nextCmd'](
+                            self.engine,
+                            m['CommunityData'](olt.snmp_community, mpModel=1),
+                            transport,
+                            m['ContextData'](),
+                            m['ObjectType'](m['ObjectIdentity'](current_oid)),
+                            lexicographicMode=False
+                        )
                 except Exception as e:
                     logger.error(f"SNMP WALK exception em {olt.name}: {e}")
                     break
@@ -176,19 +192,18 @@ class SNMPService:
                     break
 
                 advanced = False
-                for row in varBinds:
-                    for varBind in row:
-                        oid_str = str(varBind[0])
-                        if not oid_str.startswith(f"{base_oid}."):
-                            return results
-                        val_obj = varBind[1]
-                        results.append({
-                            "oid": oid_str,
-                            "value": self._parse_value(val_obj)
-                        })
-                        if oid_str != current_oid:
-                            current_oid = oid_str
-                            advanced = True
+                for varBind in varBinds:
+                    oid_str = str(varBind[0])
+                    if not oid_str.startswith(f"{base_oid}."):
+                        return results
+                    val_obj = varBind[1]
+                    results.append({
+                        "oid": oid_str,
+                        "value": self._parse_value(val_obj)
+                    })
+                    if oid_str != current_oid:
+                        current_oid = oid_str
+                        advanced = True
 
                 if not advanced:
                     break

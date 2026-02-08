@@ -115,13 +115,21 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--olt-id", type=int, help="Run discovery for a specific OLT id")
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
+        parser.add_argument("--force", action="store_true", help="Ignore discovery_enabled for the selected OLT(s)")
 
     def handle(self, *args, **options):
-        olt_qs = OLT.objects.filter(
-            is_active=True,
-            discovery_enabled=True,
-            vendor_profile__is_active=True,
-        ).select_related("vendor_profile")
+        force = bool(options.get("force", False))
+        if force:
+            olt_qs = OLT.objects.filter(
+                is_active=True,
+                vendor_profile__is_active=True,
+            ).select_related("vendor_profile")
+        else:
+            olt_qs = OLT.objects.filter(
+                is_active=True,
+                discovery_enabled=True,
+                vendor_profile__is_active=True,
+            ).select_related("vendor_profile")
 
         olt_id = options.get("olt_id")
         if olt_id:
@@ -194,17 +202,17 @@ class Command(BaseCommand):
 
         interfaces_cfg = oid_templates.get("pon_interfaces", {})
         if interfaces_cfg and not dry_run:
-            name_oid = interfaces_cfg.get("name_oid")
-            if name_oid:
-                status_oid = interfaces_cfg.get("status_oid")
+            iface_name_oid = interfaces_cfg.get("name_oid")
+            if iface_name_oid:
+                iface_status_oid = interfaces_cfg.get("status_oid")
                 name_regex = interfaces_cfg.get("name_regex", r"^gpon_(\d+)/(\d+)/(\d+)$")
                 status_up = str(interfaces_cfg.get("status_up", "1"))
                 regex = re.compile(name_regex)
 
-                name_rows = snmp_service.walk(olt, name_oid)
-                status_rows = snmp_service.walk(olt, status_oid) if status_oid else []
-                names = _rows_to_index_map(name_rows, name_oid)
-                statuses = _rows_to_index_map(status_rows, status_oid) if status_oid else {}
+                name_rows = snmp_service.walk(olt, iface_name_oid)
+                status_rows = snmp_service.walk(olt, iface_status_oid) if iface_status_oid else []
+                names = _rows_to_index_map(name_rows, iface_name_oid)
+                statuses = _rows_to_index_map(status_rows, iface_status_oid) if iface_status_oid else {}
 
                 for index, iface_name in names.items():
                     if not iface_name:
@@ -212,7 +220,7 @@ class Command(BaseCommand):
                     match = regex.match(iface_name)
                     if not match:
                         continue
-                    if status_oid and statuses.get(index) != status_up:
+                    if iface_status_oid and statuses.get(index) != status_up:
                         continue
                     try:
                         rack_id = int(match.group(1))

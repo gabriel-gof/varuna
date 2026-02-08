@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard,
   Network,
+  Settings as SettingsIcon,
   LogOut,
   User,
   Palette,
@@ -17,6 +18,7 @@ import { useTranslation } from 'react-i18next'
 import './i18n'
 import { NetworkTopology } from './components/NetworkTopology'
 import { Dashboard } from './components/Dashboard'
+import { SettingsPanel } from './components/SettingsPanel'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api from './services/api'
 import { classifyOnu, getOnuStats, isZteOlt } from './utils/stats'
@@ -25,6 +27,24 @@ const normalizeList = (data) => {
   if (Array.isArray(data)) return data
   if (data && Array.isArray(data.results)) return data.results
   return []
+}
+const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
+
+const getApiErrorMessage = (error, fallback) => {
+  const data = error?.response?.data
+  if (typeof data === 'string' && data.trim()) return data.trim()
+  if (data?.detail) return String(data.detail)
+  if (data && typeof data === 'object') {
+    const parts = Object.entries(data)
+      .map(([key, value]) => {
+        if (Array.isArray(value)) return `${key}: ${value.join(', ')}`
+        if (value && typeof value === 'object') return `${key}: ${JSON.stringify(value)}`
+        return `${key}: ${value}`
+      })
+      .filter(Boolean)
+    if (parts.length) return parts.join(' | ')
+  }
+  return error?.message || fallback
 }
 
 const clampPonPanelWidth = (value) => {
@@ -270,13 +290,12 @@ const buildTestTopology = () => {
   })
 }
 
-const USE_TEST_DATA = true
+const USE_TEST_DATA = String(import.meta.env.VITE_USE_TEST_DATA || 'false').toLowerCase() === 'true'
 
 const mapTopologyToSlots = (olt, topology) => {
-  const slotsMap = topology?.slots || {}
-  const slots = Object.values(slotsMap).map((slot) => {
+  const slots = asList(topology?.slots).map((slot) => {
     const slotId = `${olt.id}-${slot.slot_id}`
-    const pons = Object.values(slot.pons || {}).map((pon) => {
+    const pons = asList(slot?.pons).map((pon) => {
       const ponId = `${olt.id}-${slot.slot_id}-${pon.pon_id}`
       return {
         id: ponId,
@@ -284,7 +303,7 @@ const mapTopologyToSlots = (olt, topology) => {
         pon_id: pon.pon_id,
         pon_key: pon.pon_key,
         name: pon.pon_name,
-        onus: (pon.onus || []).map((onu) => ({
+        onus: asList(pon?.onus).map((onu) => ({
           id: onu.id,
           onu_number: onu.onu_number ?? onu.onu_id,
           onu_id: onu.onu_id ?? onu.onu_number,
@@ -320,9 +339,9 @@ const mapTopologyToSlots = (olt, topology) => {
 
 const collectOnusFromOlt = (olt) => {
   const onus = []
-  ;(olt?.slots || []).forEach((slot) => {
-    ;(slot?.pons || []).forEach((pon) => {
-      ;(pon?.onus || []).forEach((onu) => onus.push(onu))
+  asList(olt?.slots).forEach((slot) => {
+    asList(slot?.pons).forEach((pon) => {
+      asList(pon?.onus).forEach((onu) => onus.push(onu))
     })
   })
   return onus
@@ -330,8 +349,8 @@ const collectOnusFromOlt = (olt) => {
 
 const findPonById = (olts, ponId) => {
   for (const olt of olts) {
-    for (const slot of olt?.slots || []) {
-      for (const pon of slot?.pons || []) {
+    for (const slot of asList(olt?.slots)) {
+      for (const pon of asList(slot?.pons)) {
         if (String(pon?.id) === String(ponId)) {
           return { olt, slot, pon }
         }
@@ -400,8 +419,14 @@ const App = () => {
     }
   })
   const [olts, setOlts] = useState([])
+  const [vendorProfiles, setVendorProfiles] = useState([])
   const [loading, setLoading] = useState(false)
+  const [vendorLoading, setVendorLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [vendorError, setVendorError] = useState(null)
+  const [settingsActionError, setSettingsActionError] = useState(null)
+  const [settingsActionMessage, setSettingsActionMessage] = useState('')
+  const [settingsActionBusy, setSettingsActionBusy] = useState({})
   const [isRefreshing, setIsRefreshing] = useState(false)
   const mainLayoutRef = useRef(null)
   const resizePointerIdRef = useRef(null)
@@ -439,28 +464,95 @@ const App = () => {
         )
         setOlts(enriched)
       } catch (fallbackErr) {
-        setError(err?.message || fallbackErr?.message || 'Failed to load OLT data')
+        setError(getApiErrorMessage(err, getApiErrorMessage(fallbackErr, 'Failed to load OLT data')))
       }
     } finally {
       setLoading(false)
     }
   }
 
+  const fetchVendorProfiles = async () => {
+    setVendorLoading(true)
+    setVendorError(null)
+    try {
+      const res = await api.get('/vendor-profiles/')
+      setVendorProfiles(normalizeList(res.data))
+    } catch (err) {
+      setVendorError(getApiErrorMessage(err, 'Failed to load vendor profiles'))
+    } finally {
+      setVendorLoading(false)
+    }
+  }
+
   const handleRefresh = async () => {
     setIsRefreshing(true)
-    await fetchOlts()
+    await Promise.all([fetchOlts(), fetchVendorProfiles()])
     setTimeout(() => setIsRefreshing(false), 400)
   }
 
   useEffect(() => {
     fetchOlts()
+    fetchVendorProfiles()
     const interval = setInterval(fetchOlts, 30000)
     return () => clearInterval(interval)
   }, [])
 
+  const runSettingsAction = async (key, request, successMessage = '') => {
+    if (USE_TEST_DATA) return null
+    setSettingsActionError(null)
+    setSettingsActionMessage('')
+    setSettingsActionBusy((prev) => ({ ...prev, [key]: true }))
+
+    try {
+      const result = await request()
+      if (successMessage) {
+        setSettingsActionMessage(successMessage)
+      }
+      return result
+    } catch (err) {
+      setSettingsActionError(getApiErrorMessage(err, 'Failed to execute settings action'))
+      return null
+    } finally {
+      setSettingsActionBusy((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+    }
+  }
+
+  const createOlt = async (payload) => {
+    const created = await runSettingsAction(
+      'create',
+      async () => {
+        const response = await api.post('/olts/', payload)
+        await fetchOlts()
+        return response.data
+      },
+      t('OLT created successfully')
+    )
+    return created
+  }
+
+  const deleteOlt = async (oltId) => {
+    const removed = await runSettingsAction(
+      `delete:${oltId}`,
+      async () => {
+        await api.delete(`/olts/${oltId}/`)
+        await fetchOlts()
+        return true
+      },
+      t('OLT removed successfully')
+    )
+    return Boolean(removed)
+  }
+
   const zteOlts = useMemo(() => olts.filter(isZteOlt), [olts])
   const testOlts = useMemo(() => buildTestTopology(), [])
+  const settingsOlts = USE_TEST_DATA ? testOlts : olts
   const displayOlts = USE_TEST_DATA ? testOlts : zteOlts
+  const settingsLoading = USE_TEST_DATA ? false : loading
+  const settingsError = USE_TEST_DATA ? null : error
   const displayLoading = USE_TEST_DATA ? false : loading
   const displayError = USE_TEST_DATA ? null : error
 
@@ -485,6 +577,40 @@ const App = () => {
       }
     })
   }, [displayOlts])
+
+  const clientRows = useMemo(() => {
+    const rows = []
+
+    displayOlts.forEach((olt) => {
+      asList(olt?.slots).forEach((slot) => {
+        const slotNumber = slot?.slot_number ?? slot?.slot_id ?? slot?.id
+        asList(slot?.pons).forEach((pon) => {
+          const ponNumber = pon?.pon_number ?? pon?.pon_id ?? pon?.id
+          asList(pon?.onus).forEach((onu) => {
+            const statusInfo = classifyOnu(onu)
+            rows.push({
+              key: `${olt?.id}-${slot?.id}-${pon?.id}-${onu?.id || onu?.serial || onu?.name}`,
+              clientName: onu?.client_name || onu?.name || '—',
+              serial: onu?.serial || onu?.serial_number || '—',
+              oltName: olt?.name || '—',
+              portLabel: `${t('SLOT')} ${slotNumber ?? '—'} / PON ${ponNumber ?? '—'} / ONU ${onu?.onu_number ?? onu?.onu_id ?? '—'}`,
+              statusKey: statusInfo.status === 'online' ? 'online' : 'offline',
+              statusLabel: statusInfo.status === 'online' ? t('Online') : t('Offline')
+            })
+          })
+        })
+      })
+    })
+
+    return rows
+      .sort((a, b) => {
+        if (a.statusKey !== b.statusKey) {
+          return a.statusKey === 'offline' ? -1 : 1
+        }
+        return a.clientName.localeCompare(b.clientName)
+      })
+      .slice(0, 30)
+  }, [displayOlts, t])
 
   const selectedPonData = useMemo(() => {
     if (!selectedPonId) return null
@@ -594,7 +720,7 @@ const App = () => {
   }, [isResizingPonPanel])
 
   const selectedOnus = useMemo(() => {
-    const onus = selectedPonData?.pon?.onus || []
+    const onus = asList(selectedPonData?.pon?.onus)
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
 
@@ -822,7 +948,7 @@ const App = () => {
         <div className="flex items-center gap-1 h-full">
           <button
             onClick={() => setActiveNav('dashboard')}
-            className={`flex items-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'dashboard' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'dashboard' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <LayoutDashboard className="w-[18px] h-[18px]" />
             <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Dashboard')}</span>
@@ -830,7 +956,7 @@ const App = () => {
           </button>
           <button
             onClick={() => setActiveNav('topology')}
-            className={`flex items-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <Network className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
@@ -838,7 +964,18 @@ const App = () => {
           </button>
         </div>
 
-        <div className="flex items-center gap-3 ml-auto">
+        <div className="flex items-center gap-1 h-full ml-auto mr-2">
+          <button
+            onClick={() => setActiveNav('settings')}
+            className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+          >
+            <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
+            <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Settings')}</span>
+            {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+          </button>
+        </div>
+
+        <div className="flex items-center gap-3">
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all group outline-none">
@@ -930,12 +1067,13 @@ const App = () => {
             <Dashboard
               stats={overallStats}
               oltStats={oltStats}
+              clientRows={clientRows}
               loading={displayLoading}
               error={displayError}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
             />
-          ) : (
+          ) : activeNav === 'topology' ? (
             <NetworkTopology
               olts={displayOlts}
               loading={displayLoading}
@@ -959,6 +1097,21 @@ const App = () => {
                 setSelectedSearchMatch(null)
                 setSelectedPonId((prev) => (prev === id ? null : id))
               }}
+            />
+          ) : (
+            <SettingsPanel
+              olts={settingsOlts}
+              vendorProfiles={vendorProfiles}
+              loading={settingsLoading}
+              vendorLoading={vendorLoading}
+              error={settingsError}
+              vendorError={vendorError}
+              actionError={settingsActionError}
+              actionMessage={settingsActionMessage}
+              onCreateOlt={createOlt}
+              onDeleteOlt={deleteOlt}
+              actionBusy={settingsActionBusy}
+              isDemoMode={USE_TEST_DATA}
             />
           )}
         </section>
