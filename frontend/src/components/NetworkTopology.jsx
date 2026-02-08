@@ -608,7 +608,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                       />
                       <span className="h-4 w-4 flex items-center justify-center">
                         {isChecked ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={3} />
+                          <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" strokeWidth={3} />
                         ) : (
                           <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
                         )}
@@ -685,15 +685,15 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                       type="button"
                       onClick={() => toggleAlarmReason(reason.key)}
                       className={`
-                        w-full flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-left transition-colors
+                        w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-colors
                         ${isSelected
-                          ? 'bg-slate-50/80 border-slate-200'
-                          : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300'}
+                          ? 'bg-slate-50/80 border-slate-200 dark:bg-slate-800 dark:border-slate-700'
+                          : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300 dark:bg-slate-900/40 dark:border-slate-800 dark:hover:bg-slate-800 dark:hover:border-slate-700'}
                       `}
                     >
                       <span className="h-4 w-4 shrink-0 flex items-center justify-center">
                         {isSelected ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={3} />
+                          <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" strokeWidth={3} />
                         ) : (
                           <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
                         )}

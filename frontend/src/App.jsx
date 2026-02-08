@@ -725,21 +725,21 @@ const App = () => {
 
   const statusStyle = (statusKey) => {
     if (statusKey === 'online') {
-      return 'bg-emerald-50 text-emerald-600'
+      return 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30'
     }
     if (statusKey === 'dying_gasp') {
-      return 'bg-blue-50 text-blue-600'
+      return 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/30'
     }
     if (statusKey === 'link_loss') {
-      return 'bg-rose-50 text-rose-500'
+      return 'bg-rose-50 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
     }
     if (statusKey === 'unknown') {
-      return 'bg-purple-50 text-purple-500'
+      return 'bg-purple-50 text-purple-600 ring-1 ring-inset ring-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:ring-purple-400/30'
     }
     if (statusKey === 'offline') {
-      return 'bg-rose-50 text-rose-500'
+      return 'bg-rose-50 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
     }
-    return 'bg-slate-100 text-slate-500'
+    return 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-slate-700/50 dark:text-slate-200 dark:ring-slate-500/40'
   }
 
   const statusDot = (statusKey) => {
@@ -1002,7 +1002,7 @@ const App = () => {
                             title={t('Sort by')}
                           >
                             <ArrowDownUp className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 shrink-0" />
-                            <span className="absolute left-7 right-7 top-1/2 -translate-y-1/2 text-center text-[10px] font-black uppercase tracking-[0.03em] whitespace-nowrap overflow-hidden text-ellipsis">
+                            <span className="absolute left-7 right-7 top-1/2 -translate-y-1/2 text-center text-[10px] font-black uppercase tracking-[0.03em] whitespace-nowrap overflow-hidden text-ellipsis text-emerald-600 dark:text-emerald-400">
                               {currentSortLabel}
                             </span>
                             <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" />
@@ -1032,7 +1032,12 @@ const App = () => {
                                     <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
                                   )}
                                 </span>
-                                <span className="text-[10px] font-black uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200 text-center">
+                                <span
+                                  className={`
+                                    text-[10px] font-black uppercase tracking-[0.04em] text-center
+                                    ${currentSortMode === option.id ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-200'}
+                                  `}
+                                >
                                   {option.label}
                                 </span>
                               </DropdownMenu.Item>
@@ -1054,7 +1059,7 @@ const App = () => {
 
                   {activeTab === 'status' ? (
                     <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-                      <div className="overflow-x-auto overflow-y-auto min-h-0">
+                      <div className="overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <thead className="sticky top-0 z-10">
                             <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
@@ -1134,7 +1139,7 @@ const App = () => {
                     </div>
                   ) : (
                     <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-                      <div className="overflow-x-auto overflow-y-auto min-h-0">
+                      <div className="overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <thead className="sticky top-0 z-10">
                             <tr className="bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
