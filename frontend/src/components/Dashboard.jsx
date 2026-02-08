@@ -174,7 +174,7 @@ export const Dashboard = ({ stats, oltStats, loading, error, onRefresh, isRefres
             <Zap className="w-6 h-6" />
           </div>
           <div>
-            <h4 className="text-[11px] font-black text-blue-400 uppercase tracking-widest">Dying Gasp</h4>
+            <h4 className="text-[11px] font-black text-blue-400 uppercase tracking-widest">{t('Dying Gasp')}</h4>
             <p className="text-2xl font-black text-blue-700 dark:text-blue-300">{safeStats.dyingGasp}</p>
           </div>
         </div>
@@ -184,7 +184,7 @@ export const Dashboard = ({ stats, oltStats, loading, error, onRefresh, isRefres
             <AlertTriangle className="w-6 h-6" />
           </div>
           <div>
-            <h4 className="text-[11px] font-black text-rose-400 uppercase tracking-widest">Link Loss</h4>
+            <h4 className="text-[11px] font-black text-rose-400 uppercase tracking-widest">{t('Link Loss')}</h4>
             <p className="text-2xl font-black text-rose-700 dark:text-rose-300">{safeStats.linkLoss}</p>
           </div>
         </div>
@@ -194,7 +194,7 @@ export const Dashboard = ({ stats, oltStats, loading, error, onRefresh, isRefres
             <HelpCircle className="w-6 h-6" />
           </div>
           <div>
-            <h4 className="text-[11px] font-black text-purple-400 uppercase tracking-widest">Unknown</h4>
+            <h4 className="text-[11px] font-black text-purple-400 uppercase tracking-widest">{t('Unknown')}</h4>
             <p className="text-2xl font-black text-purple-700 dark:text-purple-300">{safeStats.unknown}</p>
           </div>
         </div>

@@ -7,7 +7,9 @@ import {
   ChevronDown,
   ChevronRight,
   X,
-  RotateCw
+  RotateCw,
+  Check,
+  ArrowDownUp
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
@@ -36,6 +38,11 @@ const formatPowerValue = (value) => {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return String(value)
   return `${numeric.toFixed(2)} dBm`
+}
+
+const asNumericPower = (value) => {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
 }
 
 const getOnuPowerSnapshot = (onu) => {
@@ -326,6 +333,8 @@ const App = () => {
   const [selectedSearchMatch, setSelectedSearchMatch] = useState(null)
   const [isDarkMode, setIsDarkMode] = useState(false)
   const [activeTab, setActiveTab] = useState('status')
+  const [statusSortMode, setStatusSortMode] = useState('onu_id')
+  const [powerSortMode, setPowerSortMode] = useState('worst_olt_rx')
   const [activeNav, setActiveNav] = useState('dashboard')
   const [isResizingPonPanel, setIsResizingPonPanel] = useState(false)
   const [ponPanelWidth, setPonPanelWidth] = useState(() => {
@@ -518,6 +527,142 @@ const App = () => {
     const onus = selectedPonData?.pon?.onus || []
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
+
+  const statusSortOptions = [
+    { id: 'onu_id', label: t('Default') },
+    { id: 'dying_gasp', label: t('Dying Gasp') },
+    { id: 'link_loss', label: t('Link Loss') },
+    { id: 'unknown', label: t('Unknown') },
+    { id: 'offline', label: t('Offline') },
+    { id: 'online', label: t('Online') }
+  ]
+
+  const powerSortOptions = [
+    { id: 'worst_olt_rx', label: t('Worst OLT RX') },
+    { id: 'worst_onu_rx', label: t('Worst ONU RX') },
+    { id: 'best_olt_rx', label: t('Best OLT RX') },
+    { id: 'best_onu_rx', label: t('Best ONU RX') }
+  ]
+
+  const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
+  const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
+  const currentSortLabel = activeSortOptions.find((option) => option.id === currentSortMode)?.label || activeSortOptions[0]?.label || t('ONU ID')
+  const setCurrentSortMode = (mode) => {
+    if (activeTab === 'power') {
+      setPowerSortMode(mode)
+      return
+    }
+    setStatusSortMode(mode)
+  }
+
+  const statusRows = useMemo(() => {
+    const baseRows = selectedOnus.map((onu) => {
+      const classification = classifyOnu(onu)
+      const statusKey = classification.status
+      const parsedOffline = Date.parse(onu?.offline_since || '')
+      return {
+        onu,
+        statusKey,
+        offlineTimestamp: Number.isFinite(parsedOffline) ? parsedOffline : null,
+        onuNumber: Number(onu?.onu_number ?? onu?.onu_id ?? 0)
+      }
+    })
+
+    if (statusSortMode === 'onu_id') {
+      return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
+    }
+
+    const priorityByMode = {
+      online: {
+        online: 0,
+        link_loss: 1,
+        dying_gasp: 2,
+        unknown: 3,
+        offline: 4
+      },
+      offline: {
+        link_loss: 0,
+        dying_gasp: 0,
+        unknown: 0,
+        offline: 0,
+        online: 9
+      },
+      link_loss: {
+        link_loss: 0,
+        dying_gasp: 1,
+        unknown: 1,
+        offline: 1,
+        online: 9
+      },
+      dying_gasp: {
+        dying_gasp: 0,
+        link_loss: 1,
+        unknown: 1,
+        offline: 1,
+        online: 9
+      },
+      unknown: {
+        unknown: 0,
+        link_loss: 1,
+        dying_gasp: 1,
+        offline: 1,
+        online: 9
+      }
+    }
+
+    const priorities = priorityByMode[statusSortMode] || priorityByMode.offline
+
+    return [...baseRows].sort((a, b) => {
+      const statusDelta = (priorities[a.statusKey] ?? 9) - (priorities[b.statusKey] ?? 9)
+      if (statusDelta !== 0) return statusDelta
+
+      if (a.statusKey !== 'online' && b.statusKey !== 'online') {
+        const timeDelta = (b.offlineTimestamp ?? 0) - (a.offlineTimestamp ?? 0)
+        if (timeDelta !== 0) return timeDelta
+      }
+
+      return a.onuNumber - b.onuNumber
+    })
+  }, [selectedOnus, statusSortMode])
+
+  const powerRows = useMemo(() => {
+    const baseRows = selectedOnus.map((onu) => {
+      const { onuRx, oltRx } = getOnuPowerSnapshot(onu)
+      return {
+        onu,
+        onuNumber: Number(onu?.onu_number ?? onu?.onu_id ?? 0),
+        onuRx: asNumericPower(onuRx),
+        oltRx: asNumericPower(oltRx),
+      }
+    })
+
+    const compareNullable = (a, b, direction = 'asc') => {
+      if (a === null && b === null) return 0
+      if (a === null) return 1
+      if (b === null) return -1
+      if (a === b) return 0
+      return direction === 'asc' ? a - b : b - a
+    }
+
+    const sortBy = (primaryKey, direction) => {
+      const secondaryKey = primaryKey === 'oltRx' ? 'onuRx' : 'oltRx'
+      return [...baseRows].sort((a, b) => {
+        const primaryDelta = compareNullable(a[primaryKey], b[primaryKey], direction)
+        if (primaryDelta !== 0) return primaryDelta
+
+        const secondaryDelta = compareNullable(a[secondaryKey], b[secondaryKey], direction)
+        if (secondaryDelta !== 0) return secondaryDelta
+
+        return a.onuNumber - b.onuNumber
+      })
+    }
+
+    if (powerSortMode === 'worst_olt_rx') return sortBy('oltRx', 'asc')
+    if (powerSortMode === 'worst_onu_rx') return sortBy('onuRx', 'asc')
+    if (powerSortMode === 'best_olt_rx') return sortBy('oltRx', 'desc')
+    if (powerSortMode === 'best_onu_rx') return sortBy('onuRx', 'desc')
+    return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
+  }, [selectedOnus, powerSortMode])
 
   useEffect(() => {
     if (!selectedSearchMatch) return
@@ -768,14 +913,63 @@ const App = () => {
                         { id: 'power', label: t('Potência') }
                       ]}
                     />
-                    <button
-                      onClick={() => { /* TODO: trigger refresh */ }}
-                      className="shrink-0 ml-auto p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
-                      aria-label={t('Refresh')}
-                      title={t('Refresh')}
-                    >
-                      <RotateCw className="w-4 h-4" strokeWidth={2.5} />
-                    </button>
+                    <div className="ml-auto flex items-center gap-2">
+                      <DropdownMenu.Root>
+                        <DropdownMenu.Trigger asChild>
+                          <button
+                            className="h-9 px-3 flex items-center gap-1.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all"
+                            aria-label={t('Sort by')}
+                            title={t('Sort by')}
+                          >
+                            <ArrowDownUp className="w-3.5 h-3.5 shrink-0" />
+                            <span className="text-[10px] font-black uppercase tracking-wide whitespace-nowrap">
+                              {currentSortLabel}
+                            </span>
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </button>
+                        </DropdownMenu.Trigger>
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.Content
+                            className="min-w-[188px] bg-white dark:bg-slate-900 rounded-xl p-1.5 shadow-xl border border-slate-200 dark:border-slate-800 z-[220] animate-in fade-in zoom-in-95 duration-150"
+                            sideOffset={8}
+                            align="end"
+                          >
+                            {activeSortOptions.map((option) => (
+                              <DropdownMenu.Item
+                                key={option.id}
+                                onSelect={() => setCurrentSortMode(option.id)}
+                                className={`
+                                  flex items-center gap-2 px-2.5 py-2 rounded-lg outline-none cursor-pointer transition-colors
+                                  ${currentSortMode === option.id
+                                    ? 'bg-slate-50 dark:bg-slate-800/60'
+                                    : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'}
+                                `}
+                              >
+                                <span className="h-4 w-4 flex items-center justify-center">
+                                  {currentSortMode === option.id ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={3} />
+                                  ) : (
+                                    <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
+                                  )}
+                                </span>
+                                <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                                  {option.label}
+                                </span>
+                              </DropdownMenu.Item>
+                            ))}
+                          </DropdownMenu.Content>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu.Root>
+
+                      <button
+                        onClick={() => { /* TODO: trigger refresh */ }}
+                        className="shrink-0 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
+                        aria-label={t('Refresh')}
+                        title={t('Refresh')}
+                      >
+                        <RotateCw className="w-4 h-4" strokeWidth={2.5} />
+                      </button>
+                    </div>
                   </div>
 
                   {activeTab === 'status' ? (
@@ -792,10 +986,16 @@ const App = () => {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
-                            {selectedOnus.map((onu) => {
-                              const classification = classifyOnu(onu)
-                              const label = classification.label
-                              const statusKey = classification.status
+                            {statusRows.map(({ onu, statusKey }) => {
+                              const statusLabel = statusKey === 'online'
+                                ? t('Online')
+                                : statusKey === 'dying_gasp'
+                                  ? t('Dying Gasp')
+                                  : statusKey === 'link_loss'
+                                    ? t('Link Loss')
+                                    : statusKey === 'unknown'
+                                      ? t('Unknown')
+                                      : t('Offline')
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
@@ -832,7 +1032,7 @@ const App = () => {
                                       className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}
                                     >
                                       <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
-                                      {label}
+                                      {statusLabel}
                                     </span>
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-right">
@@ -841,7 +1041,7 @@ const App = () => {
                                 </tr>
                               )
                             })}
-                            {selectedOnus.length === 0 && (
+                            {statusRows.length === 0 && (
                               <tr>
                                 <td colSpan={5} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
@@ -866,7 +1066,7 @@ const App = () => {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
-                            {selectedOnus.map((onu) => {
+                            {powerRows.map(({ onu }) => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
@@ -923,7 +1123,7 @@ const App = () => {
                                 </tr>
                               )
                             })}
-                            {selectedOnus.length === 0 && (
+                            {powerRows.length === 0 && (
                               <tr>
                                 <td colSpan={5} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}

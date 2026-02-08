@@ -235,8 +235,8 @@ class ONULog(models.Model):
     REASON_UNKNOWN = 'unknown'
     
     REASON_CHOICES = [
-        (REASON_LINK_LOSS, 'Perda de Sinal (LOS)'),
-        (REASON_DYING_GASP, 'Dying Gasp'),
+        (REASON_LINK_LOSS, 'Rompimento'),
+        (REASON_DYING_GASP, 'Sem Energia'),
         (REASON_UNKNOWN, 'Desconhecido'),
     ]
     
