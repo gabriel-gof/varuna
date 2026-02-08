@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X, Check } from 'lucide-react'
+import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X, Check, Minus, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getOnuStats } from '../utils/stats'
 
@@ -249,10 +249,14 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     [alarmReasons]
   )
 
+  const clampAlarmMinCount = (value) => {
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return 1
+    return Math.min(128, Math.max(1, Math.trunc(numeric)))
+  }
+
   const effectiveAlarmMinCount = useMemo(() => {
-    const value = Number(alarmMinCountInput)
-    if (!Number.isFinite(value)) return 1
-    return Math.min(128, Math.max(1, Math.trunc(value)))
+    return clampAlarmMinCount(alarmMinCountInput)
   }, [alarmMinCountInput])
 
   useEffect(() => {
@@ -270,6 +274,14 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
         return prev
       }
       return { ...prev, [reasonKey]: !prev[reasonKey] }
+    })
+  }
+
+  const stepAlarmMinCount = (delta) => {
+    setAlarmMinCountInput((prev) => {
+      const base = Number(prev)
+      const safeBase = Number.isFinite(base) ? base : 1
+      return String(clampAlarmMinCount(safeBase + delta))
     })
   }
 
@@ -644,7 +656,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
             </button>
 
             {alarmMenuOpen && (
-              <div className="absolute right-0 top-11 z-30 w-[280px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
+              <div className="absolute right-0 top-11 z-30 w-[272px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
               <div className="flex items-center justify-between mb-3.5">
                 <p className="text-[12px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">{t('Alarm settings')}</p>
                 <button
@@ -673,7 +685,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                       type="button"
                       onClick={() => toggleAlarmReason(reason.key)}
                       className={`
-                        w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-left transition-colors
+                        w-full flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-left transition-colors
                         ${isSelected
                           ? 'bg-slate-50/80 border-slate-200'
                           : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300'}
@@ -702,7 +714,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                   <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">
                     {t('Minimum ONU count')}
                   </label>
-                  <div className="h-9 flex items-center">
+                  <div className="h-9 flex items-center gap-1.5">
                     <input
                       type="number"
                       min={1}
@@ -715,15 +727,43 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                         setAlarmMinCountInput(nextValue)
                       }}
                       onBlur={() => {
-                        const value = Number(alarmMinCountInput)
-                        if (!Number.isFinite(value) || value < 1) {
-                          setAlarmMinCountInput('1')
-                          return
-                        }
-                        setAlarmMinCountInput(String(Math.min(128, Math.trunc(value))))
+                        setAlarmMinCountInput(String(clampAlarmMinCount(alarmMinCountInput)))
                       }}
-                      className="h-9 w-24 rounded-lg border border-slate-200 dark:border-slate-800 bg-[#F8FAFB] dark:bg-slate-800 px-2 text-center tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
+                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-800 bg-[#F8FAFB] dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
                     />
+                    <div className="h-9 w-8 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col">
+                      <button
+                        type="button"
+                        onClick={() => stepAlarmMinCount(1)}
+                        disabled={effectiveAlarmMinCount >= 128}
+                        className={`
+                          h-1/2 w-full flex items-center justify-center transition-colors
+                          ${effectiveAlarmMinCount >= 128
+                            ? 'text-slate-300 cursor-not-allowed'
+                            : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:hover:bg-slate-800'}
+                        `}
+                        aria-label="+1"
+                        title="+1"
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                      <div className="h-px w-full bg-slate-200 dark:bg-slate-700" />
+                      <button
+                        type="button"
+                        onClick={() => stepAlarmMinCount(-1)}
+                        disabled={effectiveAlarmMinCount <= 1}
+                        className={`
+                          h-1/2 w-full flex items-center justify-center transition-colors
+                          ${effectiveAlarmMinCount <= 1
+                            ? 'text-slate-300 cursor-not-allowed'
+                            : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:hover:bg-slate-800'}
+                        `}
+                        aria-label="-1"
+                        title="-1"
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
 
