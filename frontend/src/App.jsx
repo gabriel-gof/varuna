@@ -559,6 +559,23 @@ const App = () => {
   }, [isPonPanelOpen, isResizingPonPanel])
 
   useEffect(() => {
+    if (!isPonPanelOpen) return undefined
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      if (isResizingPonPanel) {
+        stopPonPanelResize()
+      }
+      setSelectedSearchMatch(null)
+      setSelectedPonId(null)
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [isPonPanelOpen, isResizingPonPanel])
+
+  useEffect(() => {
     if (!isResizingPonPanel) return undefined
 
     previousBodyCursorRef.current = document.body.style.cursor
