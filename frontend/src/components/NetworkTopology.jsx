@@ -709,9 +709,9 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
 
               <div className="h-px bg-slate-200/80 dark:bg-slate-700/80 mb-3.5" />
 
-              <div className="grid grid-cols-2 items-start gap-3">
+              <div className="grid grid-cols-2 items-end gap-3">
                 <div>
-                  <label className="block text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">
+                  <label className="flex min-h-[24px] items-end text-[10px] leading-[1.1] font-black uppercase tracking-wide text-slate-500 mb-2">
                     {t('Minimum ONU count')}
                   </label>
                   <div className="h-9 flex items-center gap-1.5">
@@ -768,7 +768,9 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                 </div>
 
                 <div className="flex flex-col items-end">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">{t('Alarm Mode')}</p>
+                  <p className="flex min-h-[24px] items-end text-right text-[10px] leading-[1.1] font-black uppercase tracking-wide text-slate-500 mb-2">
+                    {t('Alarm Mode')}
+                  </p>
                   <div className="h-9 flex items-center justify-end gap-2.5">
                     <span className={`text-[12px] font-black leading-none tabular-nums ${alarmEnabled ? 'text-rose-600' : 'text-slate-400'}`}>
                       {alarmEnabled ? t('Enabled') : t('Disabled')}

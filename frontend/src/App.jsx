@@ -4,6 +4,8 @@ import {
   Network,
   LogOut,
   User,
+  Palette,
+  Languages,
   ChevronDown,
   ChevronRight,
   X,
@@ -312,8 +314,8 @@ const VarunaIcon = ({ className }) => (
   </svg>
 )
 
-const SegmentedControl = ({ options, value, onChange }) => (
-  <div className="inline-flex bg-slate-100/50 dark:bg-slate-800/50 p-0.5 rounded-lg border border-slate-100 dark:border-slate-800">
+const SegmentedControl = ({ options, value, onChange, compact = false }) => (
+  <div className="inline-flex w-full items-center gap-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-slate-100/80 dark:bg-slate-800/80 p-[3px]">
     {options.map((opt) => (
       <button
         key={opt.id}
@@ -321,10 +323,10 @@ const SegmentedControl = ({ options, value, onChange }) => (
           e.stopPropagation()
           onChange(opt.id)
         }}
-        className={`w-24 py-2 text-[11px] font-bold uppercase tracking-wider rounded-md transition-all ${
+        className={`${compact ? 'h-[26px] flex-1 min-w-0 px-1 text-[9px] tracking-[0.05em]' : 'h-8 min-w-[86px] px-3 text-[10px] tracking-[0.06em]'} font-bold uppercase rounded-md transition-all whitespace-nowrap overflow-hidden text-ellipsis ${
           value === opt.id
-            ? 'bg-white dark:bg-slate-700 text-emerald-600 shadow-sm ring-1 ring-black/5 dark:ring-white/5'
-            : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+            ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+            : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'
         }`}
       >
         {opt.label}
@@ -790,44 +792,60 @@ const App = () => {
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
-                className="min-w-[280px] bg-white dark:bg-slate-900 rounded-2xl p-2 shadow-2xl border border-slate-100 dark:border-slate-800 z-[200] animate-in fade-in zoom-in-95 duration-200"
+                className="w-[252px] bg-white dark:bg-slate-900 rounded-2xl p-2.5 shadow-2xl border border-slate-100 dark:border-slate-800 z-[200] animate-in fade-in zoom-in-95 duration-200"
                 sideOffset={8}
                 align="end"
               >
-                <div className="px-4 py-3 mb-2 border-b border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600">
-                      <User className="w-5 h-5" />
+                <div className="px-2 py-2 mb-1.5 border-b border-slate-100 dark:border-slate-800">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-[10px] bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600">
+                      <User className="w-[17px] h-[17px]" />
                     </div>
                     <div>
-                      <p className="text-[13px] font-black text-slate-900 dark:text-white leading-none mb-1">Administrator</p>
-                      <p className="text-[10px] font-bold text-slate-400">admin@varuna.net</p>
+                      <p className="text-[12px] font-extrabold text-slate-900 dark:text-white leading-none">Administrator</p>
                     </div>
                   </div>
                 </div>
 
-                <div className="px-3 py-2 space-y-4">
-                  <div>
-                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">{t('THEME')}</span>
-                    <SegmentedControl
-                      value={isDarkMode ? 'dark' : 'light'}
-                      onChange={(val) => setIsDarkMode(val === 'dark')}
-                      options={[{ id: 'light', label: t('LIGHT') }, { id: 'dark', label: t('DARK') }]}
-                    />
-                  </div>
-                  <div>
-                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">{t('LANGUAGE')}</span>
-                    <SegmentedControl
-                      value={i18n.language}
-                      onChange={(val) => i18n.changeLanguage(val)}
-                      options={[{ id: 'pt', label: 'PORTUGUÊS' }, { id: 'en', label: 'ENGLISH' }]}
-                    />
+                <div className="px-0.5 py-0.5">
+                  <div className="flex flex-col gap-3">
+                    {/* Theme Section */}
+                    <div className="flex flex-col gap-1.5">
+                       <div className="flex items-center gap-2.5">
+                          <div className="w-6 h-6 rounded-[7px] bg-indigo-100/80 dark:bg-indigo-500/15 text-indigo-500 dark:text-indigo-400 flex items-center justify-center">
+                              <Palette className="w-3.5 h-3.5" />
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">{t('THEME')}</span>
+                       </div>
+                       <SegmentedControl
+                        compact
+                        value={isDarkMode ? 'dark' : 'light'}
+                        onChange={(val) => setIsDarkMode(val === 'dark')}
+                        options={[{ id: 'light', label: t('LIGHT') }, { id: 'dark', label: t('DARK') }]}
+                      />
+                    </div>
+
+                    {/* Language Section */}
+                    <div className="flex flex-col gap-1.5">
+                       <div className="flex items-center gap-2.5">
+                          <div className="w-6 h-6 rounded-[7px] bg-emerald-100/80 dark:bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 flex items-center justify-center">
+                               <Languages className="w-3.5 h-3.5" />
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">{t('LANGUAGE')}</span>
+                       </div>
+                      <SegmentedControl
+                        compact
+                        value={i18n.language}
+                        onChange={(val) => i18n.changeLanguage(val)}
+                        options={[{ id: 'pt', label: 'PT-BR' }, { id: 'en', label: 'EN' }]}
+                      />
+                    </div>
                   </div>
                 </div>
-                <DropdownMenu.Separator className="h-px bg-slate-100 dark:bg-slate-800 my-2 mx-2" />
-                <DropdownMenu.Item className="flex items-center gap-3 px-3 py-2.5 text-[11px] font-black text-rose-500 rounded-xl cursor-pointer outline-none transition-colors hover:bg-rose-50 dark:hover:bg-rose-900/20 uppercase group">
-                  <div className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-900/30 flex items-center justify-center text-rose-500 group-hover:bg-rose-200 dark:group-hover:bg-rose-800/50 transition-colors">
-                    <LogOut className="w-4 h-4" />
+                <DropdownMenu.Separator className="h-px bg-slate-100 dark:bg-slate-800 my-2 mx-0.5" />
+                <DropdownMenu.Item className="flex items-center gap-2.5 px-2 py-2 text-[10px] font-black text-rose-500 rounded-xl cursor-pointer outline-none transition-colors hover:bg-rose-50 dark:hover:bg-rose-900/20 uppercase group">
+                  <div className="w-6 h-6 rounded-[7px] bg-rose-100 dark:bg-rose-900/30 flex items-center justify-center text-rose-500 group-hover:bg-rose-200 dark:group-hover:bg-rose-800/50 transition-colors">
+                    <LogOut className="w-3.5 h-3.5" />
                   </div>
                   <span>{t('LOGOUT')}</span>
                 </DropdownMenu.Item>
