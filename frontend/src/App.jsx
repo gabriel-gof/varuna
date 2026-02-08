@@ -107,117 +107,158 @@ const buildClientLogin = (index) => {
   return `${first}.${last}${suffix}`
 }
 
+const buildScenarioStatuses = (profile) => {
+  if (profile === 'all_online') {
+    return [
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' }
+    ]
+  }
+
+  if (profile === 'mixed_link_loss') {
+    return [
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'offline', reason: 'link_loss' },
+      { status: 'offline', reason: 'link_loss' }
+    ]
+  }
+
+  if (profile === 'mixed_dying_gasp') {
+    return [
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'offline', reason: 'dying_gasp' },
+      { status: 'offline', reason: 'dying_gasp' }
+    ]
+  }
+
+  if (profile === 'mixed_unknown') {
+    return [
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'online', reason: '' },
+      { status: 'unknown', reason: '' },
+      { status: 'unknown', reason: '' }
+    ]
+  }
+
+  if (profile === 'all_offline_link_loss') {
+    return [
+      { status: 'offline', reason: 'link_loss' },
+      { status: 'offline', reason: 'link_loss' },
+      { status: 'offline', reason: 'link_loss' },
+      { status: 'offline', reason: 'link_loss' },
+      { status: 'offline', reason: 'link_loss' },
+      { status: 'offline', reason: 'link_loss' }
+    ]
+  }
+
+  return buildScenarioStatuses('all_online')
+}
+
 const buildTestTopology = () => {
-  const testOlts = [
+  const scenarioOlts = [
+    // OLT fully healthy (all green).
     {
-      id: 'olt-zte-gabisat',
-      name: 'OLT-ZTE',
-      slotCount: 2,
-      ponsPerSlot: 16,
-      totalOnus: 680
+      id: 'olt-scenario-green',
+      name: 'OLT-CENARIO-VERDE',
+      slots: [
+        ['all_online', 'all_online', 'all_online', 'all_online'],
+        ['all_online', 'all_online', 'all_online', 'all_online']
+      ]
     },
+    // Has a red PON but not all red in slot => slot yellow.
     {
-      id: 'olt-maxprint-gabisat',
-      name: 'OLT-MAXPRINT',
-      slotCount: 2,
-      ponsPerSlot: 16,
-      totalOnus: 420
+      id: 'olt-scenario-slot-yellow',
+      name: 'OLT-CENARIO-SLOT-YELLOW',
+      slots: [
+        ['all_offline_link_loss', 'mixed_link_loss', 'all_online', 'all_online'],
+        ['all_online', 'mixed_unknown', 'all_online', 'all_online']
+      ]
+    },
+    // Has one full red slot => OLT yellow.
+    {
+      id: 'olt-scenario-olt-yellow',
+      name: 'OLT-CENARIO-OLT-YELLOW',
+      slots: [
+        ['all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss'],
+        ['all_online', 'mixed_dying_gasp', 'all_online', 'all_online']
+      ]
+    },
+    // All slots red => OLT red.
+    {
+      id: 'olt-scenario-olt-red',
+      name: 'OLT-CENARIO-OLT-RED',
+      slots: [
+        ['all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss'],
+        ['all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss']
+      ]
     }
   ]
 
-  // Seeded pseudo-random for deterministic test data
-  let seed = 42
-  const rand = () => {
-    seed = (seed * 16807 + 0) % 2147483647
-    return (seed - 1) / 2147483646
-  }
-
   let onuIndex = 1
 
-  return testOlts.map((olt) => {
-    // Distribute ONUs across PONs with realistic variation
-    const totalPons = olt.slotCount * olt.ponsPerSlot
-    const ponOnuCounts = []
-    let remaining = olt.totalOnus
-    for (let i = 0; i < totalPons; i += 1) {
-      if (i === totalPons - 1) {
-        ponOnuCounts.push(Math.min(128, remaining))
-      } else {
-        const avg = remaining / (totalPons - i)
-        const count = Math.min(128, Math.max(0, Math.round(avg + (rand() - 0.5) * avg * 0.8)))
-        ponOnuCounts.push(count)
-        remaining -= count
-      }
-    }
-
-    let ponIdx2 = 0
-    const slots = []
-
-    for (let slotIdx = 1; slotIdx <= olt.slotCount; slotIdx += 1) {
-      const pons = []
-      for (let ponIdx = 1; ponIdx <= olt.ponsPerSlot; ponIdx += 1) {
-        const onuCount = ponOnuCounts[ponIdx2] || 0
-        ponIdx2 += 1
-        const onus = []
-
-        for (let i = 0; i < onuCount; i += 1) {
-          // Realistic distribution: ~75% online, ~10% dying_gasp, ~10% link_loss, ~5% unknown
-          const roll = rand()
-          let status = 'online'
-          let reason = ''
-
-          if (roll < 0.10) {
-            status = 'offline'
-            reason = 'dying_gasp'
-          } else if (roll < 0.20) {
-            status = 'offline'
-            reason = 'link_loss'
-          } else if (roll < 0.25) {
-            status = 'unknown'
-          }
-
-          // Keep mock serials in realistic 12-char vendor format (e.g. FHTT106169C8).
+  return scenarioOlts.map((olt) => {
+    const slots = olt.slots.map((ponProfiles, slotIndex) => {
+      const slotNumber = slotIndex + 1
+      const pons = ponProfiles.map((profile, ponIndex) => {
+        const ponNumber = ponIndex + 1
+        const statuses = buildScenarioStatuses(profile)
+        const onus = statuses.map((entry, indexInPon) => {
+          const localOnuNumber = indexInPon + 1
           const simulatedSerial = `FHTT${(0x10616900 + onuIndex).toString(16).toUpperCase()}`
           const simulatedLogin = buildClientLogin(onuIndex)
 
-          onus.push({
-            id: `${olt.id}-onu-${onuIndex}`,
-            onu_number: onuIndex,
-            onu_id: onuIndex,
+          const onu = {
+            id: `${olt.id}-onu-${slotNumber}-${ponNumber}-${localOnuNumber}-${onuIndex}`,
+            onu_number: localOnuNumber,
+            onu_id: localOnuNumber,
             client_name: simulatedLogin,
             name: simulatedLogin,
             serial_number: simulatedSerial,
             serial: simulatedSerial,
-            status,
-            disconnect_reason: reason,
-            onu_rx_power: status === 'online' ? Number((-17.2 - (onuIndex % 14) * 0.27).toFixed(2)) : null,
-            olt_rx_power: status === 'online' ? Number((-16.4 - (onuIndex % 11) * 0.24).toFixed(2)) : null,
-            power_read_at: status === 'online'
+            status: entry.status,
+            disconnect_reason: entry.reason,
+            onu_rx_power: entry.status === 'online' ? Number((-17.2 - (onuIndex % 14) * 0.27).toFixed(2)) : null,
+            olt_rx_power: entry.status === 'online' ? Number((-16.4 - (onuIndex % 11) * 0.24).toFixed(2)) : null,
+            power_read_at: entry.status === 'online'
               ? new Date(Date.now() - ((onuIndex % 30) + 1) * 60000).toISOString()
               : null,
-            offline_since: status === 'online'
+            offline_since: entry.status === 'online'
               ? null
               : new Date(Date.now() - ((onuIndex % 96) + 1) * 300000).toISOString()
-          })
+          }
+
           onuIndex += 1
-        }
-
-        pons.push({
-          id: `${olt.id}-pon-${slotIdx}-${ponIdx}`,
-          pon_number: ponIdx,
-          pon_id: ponIdx,
-          onus
+          return onu
         })
-      }
 
-      slots.push({
-        id: `${olt.id}-slot-${slotIdx}`,
-        slot_number: slotIdx,
-        slot_id: slotIdx,
+        return {
+          id: `${olt.id}-pon-${slotNumber}-${ponNumber}`,
+          pon_number: ponNumber,
+          pon_id: ponNumber,
+          onus
+        }
+      })
+
+      return {
+        id: `${olt.id}-slot-${slotNumber}`,
+        slot_number: slotNumber,
+        slot_id: slotNumber,
         pons,
         pon_count: pons.length
-      })
-    }
+      }
+    })
 
     return {
       id: olt.id,

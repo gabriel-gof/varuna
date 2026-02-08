@@ -72,8 +72,104 @@ const NODE_CARD_STYLE = {
   slot: 'w-[180px] h-[56px] rounded-[12px]'
 }
 
-const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel }) => {
+const NODE_HEALTH_STYLE = {
+  green: {
+    borderActive: 'border-emerald-500/35 shadow-md shadow-emerald-500/10',
+    borderIdle: 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm',
+    accentActive: 'bg-emerald-500 scale-y-100',
+    accentIdle: 'bg-emerald-200 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-500/35 scale-y-60',
+    iconActive: 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20',
+    iconIdle: 'bg-emerald-100 dark:bg-emerald-500/12 text-emerald-700 dark:text-emerald-400',
+    labelActive: 'text-emerald-700 dark:text-emerald-400',
+    chevronOpen: 'text-emerald-500'
+  },
+  yellow: {
+    borderActive: 'border-yellow-300/55 shadow-md shadow-yellow-500/6',
+    borderIdle: 'border-yellow-200/80 dark:border-yellow-500/25 hover:border-yellow-300 dark:hover:border-yellow-500/35 shadow-sm',
+    accentActive: 'bg-yellow-300 scale-y-100',
+    accentIdle: 'bg-yellow-300 dark:bg-yellow-500/35 group-hover/node:bg-yellow-400 dark:group-hover/node:bg-yellow-500/45 scale-y-60',
+    iconActive: 'bg-yellow-300 text-yellow-900 shadow-md shadow-yellow-500/10',
+    iconIdle: 'bg-yellow-100 dark:bg-yellow-500/15 text-yellow-700 dark:text-yellow-300',
+    labelActive: 'text-yellow-700 dark:text-yellow-200',
+    chevronOpen: 'text-yellow-500 dark:text-yellow-300'
+  },
+  red: {
+    borderActive: 'border-red-300/55 shadow-md shadow-red-500/8',
+    borderIdle: 'border-red-200/80 dark:border-red-500/25 hover:border-red-300 dark:hover:border-red-500/35 shadow-sm',
+    accentActive: 'bg-red-400 scale-y-100',
+    accentIdle: 'bg-red-300 dark:bg-red-500/35 group-hover/node:bg-red-400 dark:group-hover/node:bg-red-500/45 scale-y-60',
+    iconActive: 'bg-red-400 text-white shadow-lg shadow-red-500/16',
+    iconIdle: 'bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-300',
+    labelActive: 'text-red-700 dark:text-red-200',
+    chevronOpen: 'text-red-500 dark:text-red-400'
+  }
+}
+
+const resolveNodeHealthStyle = (healthState) => {
+  if (healthState === 'red') return NODE_HEALTH_STYLE.red
+  if (healthState === 'yellow') return NODE_HEALTH_STYLE.yellow
+  return NODE_HEALTH_STYLE.green
+}
+
+const ALARM_REASON_STAT_KEY = {
+  linkLoss: 'linkLoss',
+  dyingGasp: 'dyingGasp',
+  unknown: 'unknown'
+}
+
+const getSelectedOfflineCount = (stats, selectedReasons = []) => {
+  if (!selectedReasons.length) return 0
+  return selectedReasons.reduce((total, reason) => {
+    const statKey = ALARM_REASON_STAT_KEY[reason]
+    if (!statKey) return total
+    return total + asCount(stats?.[statKey])
+  }, 0)
+}
+
+const getPonHealthState = (pon, selectedReasons, minCount) => {
+  const stats = pon?.stats || getOnuStats(pon?.onus || [])
+  const total = asCount(stats.total)
+  const online = asCount(stats.online)
+  const selectedOfflineCount = getSelectedOfflineCount(stats, selectedReasons)
+  const isRed = total > 0 && online === 0
+  const isYellow = !isRed && selectedReasons.length > 0 && selectedOfflineCount >= minCount
+
+  return {
+    state: isRed ? 'red' : isYellow ? 'yellow' : 'green',
+    stats,
+    selectedOfflineCount
+  }
+}
+
+const getSlotHealthState = (slot, selectedReasons, minCount) => {
+  const activePons = (slot?.pons || []).filter((pon) => pon?.is_active !== false)
+  if (!activePons.length) return 'green'
+
+  const redPonCount = activePons.reduce((count, pon) => (
+    getPonHealthState(pon, selectedReasons, minCount).state === 'red' ? count + 1 : count
+  ), 0)
+
+  if (redPonCount === activePons.length) return 'red'
+  if (redPonCount > 0) return 'yellow'
+  return 'green'
+}
+
+const getOltHealthState = (olt, selectedReasons, minCount) => {
+  const activeSlots = (olt?.slots || []).filter((slot) => slot?.is_active !== false)
+  if (!activeSlots.length) return 'green'
+
+  const redSlotCount = activeSlots.reduce((count, slot) => (
+    getSlotHealthState(slot, selectedReasons, minCount) === 'red' ? count + 1 : count
+  ), 0)
+
+  if (redSlotCount === activeSlots.length) return 'red'
+  if (redSlotCount > 0) return 'yellow'
+  return 'green'
+}
+
+const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel, healthState = 'green' }) => {
   const isVisualActive = type === 'pon' ? active : isOpen
+  const healthStyle = resolveNodeHealthStyle(healthState)
 
   const icons = {
     olt: Server,
@@ -92,14 +188,14 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
           relative flex items-center gap-1.5 px-2.5 py-1.5 bg-white dark:bg-slate-900 border transition-all duration-300 cursor-pointer group/node shrink-0
           ${cardStyle}
           ${isVisualActive
-            ? 'border-emerald-500/35 shadow-md shadow-emerald-500/10'
-            : 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm'}
+            ? healthStyle.borderActive
+            : healthStyle.borderIdle}
         `}
       >
         <div
           className={`
             absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full transition-all duration-300
-            ${isVisualActive ? 'bg-emerald-500 scale-y-100' : 'bg-slate-100 dark:bg-slate-800 group-hover/node:bg-slate-300 scale-y-50'}
+            ${isVisualActive ? healthStyle.accentActive : healthStyle.accentIdle}
           `}
         />
 
@@ -107,8 +203,8 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
           className={`
             flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-[10px] transition-all duration-300
             ${isVisualActive
-              ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
-              : 'bg-[#F8FAFB] dark:bg-slate-800 text-slate-400 group-hover/node:text-slate-500'}
+              ? healthStyle.iconActive
+              : healthStyle.iconIdle}
           `}
         >
           <Icon className="w-5 h-5" />
@@ -117,7 +213,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
         <div className="flex-1 min-w-0 flex flex-col justify-center">
           <p
           className={`text-[11px] font-black uppercase tracking-tight leading-none mb-0.5 transition-colors whitespace-nowrap overflow-hidden text-ellipsis ${
-            isVisualActive ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-900 dark:text-white'
+            isVisualActive ? healthStyle.labelActive : 'text-slate-900 dark:text-white'
           }`}
         >
           {label}
@@ -126,7 +222,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
           {stats ? (
             <div className="mt-0.5 flex items-center gap-2.5 w-full pr-0.5">
               {asCount(stats.online) > 0 && <StatusItem color="bg-emerald-500" count={asCount(stats.online)} />}
-              {asCount(stats.linkLoss) > 0 && <StatusItem color="bg-rose-500" count={asCount(stats.linkLoss)} />}
+              {asCount(stats.linkLoss) > 0 && <StatusItem color="bg-red-500" count={asCount(stats.linkLoss)} />}
               {asCount(stats.dyingGasp) > 0 && <StatusItem color="bg-blue-500" count={asCount(stats.dyingGasp)} />}
               {asCount(stats.unknown) > 0 && <StatusItem color="bg-purple-500" count={asCount(stats.unknown)} />}
             </div>
@@ -136,7 +232,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
         </div>
 
         {(type === 'olt' || type === 'slot') && (
-          <div className={`transition-transform duration-300 ${isOpen ? 'rotate-180 text-emerald-500' : 'text-slate-300 group-hover/node:text-slate-400'}`}>
+          <div className={`transition-transform duration-300 ${isOpen ? `rotate-180 ${healthStyle.chevronOpen}` : 'text-slate-300 group-hover/node:text-slate-400'}`}>
             <ChevronDown className="w-3 h-3" />
           </div>
         )}
@@ -288,21 +384,8 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
   const passesAlarmFilter = (pon) => {
     if (!alarmEnabled) return true
     if (pon?.is_active === false) return false
-    if (!activeAlarmReasons.length) return false
-
-    const stats = pon?.stats || getOnuStats(pon.onus || [])
-    const counts = {
-      linkLoss: asCount(stats.linkLoss),
-      dyingGasp: asCount(stats.dyingGasp),
-      unknown: asCount(stats.unknown),
-    }
-
-    const selectedOfflineCount = activeAlarmReasons.reduce(
-      (total, reason) => total + (counts[reason] || 0),
-      0
-    )
-
-    return selectedOfflineCount >= effectiveAlarmMinCount
+    const { state } = getPonHealthState(pon, activeAlarmReasons, effectiveAlarmMinCount)
+    return state === 'yellow' || state === 'red'
   }
 
   const searchSuggestions = useMemo(() => {
@@ -366,10 +449,10 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
     onPonSelect(suggestion.ponId, { force: true })
   }
 
-  const filteredOlts = useMemo(() => {
+  const searchedOlts = useMemo(() => {
     const oltVisible = olts.filter((olt) => selectedOltIds.includes(String(olt.id)))
     const term = normalizedSearchTerm
-    const searchFiltered = !term
+    return !term
       ? oltVisible
       : oltVisible.filter((olt) => {
           const matchOnu = (olt?.slots || []).some((slot) =>
@@ -383,10 +466,12 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
           )
           return matchOnu
         })
+  }, [olts, selectedOltIds, normalizedSearchTerm])
 
-    if (!alarmEnabled) return searchFiltered
+  const filteredOlts = useMemo(() => {
+    if (!alarmEnabled) return searchedOlts
 
-    return searchFiltered
+    return searchedOlts
       .map((olt) => {
         const slots = (olt.slots || [])
           .filter((slot) => slot?.is_active !== false)
@@ -407,7 +492,11 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
         }
       })
       .filter((olt) => (olt.slots || []).length > 0)
-  }, [olts, selectedOltIds, normalizedSearchTerm, alarmEnabled, effectiveAlarmMinCount, activeAlarmReasons])
+  }, [searchedOlts, alarmEnabled, effectiveAlarmMinCount, activeAlarmReasons])
+
+  const searchedOltMap = useMemo(() => {
+    return new Map(searchedOlts.map((olt) => [String(olt.id), olt]))
+  }, [searchedOlts])
 
   useEffect(() => {
     if (!alarmEnabled) return
@@ -424,8 +513,11 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
   }, [alarmEnabled, filteredOlts])
 
   const renderOlt = (olt) => {
+    const sourceOlt = searchedOltMap.get(String(olt.id)) || olt
     const oltId = `olt-${olt.id}`
+    const oltHealthState = getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount)
     const slotCount = olt.slot_count ?? olt.slots?.length ?? 0
+    const sourceSlotMap = new Map((sourceOlt?.slots || []).map((slot) => [String(slot.id), slot]))
     return (
       <div key={oltId} className="flex-shrink-0">
         <NetworkNode
@@ -434,11 +526,15 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
           sublabel={`${slotCount} ${t('SLOTS')}`}
           isOpen={openNodes[oltId]}
           onToggle={() => toggleNode(oltId)}
+          healthState={oltHealthState}
         >
           {(olt.slots || [])
             .filter((slot) => slot?.is_active !== false)
             .map((slot) => {
               const slotId = `slot-${slot.id}`
+              const sourceSlot = sourceSlotMap.get(String(slot.id)) || slot
+              const sourcePonMap = new Map((sourceSlot?.pons || []).map((pon) => [String(pon.id), pon]))
+              const slotHealthState = getSlotHealthState(sourceSlot, activeAlarmReasons, effectiveAlarmMinCount)
               const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
               const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
               return (
@@ -449,11 +545,14 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                   sublabel={`${ponCount} PONS`}
                   isOpen={openNodes[slotId]}
                   onToggle={() => toggleNode(slotId)}
+                  healthState={slotHealthState}
                 >
                   {(slot.pons || [])
                     .filter((pon) => pon?.is_active !== false)
                     .map((pon) => {
-                      const stats = pon?.stats || getOnuStats(pon.onus || [])
+                      const sourcePon = sourcePonMap.get(String(pon.id)) || pon
+                      const ponHealth = getPonHealthState(sourcePon, activeAlarmReasons, effectiveAlarmMinCount)
+                      const stats = ponHealth.stats
                       const ponId = pon.id
                       const ponNumber = pon.pon_number ?? pon.pon_id ?? pon.id
                       return (
@@ -469,6 +568,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                           }}
                           active={String(selectedPonId) === String(ponId)}
                           onToggle={() => onPonSelect(ponId)}
+                          healthState={ponHealth.state}
                         />
                       )
                     })}
