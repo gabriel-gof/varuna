@@ -1028,8 +1028,8 @@ const App = () => {
                               <th className="w-[10%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
                               <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
                               <th className="w-[18%] pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="w-[24%] pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
-                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Desconexão')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Status')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Desconexão')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
@@ -1074,15 +1074,17 @@ const App = () => {
                                   <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
                                     {serialValue}
                                   </td>
-                                  <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
-                                    <span
-                                      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}
-                                    >
-                                      <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
-                                      {statusLabel}
-                                    </span>
+                                  <td className="px-2.5 py-0 align-middle whitespace-nowrap">
+                                    <div className="flex items-center justify-center">
+                                      <span
+                                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}
+                                      >
+                                        <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
+                                        {statusLabel}
+                                      </span>
+                                    </div>
                                   </td>
-                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-right">
+                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-center">
                                     {offlineSince}
                                   </td>
                                 </tr>
@@ -1108,7 +1110,7 @@ const App = () => {
                               <th className="w-[10%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
                               <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
                               <th className="w-[18%] pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="w-[24%] pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Power')}</th>
+                              <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Power')}</th>
                               <th className="w-[24%] px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
                             </tr>
                           </thead>
@@ -1148,23 +1150,23 @@ const App = () => {
                                   <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
                                     {serialValue}
                                   </td>
-                                  <td className="pl-4 pr-6 py-0 align-middle">
+                                  <td className="px-2.5 py-0 align-middle text-center">
                                     {!hasOnuRx && !hasOltRx ? (
-                                      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">—</span>
+                                      <span className="inline-block text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">—</span>
                                     ) : (
-                                      <div className="flex flex-col items-start gap-1 leading-snug text-left tabular-nums">
-                                        <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
-                                          <span className="inline-block w-8">{t('ONU')}</span>
+                                      <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
+                                        <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                                          <span className="inline-block w-8 text-left">{t('ONU')}</span>
                                           <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                         </span>
-                                        <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
-                                          <span className="inline-block w-8">{t('OLT')}</span>
+                                        <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                                          <span className="inline-block w-8 text-left">{t('OLT')}</span>
                                           <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
                                         </span>
                                       </div>
                                     )}
                                   </td>
-                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-right">
+                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-center">
                                     {readingAt}
                                   </td>
                                 </tr>
