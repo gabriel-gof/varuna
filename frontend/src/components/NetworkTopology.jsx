@@ -775,7 +775,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
               }}
               className={`h-9 px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all ${
                 alarmEnabled
-                  ? 'bg-rose-50 border-rose-300 text-rose-700'
+                  ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
                   : 'bg-[#F4F7FA] dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 text-slate-500 hover:text-rose-600'
               }`}
             >
