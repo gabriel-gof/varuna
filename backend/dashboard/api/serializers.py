@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.db.models import Count
 from dashboard.models import VendorProfile, OLT, OLTSlot, OLTPON, ONU, ONULog, UserProfile
+from dashboard.services.cache_service import cache_service
 
 
 class VendorProfileSerializer(serializers.ModelSerializer):
@@ -27,11 +28,14 @@ class ONUNestedSerializer(serializers.ModelSerializer):
     serial_number = serializers.CharField(source='serial', read_only=True)
     disconnect_reason = serializers.SerializerMethodField()
     offline_since = serializers.SerializerMethodField()
+    onu_rx_power = serializers.SerializerMethodField()
+    olt_rx_power = serializers.SerializerMethodField()
+    power_read_at = serializers.SerializerMethodField()
     
     class Meta:
         model = ONU
         fields = ['id', 'onu_number', 'name', 'client_name', 'serial_number', 'status', 'disconnect_reason',
-                  'offline_since', 'last_discovered_at']
+                  'offline_since', 'onu_rx_power', 'olt_rx_power', 'power_read_at', 'last_discovered_at']
         read_only_fields = fields
 
     def _get_active_log(self, obj):
@@ -61,6 +65,26 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         if log and log.offline_since:
             return log.offline_since.isoformat()
         return None
+
+    def _get_power(self, obj):
+        cache_key = '_power_cache'
+        if not hasattr(self, cache_key):
+            setattr(self, cache_key, {})
+        cache = getattr(self, cache_key)
+        if obj.id in cache:
+            return cache[obj.id]
+        power = cache_service.get_onu_power(obj.olt_id, obj.id) or {}
+        cache[obj.id] = power
+        return power
+
+    def get_onu_rx_power(self, obj):
+        return self._get_power(obj).get('onu_rx_power')
+
+    def get_olt_rx_power(self, obj):
+        return self._get_power(obj).get('olt_rx_power')
+
+    def get_power_read_at(self, obj):
+        return self._get_power(obj).get('power_read_at')
 
 
 class PONNestedSerializer(serializers.ModelSerializer):
@@ -212,6 +236,23 @@ class OLTSerializer(serializers.ModelSerializer):
 
     def get_offline_count(self, obj):
         return ONU.objects.filter(olt=obj).exclude(status='online').count()
+
+    def create(self, validated_data):
+        vendor_profile = validated_data.get('vendor_profile')
+        defaults_cfg = {}
+        if vendor_profile and isinstance(vendor_profile.default_thresholds, dict):
+            defaults_cfg = vendor_profile.default_thresholds
+
+        if 'discovery_interval_minutes' not in validated_data:
+            validated_data['discovery_interval_minutes'] = int(
+                defaults_cfg.get('discovery_interval_minutes', 240)
+            )
+        if 'polling_interval_seconds' not in validated_data:
+            validated_data['polling_interval_seconds'] = int(
+                defaults_cfg.get('polling_interval_seconds', 300)
+            )
+
+        return super().create(validated_data)
 
 
 class OLTSlotSerializer(serializers.ModelSerializer):

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard,
   Network,
@@ -21,7 +21,7 @@ import { Dashboard } from './components/Dashboard'
 import { SettingsPanel } from './components/SettingsPanel'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api from './services/api'
-import { classifyOnu, getOnuStats, isZteOlt } from './utils/stats'
+import { classifyOnu, getOnuStats } from './utils/stats'
 
 const normalizeList = (data) => {
   if (Array.isArray(data)) return data
@@ -407,7 +407,14 @@ const App = () => {
     enabled: false,
     reasons: ALARM_REASON_PRIORITY
   })
-  const [activeNav, setActiveNav] = useState('dashboard')
+  const [activeNav, setActiveNav] = useState(() => {
+    const saved = localStorage.getItem('varuna_active_tab')
+    return ['dashboard', 'topology', 'settings'].includes(saved) ? saved : 'dashboard'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('varuna_active_tab', activeNav)
+  }, [activeNav])
   const [isResizingPonPanel, setIsResizingPonPanel] = useState(false)
   const [ponPanelWidth, setPonPanelWidth] = useState(() => {
     try {
@@ -428,6 +435,9 @@ const App = () => {
   const [settingsActionMessage, setSettingsActionMessage] = useState('')
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [isRefreshingPonPower, setIsRefreshingPonPower] = useState(false)
+  const [snmpStatus, setSnmpStatus] = useState({}) // { [oltId]: { status: 'pending'|'reachable'|'unreachable', sysDescr } }
+  const snmpCheckRef = useRef(null)
   const mainLayoutRef = useRef(null)
   const resizePointerIdRef = useRef(null)
   const previousBodyCursorRef = useRef('')
@@ -490,12 +500,46 @@ const App = () => {
     setTimeout(() => setIsRefreshing(false), 400)
   }
 
+  // ─── SNMP connectivity checks (shared across Settings + Topology) ───
+  const runSnmpChecks = useCallback(async (oltList) => {
+    if (USE_TEST_DATA || !oltList?.length) return
+    setSnmpStatus((prev) => {
+      const next = { ...prev }
+      oltList.forEach((olt) => { next[olt.id] = { status: 'pending' } })
+      return next
+    })
+    const promises = oltList.map(async (olt) => {
+      try {
+        const res = await api.post(`/olts/${olt.id}/snmp_check/`)
+        return { id: olt.id, status: res.data?.reachable ? 'reachable' : 'unreachable', sysDescr: res.data?.sys_descr || '' }
+      } catch {
+        return { id: olt.id, status: 'unreachable', sysDescr: '' }
+      }
+    })
+    const results = await Promise.allSettled(promises)
+    setSnmpStatus((prev) => {
+      const next = { ...prev }
+      results.forEach((r) => {
+        if (r.status === 'fulfilled') next[r.value.id] = r.value
+      })
+      return next
+    })
+  }, [])
+
   useEffect(() => {
     fetchOlts()
     fetchVendorProfiles()
     const interval = setInterval(fetchOlts, 30000)
     return () => clearInterval(interval)
   }, [])
+
+  // Run SNMP checks when OLTs change, repeat every 60s
+  useEffect(() => {
+    if (USE_TEST_DATA || !olts?.length) return
+    runSnmpChecks(olts)
+    snmpCheckRef.current = setInterval(() => runSnmpChecks(olts), 60_000)
+    return () => clearInterval(snmpCheckRef.current)
+  }, [olts, runSnmpChecks])
 
   const runSettingsAction = async (key, request, successMessage = '') => {
     if (USE_TEST_DATA) return null
@@ -534,6 +578,19 @@ const App = () => {
     return created
   }
 
+  const updateOlt = async (oltId, payload) => {
+    const updated = await runSettingsAction(
+      `update:${oltId}`,
+      async () => {
+        const response = await api.patch(`/olts/${oltId}/`, payload)
+        await fetchOlts()
+        return response.data
+      },
+      t('OLT updated successfully')
+    )
+    return updated
+  }
+
   const deleteOlt = async (oltId) => {
     const removed = await runSettingsAction(
       `delete:${oltId}`,
@@ -547,10 +604,9 @@ const App = () => {
     return Boolean(removed)
   }
 
-  const zteOlts = useMemo(() => olts.filter(isZteOlt), [olts])
   const testOlts = useMemo(() => buildTestTopology(), [])
   const settingsOlts = USE_TEST_DATA ? testOlts : olts
-  const displayOlts = USE_TEST_DATA ? testOlts : zteOlts
+  const displayOlts = USE_TEST_DATA ? testOlts : olts
   const settingsLoading = USE_TEST_DATA ? false : loading
   const settingsError = USE_TEST_DATA ? null : error
   const displayLoading = USE_TEST_DATA ? false : loading
@@ -616,6 +672,66 @@ const App = () => {
     if (!selectedPonId) return null
     return findPonById(displayOlts, selectedPonId)
   }, [displayOlts, selectedPonId])
+
+  const mergePowerResultsIntoOlts = (currentOlts, rows) => {
+    if (!Array.isArray(rows) || rows.length === 0) return currentOlts
+
+    const powerByOnuId = new Map(
+      rows
+        .filter((row) => row && row.onu_id !== undefined && row.onu_id !== null)
+        .map((row) => [String(row.onu_id), row])
+    )
+
+    if (!powerByOnuId.size) return currentOlts
+
+    return currentOlts.map((olt) => ({
+      ...olt,
+      slots: asList(olt?.slots).map((slot) => ({
+        ...slot,
+        pons: asList(slot?.pons).map((pon) => ({
+          ...pon,
+          onus: asList(pon?.onus).map((onu) => {
+            const patch = powerByOnuId.get(String(onu?.id))
+            if (!patch) return onu
+            return {
+              ...onu,
+              onu_rx_power: patch.onu_rx_power ?? null,
+              olt_rx_power: patch.olt_rx_power ?? null,
+              power_read_at: patch.power_read_at ?? null,
+            }
+          }),
+        })),
+      })),
+    }))
+  }
+
+  const handleRefreshPonPower = async () => {
+    if (USE_TEST_DATA) return
+    if (!selectedPonData?.olt || !selectedPonData?.slot || !selectedPonData?.pon) return
+
+    const slotId = selectedPonData.slot?.slot_number ?? selectedPonData.slot?.slot_id
+    const ponId = selectedPonData.pon?.pon_number ?? selectedPonData.pon?.pon_id
+    if (slotId === undefined || ponId === undefined) return
+
+    setIsRefreshingPonPower(true)
+    try {
+      const response = await api.post('/onu/batch-power/', {
+        olt_id: selectedPonData.olt.id,
+        slot_id: slotId,
+        pon_id: ponId,
+        refresh: true,
+      })
+      const rows = Array.isArray(response?.data?.results)
+        ? response.data.results
+        : normalizeList(response?.data)
+      setOlts((prev) => mergePowerResultsIntoOlts(prev, rows))
+      setError(null)
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Failed to refresh power data'))
+    } finally {
+      setIsRefreshingPonPower(false)
+    }
+  }
 
   useEffect(() => {
     if (selectedPonId && !selectedPonData) {
@@ -764,9 +880,6 @@ const App = () => {
 
   const statusSortOptions = [
     { id: 'onu_id', label: t('Default order') },
-    { id: 'link_loss', label: t('Link Loss') },
-    { id: 'dying_gasp', label: t('Dying Gasp') },
-    { id: 'unknown', label: t('Unknown') },
     { id: 'offline', label: t('Offline') },
     { id: 'online', label: t('Online') }
   ]
@@ -782,6 +895,7 @@ const App = () => {
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
   const currentSortLabel = activeSortOptions.find((option) => option.id === currentSortMode)?.label || activeSortOptions[0]?.label || t('ONU ID')
+  const isSidebarRefreshBusy = activeTab === 'power' ? isRefreshingPonPower : isRefreshing
   const setCurrentSortMode = (mode) => {
     if (activeTab === 'power') {
       setPowerSortMode(mode)
@@ -964,7 +1078,7 @@ const App = () => {
           </button>
         </div>
 
-        <div className="flex items-center gap-1 h-full ml-auto mr-2">
+        <div className="flex items-center gap-1 h-full ml-auto mr-6">
           <button
             onClick={() => setActiveNav('settings')}
             className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
@@ -1078,6 +1192,7 @@ const App = () => {
               olts={displayOlts}
               loading={displayLoading}
               error={displayError}
+              snmpStatus={snmpStatus}
               selectedPonId={selectedPonId}
               onAlarmModeChange={(config) => {
                 const reasons = Array.isArray(config?.reasons)
@@ -1109,9 +1224,11 @@ const App = () => {
               actionError={settingsActionError}
               actionMessage={settingsActionMessage}
               onCreateOlt={createOlt}
+              onUpdateOlt={updateOlt}
               onDeleteOlt={deleteOlt}
               actionBusy={settingsActionBusy}
               isDemoMode={USE_TEST_DATA}
+              snmpStatus={snmpStatus}
             />
           )}
         </section>
@@ -1258,12 +1375,19 @@ const App = () => {
                       </DropdownMenu.Root>
 
                       <button
-                        onClick={() => { /* TODO: trigger refresh */ }}
-                        className="shrink-0 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
+                        onClick={() => {
+                          if (activeTab === 'power') {
+                            handleRefreshPonPower()
+                            return
+                          }
+                          handleRefresh()
+                        }}
+                        disabled={isSidebarRefreshBusy}
+                        className="shrink-0 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95 disabled:opacity-55 disabled:cursor-not-allowed"
                         aria-label={t('Refresh')}
                         title={t('Refresh')}
                       >
-                        <RotateCw className="w-4 h-4" strokeWidth={2.5} />
+                        <RotateCw className={`w-4 h-4 ${isSidebarRefreshBusy ? 'animate-spin' : ''}`} strokeWidth={2.5} />
                       </button>
                     </div>
                   </div>

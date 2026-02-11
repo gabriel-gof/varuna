@@ -5,8 +5,10 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q, Prefetch
 from django.core.management import call_command
 from io import StringIO
+import logging
 from dashboard.models import OLT, OLTSlot, OLTPON, ONU, VendorProfile
 from dashboard.services.topology_service import TopologyService
+from dashboard.services.power_service import power_service
 from dashboard.api.serializers import (
     VendorProfileSerializer,
     OLTSerializer,
@@ -15,6 +17,8 @@ from dashboard.api.serializers import (
     OLTPONSerializer,
     ONUSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class VendorProfileViewSet(viewsets.ModelViewSet):
@@ -102,8 +106,19 @@ class OLTViewSet(viewsets.ModelViewSet):
         Triggers power refresh for all ONUs in this OLT
         """
         olt = get_object_or_404(OLT, pk=pk)
-        # TODO: Implement power refresh logic
-        return Response({'status': 'requested', 'olt_id': olt.id})
+        onus = list(
+            ONU.objects.filter(olt=olt)
+            .select_related('olt', 'olt__vendor_profile')
+            .order_by('slot_id', 'pon_id', 'onu_id')
+        )
+        result_map = power_service.refresh_for_onus(onus, force_refresh=True)
+        results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
+        return Response({
+            'status': 'completed',
+            'olt_id': olt.id,
+            'count': len(results),
+            'results': results,
+        })
 
     @action(detail=True, methods=['post'])
     def run_discovery(self, request, pk=None):
@@ -125,6 +140,37 @@ class OLTViewSet(viewsets.ModelViewSet):
             'olt_id': olt.id,
             'output': output.getvalue().strip()
         })
+
+    @action(detail=True, methods=['post'])
+    def snmp_check(self, request, pk=None):
+        """
+        Quick SNMP connectivity check — queries sysDescr.0 to verify the OLT is reachable.
+        Returns { reachable: bool, sys_descr: str|null, olt_id: int }
+        """
+        olt = get_object_or_404(OLT, pk=pk)
+        SYS_DESCR_OID = '1.3.6.1.2.1.1.1.0'
+        try:
+            from dashboard.services.snmp_service import snmp_service
+            result = snmp_service.get(olt, [SYS_DESCR_OID])
+            if result and SYS_DESCR_OID in result:
+                return Response({
+                    'reachable': True,
+                    'sys_descr': str(result[SYS_DESCR_OID]) if result[SYS_DESCR_OID] is not None else None,
+                    'olt_id': olt.id,
+                })
+            return Response({
+                'reachable': False,
+                'sys_descr': None,
+                'olt_id': olt.id,
+            })
+        except Exception as exc:
+            logger.warning("SNMP check failed for OLT %s: %s", olt.name, exc)
+            return Response({
+                'reachable': False,
+                'sys_descr': None,
+                'olt_id': olt.id,
+                'detail': str(exc),
+            })
 
     @action(detail=True, methods=['post'])
     def run_polling(self, request, pk=None):
@@ -169,6 +215,64 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 queryset = queryset.filter(status=status_filter)
         
         return queryset.order_by('olt', 'slot_id', 'pon_id', 'onu_id')
+
+    @action(detail=True, methods=['get'])
+    def power(self, request, pk=None):
+        """
+        Returns power information for one ONU.
+        Query param refresh=true/false controls SNMP refresh vs cache read.
+        """
+        onu = self.get_object()
+        refresh = str(request.query_params.get('refresh', 'true')).lower() in {'1', 'true', 'yes', 'on'}
+        result_map = power_service.refresh_for_onus([onu], force_refresh=refresh)
+        data = result_map.get(onu.id, {
+            'onu_id': onu.id,
+            'slot_id': onu.slot_id,
+            'pon_id': onu.pon_id,
+            'onu_number': onu.onu_id,
+            'onu_rx_power': None,
+            'olt_rx_power': None,
+            'power_read_at': None,
+        })
+        return Response(data)
+
+    @action(detail=False, methods=['post'], url_path='batch-power')
+    def batch_power(self, request):
+        """
+        Returns power information for multiple ONUs.
+        Body options:
+        - onu_ids: [1,2,3]
+        - or olt_id + slot_id + pon_id to refresh one PON quickly
+        """
+        refresh = str(request.data.get('refresh', True)).lower() in {'1', 'true', 'yes', 'on'}
+        onu_ids = request.data.get('onu_ids') or []
+        olt_id = request.data.get('olt_id')
+        slot_id = request.data.get('slot_id')
+        pon_id = request.data.get('pon_id')
+
+        queryset = ONU.objects.select_related('olt', 'olt__vendor_profile')
+
+        if isinstance(onu_ids, list) and onu_ids:
+            queryset = queryset.filter(id__in=onu_ids)
+        elif olt_id is not None and slot_id is not None and pon_id is not None:
+            queryset = queryset.filter(
+                olt_id=olt_id,
+                slot_id=slot_id,
+                pon_id=pon_id,
+            )
+        else:
+            return Response(
+                {'detail': 'Provide onu_ids or (olt_id + slot_id + pon_id).'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        onus = list(queryset.order_by('slot_id', 'pon_id', 'onu_id'))
+        if not onus:
+            return Response({'count': 0, 'results': []})
+
+        result_map = power_service.refresh_for_onus(onus, force_refresh=refresh)
+        results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
+        return Response({'count': len(results), 'results': results})
 
 
 class OLTSlotViewSet(viewsets.ReadOnlyModelViewSet):

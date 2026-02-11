@@ -77,11 +77,11 @@ const NODE_CARD_STYLE = {
 const NODE_HEALTH_STYLE = {
   green: {
     borderActive: 'border-emerald-500/35 shadow-md shadow-emerald-500/10',
-    borderIdle: 'border-emerald-200/40 dark:border-emerald-500/20 hover:border-emerald-300 dark:hover:border-emerald-500/40 shadow-sm',
+    borderIdle: 'border-emerald-300 dark:border-emerald-500/25 hover:border-emerald-400 dark:hover:border-emerald-500/40 shadow-sm',
     accentActive: 'bg-emerald-500 scale-y-100',
-    accentIdle: 'bg-emerald-100 dark:bg-emerald-500/20 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-400 scale-y-60',
+    accentIdle: 'bg-emerald-200/60 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-400 scale-y-60',
     iconActive: 'bg-emerald-600 dark:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20',
-    iconIdle: 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/10 dark:ring-emerald-400/20',
+    iconIdle: 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/15 dark:ring-emerald-400/25',
     labelActive: 'text-emerald-950 dark:text-emerald-50',
     chevronOpen: 'text-emerald-600 dark:text-emerald-400'
   },
@@ -97,13 +97,23 @@ const NODE_HEALTH_STYLE = {
   },
   red: {
     borderActive: 'border-rose-500/35 shadow-md shadow-rose-500/10',
-    borderIdle: 'border-rose-200/40 dark:border-rose-500/20 hover:border-rose-300 dark:hover:border-rose-500/40 shadow-sm',
+    borderIdle: 'border-rose-300 dark:border-rose-500/25 hover:border-rose-400 dark:hover:border-rose-500/40 shadow-sm',
     accentActive: 'bg-rose-500 scale-y-100',
-    accentIdle: 'bg-rose-100 dark:bg-rose-500/20 group-hover/node:bg-rose-300 dark:group-hover/node:bg-rose-400 scale-y-60',
+    accentIdle: 'bg-rose-200/60 dark:bg-rose-500/25 group-hover/node:bg-rose-300 dark:group-hover/node:bg-rose-400 scale-y-60',
     iconActive: 'bg-rose-600 dark:bg-rose-500 text-white shadow-lg shadow-rose-600/20',
-    iconIdle: 'bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 ring-1 ring-inset ring-rose-600/10 dark:ring-rose-400/20',
+    iconIdle: 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400 ring-1 ring-inset ring-rose-600/15 dark:ring-rose-400/25',
     labelActive: 'text-rose-950 dark:text-rose-50',
     chevronOpen: 'text-rose-600 dark:text-rose-400'
+  },
+  gray: {
+    borderActive: 'border-slate-400/50 shadow-md shadow-slate-400/15',
+    borderIdle: 'border-slate-300/80 dark:border-slate-500/40 hover:border-slate-400 dark:hover:border-slate-400/60 shadow-sm',
+    accentActive: 'bg-slate-400 scale-y-100',
+    accentIdle: 'bg-slate-300/70 dark:bg-slate-500/40 group-hover/node:bg-slate-400/80 dark:group-hover/node:bg-slate-400/50 scale-y-60',
+    iconActive: 'bg-slate-500 dark:bg-slate-400 text-white shadow-lg shadow-slate-500/25',
+    iconIdle: 'bg-slate-200/80 dark:bg-slate-600/50 text-slate-500 dark:text-slate-400 ring-1 ring-inset ring-slate-400/30 dark:ring-slate-400/25',
+    labelActive: 'text-slate-600 dark:text-slate-200',
+    chevronOpen: 'text-slate-500 dark:text-slate-400'
   },
   neutral: {
     borderActive: 'border-slate-500/35 shadow-md shadow-slate-500/10',
@@ -118,6 +128,7 @@ const NODE_HEALTH_STYLE = {
 }
 
 const resolveNodeHealthStyle = (healthState) => {
+  if (healthState === 'gray') return NODE_HEALTH_STYLE.gray
   if (healthState === 'red') return NODE_HEALTH_STYLE.red
   if (healthState === 'yellow') return NODE_HEALTH_STYLE.yellow
   return NODE_HEALTH_STYLE.green
@@ -174,6 +185,8 @@ const getSlotHealthState = (slot, selectedReasons, minCount) => {
 
 const getOltHealthState = (olt, selectedReasons, minCount) => {
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
+  // No topology data at all → SNMP likely unreachable → gray
+  if (!activeSlots.length && !asList(olt?.slots).length) return 'gray'
   if (!activeSlots.length) return 'green'
 
   const redSlotCount = activeSlots.reduce((count, slot) => (
@@ -273,7 +286,7 @@ const StatusItem = ({ color, count }) => (
   </div>
 )
 
-export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSelect, onSearchMatchSelect, onAlarmModeChange }) => {
+export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSelect, onSearchMatchSelect, onAlarmModeChange, snmpStatus = {} }) => {
   const { t } = useTranslation()
   const [searchTerm, setSearchTerm] = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
@@ -535,7 +548,10 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
   const renderOlt = (olt) => {
     const sourceOlt = searchedOltMap.get(String(olt.id)) || olt
     const oltId = `olt-${olt.id}`
-    const oltHealthState = getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount)
+    // SNMP unreachable → entire OLT tree goes gray
+    const snmpSt = snmpStatus?.[olt.id]
+    const isSnmpUnreachable = snmpSt?.status === 'unreachable'
+    const oltHealthState = isSnmpUnreachable ? 'gray' : getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount)
     const slotCount = olt.slot_count ?? olt.slots?.length ?? 0
     const sourceSlotMap = new Map(
       asList(sourceOlt?.slots)
@@ -562,7 +578,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                   .filter(Boolean)
                   .map((pon) => [String(pon.id), pon])
               )
-              const slotHealthState = getSlotHealthState(sourceSlot, activeAlarmReasons, effectiveAlarmMinCount)
+              const slotHealthState = isSnmpUnreachable ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons, effectiveAlarmMinCount)
               const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
               const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
               return (
@@ -579,7 +595,9 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                     .filter(isActiveEntity)
                     .map((pon) => {
                       const sourcePon = sourcePonMap.get(String(pon.id)) || pon
-                      const ponHealth = getPonHealthState(sourcePon, activeAlarmReasons, effectiveAlarmMinCount)
+                      const ponHealth = isSnmpUnreachable
+                        ? { state: 'gray', stats: { online: 0, dyingGasp: 0, linkLoss: 0, unknown: 0 }, selectedOfflineCount: 0 }
+                        : getPonHealthState(sourcePon, activeAlarmReasons, effectiveAlarmMinCount)
                       const stats = ponHealth.stats
                       const ponId = pon.id
                       const ponNumber = pon.pon_number ?? pon.pon_id ?? pon.id
@@ -933,7 +951,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
 
       <div className="flex flex-wrap items-start gap-12 p-10 pt-0 pb-40 animate-in fade-in duration-500">
         {loading && (
-              <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">Loading live ZTE data...</div>
+              <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">Loading live data...</div>
         )}
         {error && (
           <div className="text-[12px] font-bold text-rose-500 uppercase tracking-widest">{error}</div>
@@ -948,7 +966,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                 ? t('No PON matches alarm filter')
                 : searchTerm
                   ? t('No equipment matches your search')
-                  : t('No ZTE OLTs found')}
+                  : t('No OLTs found')}
             </p>
           </div>
         )}
