@@ -21,8 +21,18 @@ The UI remains topology-first. No dashboard page is required for current product
 - Stale status data is considered unreliable and forced to gray:
   - if `now - last_poll_at > polling_interval_seconds`.
 - OLT color semantics follow slot health:
-  - `red` when all active slots are critical/offline (`red`),
-  - `yellow` when at least one active slot is degraded (`yellow` or `red`) and not all are `red`.
+  - `red` when all active slots are offline (`red`),
+  - `yellow` when at least one slot is offline (`red`) and at least one other slot is not offline,
+  - `green` when all active slots are healthy,
+  - `gray` when SNMP is unreachable or status is stale.
+- Slot color semantics follow PON health:
+  - `red` when all active PONs are fully offline (`red`),
+  - `yellow` when at least one active PON is fully offline (`red`) and at least one PON is not fully offline,
+  - `green` when all active PONs are healthy.
+- PON color semantics follow ONU health:
+  - `red` when all ONUs are offline,
+  - `yellow` when there is a mix of online and offline ONUs,
+  - `green` when all ONUs are online.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`
   - `polling_interval_seconds`

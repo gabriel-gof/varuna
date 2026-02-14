@@ -35,6 +35,7 @@ const getPonHealthState = (pon) => {
 
   if (total <= 0) return 'green'
   if (online === 0 && offline > 0) return 'red'
+  if (offline > 0) return 'yellow'
   return 'green'
 }
 
@@ -42,11 +43,12 @@ const getSlotHealthState = (slot) => {
   const activePons = asList(slot?.pons).filter(isActiveEntity)
   if (!activePons.length) return 'green'
 
-  const redPons = activePons.reduce((count, pon) => (
-    getPonHealthState(pon) === 'red' ? count + 1 : count
+  const ponStates = activePons.map((pon) => getPonHealthState(pon))
+  const redPons = ponStates.reduce((count, state) => (
+    state === 'red' ? count + 1 : count
   ), 0)
 
-  if (redPons === activePons.length) return 'red'
+  if (redPons === ponStates.length) return 'red'
   if (redPons > 0) return 'yellow'
   return 'green'
 }
@@ -71,14 +73,15 @@ export const deriveOltHealthState = (olt, snmpState, nowMs = Date.now()) => {
     const redSlots = slotStates.reduce((count, state) => (
       state === 'red' ? count + 1 : count
     ), 0)
-    const degradedSlots = slotStates.reduce((count, state) => (
-      state === 'red' || state === 'yellow' ? count + 1 : count
-    ), 0)
+    const totalSlots = slotStates.length
+    if (redSlots === 0) {
+      return { state: 'green', reason: 'no_slots_offline' }
+    }
     if (redSlots === slotStates.length) {
       return { state: 'red', reason: 'all_slots_red' }
     }
-    if (degradedSlots > 0) {
-      return { state: 'yellow', reason: 'slots_degraded' }
+    if (redSlots > 0 && redSlots < totalSlots) {
+      return { state: 'yellow', reason: 'some_slots_red' }
     }
     return { state: 'green', reason: 'slots_healthy' }
   }

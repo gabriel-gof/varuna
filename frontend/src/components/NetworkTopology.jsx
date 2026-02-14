@@ -160,9 +160,10 @@ const getPonHealthState = (pon, selectedReasons, minCount) => {
 
   const total = asCount(stats.total)
   const online = asCount(stats.online)
+  const totalOffline = asCount(stats.offline)
   const offlineCount = getSelectedOfflineCount(stats, selectedReasons)
-  const isRed = total > 0 && online === 0
-  const isYellow = !isRed && selectedReasons.length > 0 && offlineCount >= minCount
+  const isRed = total > 0 && online === 0 && totalOffline > 0
+  const isYellow = !isRed && totalOffline > 0
 
   return {
     state: isRed ? 'red' : isYellow ? 'yellow' : 'green',
@@ -175,11 +176,12 @@ const getSlotHealthState = (slot, selectedReasons, minCount) => {
   const activePons = asList(slot?.pons).filter(isActiveEntity)
   if (!activePons.length) return 'green'
 
-  const redPonCount = activePons.reduce((count, pon) => (
-    getPonHealthState(pon, selectedReasons, minCount).state === 'red' ? count + 1 : count
+  const ponStates = activePons.map((pon) => getPonHealthState(pon, selectedReasons, minCount).state)
+  const redPonCount = ponStates.reduce((count, state) => (
+    state === 'red' ? count + 1 : count
   ), 0)
 
-  if (redPonCount === activePons.length) return 'red'
+  if (redPonCount === ponStates.length) return 'red'
   if (redPonCount > 0) return 'yellow'
   return 'green'
 }
@@ -194,12 +196,10 @@ const getOltHealthState = (olt, selectedReasons, minCount) => {
   const redSlotCount = slotStates.reduce((count, state) => (
     state === 'red' ? count + 1 : count
   ), 0)
-  const degradedSlotCount = slotStates.reduce((count, state) => (
-    state === 'red' || state === 'yellow' ? count + 1 : count
-  ), 0)
+  const totalSlotCount = slotStates.length
 
   if (redSlotCount === slotStates.length) return 'red'
-  if (degradedSlotCount > 0) return 'yellow'
+  if (redSlotCount > 0 && redSlotCount < totalSlotCount) return 'yellow'
   return 'green'
 }
 
@@ -431,8 +431,8 @@ export const NetworkTopology = ({
   const passesAlarmFilter = (pon) => {
     if (!alarmEnabled) return true
     if (pon?.is_active === false) return false
-    const { state } = getPonHealthState(pon, activeAlarmReasons, effectiveAlarmMinCount)
-    return state === 'yellow' || state === 'red'
+    const { selectedOfflineCount } = getPonHealthState(pon, activeAlarmReasons, effectiveAlarmMinCount)
+    return selectedOfflineCount >= effectiveAlarmMinCount
   }
 
   const searchSuggestions = useMemo(() => {
