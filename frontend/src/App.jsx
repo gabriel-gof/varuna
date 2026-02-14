@@ -21,6 +21,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api from './services/api'
 import { classifyOnu } from './utils/stats'
 import { deriveOltHealthState, getPowerIntervalSeconds } from './utils/oltHealth'
+import { getPowerColor, powerColorClass } from './utils/powerThresholds'
 
 const normalizeList = (data) => {
   if (Array.isArray(data)) return data
@@ -1365,6 +1366,8 @@ const App = () => {
                               const { onuRx, oltRx, readAt } = getOnuPowerSnapshot(onu)
                               const hasOnuRx = onuRx !== null && onuRx !== undefined && onuRx !== ''
                               const hasOltRx = oltRx !== null && oltRx !== undefined && oltRx !== ''
+                              const onuRxColor = powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
+                              const oltRxColor = powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
                               const readingAt = formatReadingAt(readAt, i18n.language)
                               const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
                               const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
@@ -1400,11 +1403,11 @@ const App = () => {
                                       <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('ONU')}</span>
-                                          <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
+                                          <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                         </span>
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('OLT')}</span>
-                                          <span className="font-semibold text-slate-500 dark:text-slate-400">{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                          <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
                                         </span>
                                       </div>
                                     )}

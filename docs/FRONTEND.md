@@ -42,14 +42,35 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Settings Panel Design
 - OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
-- Expanded card layout:
-  1. **Status bar**: SNMP reachability badge, last discovery timestamp.
-  2. **Connection section**: name, IP, community, port, vendor, model inputs.
-  3. **Intervals section**: discovery, polling, power interval inputs.
-  4. **Action bar**: Delete (left), Run Discovery (right), Save + Cancel (right, shown only when form is dirty).
-- Dirty detection compares `editForm` values against current OLT data; Save button appears only when changes exist.
+- Container width: `max-w-2xl` for compact, focused layout.
+- **Tabs inside expanded card**: `Geral` (General) and `Limiares` (Thresholds).
+- General tab uses three sections with **proportional columns** (`grid-cols-8`):
+  1. **Device section** (`col-span-3 / col-span-3 / col-span-2`): Name, Vendor, Model.
+  2. **Connection section** (`col-span-3 / col-span-3 / col-span-2`): IP, SNMP Community, Port.
+  3. **Intervals section** (`col-span-3 / col-span-3 / col-span-2`): ONU Discovery, Status Collection, Power Collection.
+- Thresholds tab configures power color-coding:
+  - **ONU RX Power**: Normal (dBm) and Critical (dBm) breakpoints.
+  - **OLT RX Power**: Normal (dBm) and Critical (dBm) breakpoints.
+  - Color mapping: `green` (>= normal), `yellow` (between normal and critical), `red` (< critical).
+  - Default thresholds: Normal = -25 dBm, Critical = -28 dBm.
+  - Stored in `localStorage` with global defaults and per-OLT overrides.
+  - Auto-saves when all values are valid; `Reset to defaults` clears per-OLT overrides.
+  - Color legend (dots + range text) updates live as thresholds change.
+- Action bar always visible at bottom: Delete + last-discovery timestamp (left); Run Discovery with Play icon (right); Save + Cancel (right, shown only when general form is dirty).
+- Interval inputs accept **Zabbix-style durations**: bare numbers (seconds), or suffixed values (`30s`, `5m`, `1h`, `4h`, `1d`).
+  - `parseDuration()` converts input string → seconds; `formatDuration()` converts seconds → human-readable string.
+  - Form state stores human-readable strings; save handlers convert back to `discovery_interval_minutes` / `polling_interval_seconds` / `power_interval_seconds` for the API.
+- Dirty detection compares `editForm` values against current OLT data with special duration-aware comparison.
 - Card header shows total ONU count with online (green) / offline (red) breakdown.
 - `onRunDiscovery` prop triggers `POST /olts/:id/run_discovery/` from App.jsx.
+- Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
+
+## Power Threshold Coloring
+- Utility: `frontend/src/utils/powerThresholds.js`.
+- Power values in the topology power tab are color-coded per OLT thresholds.
+- `getPowerColor(value, 'onu_rx'|'olt_rx', oltId)` → `'green'|'yellow'|'red'|null`.
+- `powerColorClass(color)` → Tailwind CSS class string for text color.
+- Frontend-only storage (`localStorage`); backend fields planned for future phase.
 
 ## Refactor Notes
 - Removed test/demo topology generator path from runtime.

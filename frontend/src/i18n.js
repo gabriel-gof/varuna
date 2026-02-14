@@ -32,6 +32,7 @@ const resources = {
       Save: 'Save',
       'Save changes': 'Save changes',
       'Run discovery now': 'Run discovery now',
+      'Run discovery': 'Run discovery',
       'Run status poll now': 'Run status poll now',
       'Do you want to remove this OLT?': 'Do you want to remove this OLT?',
       'Required fields are missing': 'Required fields are missing',
@@ -152,7 +153,24 @@ const resources = {
       'd ago': 'd ago',
       'just now': 'just now',
       'Discovering...': 'Discovering...',
-      'Deleting...': 'Deleting...'
+      'Deleting...': 'Deleting...',
+      General: 'General',
+      Thresholds: 'Thresholds',
+      'Power thresholds': 'Power thresholds',
+      'ONU RX power': 'ONU RX power',
+      'OLT RX power': 'OLT RX power',
+      'ONU RX norm.': 'ONU RX norm.',
+      'ONU RX crit.': 'ONU RX crit.',
+      'OLT RX norm.': 'OLT RX norm.',
+      'OLT RX crit.': 'OLT RX crit.',
+      'Normal (dBm)': 'Normal (dBm)',
+      'Critical (dBm)': 'Critical (dBm)',
+      Good: 'Good',
+      Warning: 'Warning',
+      Critical: 'Critical',
+      Reset: 'Reset',
+      'Reset to defaults': 'Reset to defaults',
+      'Duration format': 'Format'
     }
   },
   pt: {
@@ -185,6 +203,7 @@ const resources = {
       Save: 'Salvar',
       'Save changes': 'Salvar alterações',
       'Run discovery now': 'Executar descoberta agora',
+      'Run discovery': 'Executar descoberta',
       'Run status poll now': 'Executar polling agora',
       'Do you want to remove this OLT?': 'Deseja remover esta OLT?',
       'Required fields are missing': 'Campos obrigatórios não preenchidos',
@@ -305,7 +324,24 @@ const resources = {
       'd ago': 'd atrás',
       'just now': 'agora',
       'Discovering...': 'Descobrindo...',
-      'Deleting...': 'Excluindo...'
+      'Deleting...': 'Excluindo...',
+      General: 'Geral',
+      Thresholds: 'Limiares',
+      'Power thresholds': 'Limiares de potência',
+      'ONU RX power': 'Potência RX ONU',
+      'OLT RX power': 'Potência RX OLT',
+      'ONU RX norm.': 'ONU RX norm.',
+      'ONU RX crit.': 'ONU RX crít.',
+      'OLT RX norm.': 'OLT RX norm.',
+      'OLT RX crit.': 'OLT RX crít.',
+      'Normal (dBm)': 'Normal (dBm)',
+      'Critical (dBm)': 'Crítico (dBm)',
+      Good: 'Normal',
+      Warning: 'Alerta',
+      Critical: 'Crítico',
+      Reset: 'Restaurar',
+      'Reset to defaults': 'Restaurar padrões',
+      'Duration format': 'Formato'
     }
   }
 }
