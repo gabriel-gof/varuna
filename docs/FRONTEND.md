@@ -40,6 +40,17 @@ The UI remains topology-first. No dashboard page is required for current product
 - Frontend runs due discovery/polling actions based on configured OLT intervals to keep data current while UI is open.
 - Power panel auto-refresh uses `power_interval_seconds` of the selected OLT.
 
+## Settings Panel Design
+- OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
+- Expanded card layout:
+  1. **Status bar**: SNMP reachability badge, last discovery timestamp.
+  2. **Connection section**: name, IP, community, port, vendor, model inputs.
+  3. **Intervals section**: discovery, polling, power interval inputs.
+  4. **Action bar**: Delete (left), Run Discovery (right), Save + Cancel (right, shown only when form is dirty).
+- Dirty detection compares `editForm` values against current OLT data; Save button appears only when changes exist.
+- Card header shows total ONU count with online (green) / offline (red) breakdown.
+- `onRunDiscovery` prop triggers `POST /olts/:id/run_discovery/` from App.jsx.
+
 ## Refactor Notes
 - Removed test/demo topology generator path from runtime.
 - Removed stale settings action call to undefined `runSnmpChecks` in component scope.

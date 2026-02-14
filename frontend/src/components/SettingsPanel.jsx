@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Trash2, RefreshCcw, X, Check, AlertCircle, CheckCircle2, ChevronDown, Server } from 'lucide-react'
+import { Plus, Trash2, RefreshCcw, X, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Radar, Clock } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 const MAX_OLT_NAME = 12
@@ -14,9 +14,9 @@ const buildInitialForm = (vendorProfiles = []) => {
     vendor_profile: firstModel?.id ? String(firstModel.id) : '',
     snmp_community: 'public',
     snmp_port: '161',
-    discovery_interval_minutes: '240',
-    polling_interval_seconds: '300',
-    power_interval_seconds: '300'
+    discovery_interval: '4h',
+    polling_interval: '5m',
+    power_interval: '5m'
   }
 }
 
@@ -29,9 +29,9 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     vendor_profile: olt.vendor_profile ? String(olt.vendor_profile) : '',
     snmp_community: olt.snmp_community || 'public',
     snmp_port: String(olt.snmp_port || 161),
-    discovery_interval_minutes: String(olt.discovery_interval_minutes || 240),
-    polling_interval_seconds: String(olt.polling_interval_seconds || 300),
-    power_interval_seconds: String(olt.power_interval_seconds || 300)
+    discovery_interval: formatDuration((olt.discovery_interval_minutes || 240) * 60),
+    polling_interval: formatDuration(olt.polling_interval_seconds || 300),
+    power_interval: formatDuration(olt.power_interval_seconds || 300)
   }
 }
 
@@ -40,6 +40,62 @@ const toPositiveInteger = (value, fallback) => {
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback
   return Math.round(parsed)
 }
+
+/**
+ * Parse a Zabbix-style duration string to seconds.
+ * Accepts: bare number (seconds), or suffixed: 30s, 5m, 1h, 1d
+ */
+const parseDuration = (input) => {
+  if (!input) return null
+  const str = String(input).trim().toLowerCase()
+  const match = str.match(/^(\d+(?:\.\d+)?)\s*([smhd])?$/)
+  if (!match) return null
+  const num = parseFloat(match[1])
+  if (!Number.isFinite(num) || num <= 0) return null
+  const unit = match[2] || 's'
+  const multipliers = { s: 1, m: 60, h: 3600, d: 86400 }
+  return Math.round(num * multipliers[unit])
+}
+
+/** Format seconds into the most readable Zabbix-style duration */
+const formatDuration = (totalSeconds) => {
+  const s = Number(totalSeconds)
+  if (!Number.isFinite(s) || s <= 0) return ''
+  if (s % 86400 === 0) return `${s / 86400}d`
+  if (s % 3600 === 0) return `${s / 3600}h`
+  if (s % 60 === 0) return `${s / 60}m`
+  return `${s}s`
+}
+
+/** Format a timestamp into a human-readable relative time */
+const formatRelativeTime = (timestamp, t) => {
+  if (!timestamp) return t('Never')
+  const ms = Date.parse(timestamp)
+  if (!Number.isFinite(ms)) return t('Never')
+  const diffMs = Date.now() - ms
+  if (diffMs < 60_000) return t('just now')
+  const mins = Math.floor(diffMs / 60_000)
+  if (mins < 60) return `${mins} ${t('min ago')}`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} ${t('h ago')}`
+  const days = Math.floor(hours / 24)
+  return `${days} ${t('d ago')}`
+}
+
+/** Compare editForm to OLT data to detect unsaved changes */
+const isFormDirty = (editForm, olt, vendorProfiles) => {
+  if (!editForm || !olt) return false
+  const original = buildEditForm(olt, vendorProfiles)
+  return Object.keys(original).some((key) => {
+    // For duration fields, compare resolved seconds instead of raw strings
+    if (['discovery_interval', 'polling_interval', 'power_interval'].includes(key)) {
+      return parseDuration(editForm[key]) !== parseDuration(original[key])
+    }
+    return String(editForm[key] || '') !== String(original[key] || '')
+  })
+}
+
+/* ─── Shared field components ─── */
 
 const FieldLabel = ({ children }) => (
   <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 select-none">
@@ -53,7 +109,8 @@ const FieldInput = React.forwardRef(({ className = '', ...props }, ref) => (
     {...props}
     className={`h-9 w-full px-3 rounded-[10px] border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
       text-[11px] font-semibold text-slate-800 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600
-      focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all ${className}`}
+      focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all
+      [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${className}`}
   />
 ))
 
@@ -68,7 +125,12 @@ const FieldSelect = ({ className = '', children, ...props }) => (
   </select>
 )
 
-/* Mirror NODE_HEALTH_STYLE from NetworkTopology for visual coherence */
+const SectionLabel = ({ children }) => (
+  <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-300 dark:text-slate-600 select-none">{children}</span>
+)
+
+/* ─── OLT Health colors ─── */
+
 const OLT_HEALTH = {
   green: {
     borderActive: 'border-emerald-500/35 shadow-md shadow-emerald-500/10',
@@ -122,37 +184,44 @@ const OLT_HEALTH = {
   }
 }
 
-/** Resolve health color: gray when SNMP unreachable, neutral while pending, green/yellow/red from ONU data */
 const getOltHealth = (olt, snmpStatuses, oltHealthById) => {
   const derived = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
   if (derived?.state && OLT_HEALTH[derived.state]) return OLT_HEALTH[derived.state]
-
   const st = snmpStatuses?.[olt.id]
-  // SNMP unreachable → gray (not red) so user doesn't confuse with actual offline ONUs
   if (st?.status === 'unreachable') return OLT_HEALTH.gray
-  // Still checking → neutral
   if (!st || st.status === 'pending') return OLT_HEALTH.neutral
-  // SNMP reachable → mirror topology colors based on ONU data
   return OLT_HEALTH.green
 }
 
+const getSnmpBadge = (olt, snmpStatuses, t) => {
+  const st = snmpStatuses?.[olt.id]
+  if (!st || st.status === 'pending') return { label: t('Checking'), color: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500', dot: 'bg-slate-300 dark:bg-slate-600' }
+  if (st.status === 'unreachable') return { label: t('Unreachable'), color: 'bg-rose-50 dark:bg-rose-500/10 text-rose-500 dark:text-rose-400', dot: 'bg-rose-400 dark:bg-rose-500' }
+  return { label: t('Reachable'), color: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', dot: 'bg-emerald-400 dark:bg-emerald-500' }
+}
+
+/* ─── OLT Card header ─── */
+
 const OltCard = ({ olt, isSelected, health, onSelect, resolvedVendor, t, children }) => {
-  const hasExpanded = isSelected && children
+  const total = Number(olt.onu_count || 0)
+  const online = Number(olt.online_count || 0)
+  const offline = Number(olt.offline_count || 0)
+  const hasOnus = total > 0
+
   return (
     <div className={`
       w-full transition-all duration-300 bg-white dark:bg-slate-900
-      rounded-[12px] border
+      rounded-[14px] border
       ${isSelected ? health.borderActive : health.borderIdle}
     `}>
       <div
         onClick={() => onSelect(isSelected ? null : String(olt.id))}
-        className="group/node relative flex items-center gap-2.5 px-2.5 py-2 cursor-pointer select-none"
+        className="group/node relative flex items-center gap-2.5 px-3 py-2.5 cursor-pointer select-none"
       >
         <div className={`absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full transition-all duration-300 ${
           isSelected ? health.accentActive : health.accentIdle
         }`} />
 
-        {/* Server icon — mirrors topology NetworkNode */}
         <div className={`flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-[10px] transition-all duration-300 ${
           isSelected ? health.iconActive : health.iconIdle
         }`}>
@@ -165,10 +234,8 @@ const OltCard = ({ olt, isSelected, health, onSelect, resolvedVendor, t, childre
           }`}>
             {olt.name || '\u2014'}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{olt.ip_address || '\u2014'}:{olt.snmp_port || '161'}</span>
-            <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
-            <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{olt.snmp_community || 'public'}</span>
             <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{String(resolvedVendor || 'Unknown').toUpperCase()}</span>
             <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
@@ -176,20 +243,35 @@ const OltCard = ({ olt, isSelected, health, onSelect, resolvedVendor, t, childre
           </div>
         </div>
 
+        {/* ONU stats — total + online/offline breakdown */}
+        {hasOnus && (
+          <div className="flex items-center gap-1 mr-1 tabular-nums">
+            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500">{total}</span>
+            <span className="text-[10px] text-slate-250 dark:text-slate-650 mx-px">(</span>
+            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">{online}</span>
+            <span className="text-[10px] text-slate-300 dark:text-slate-600">/</span>
+            <span className="text-[10px] font-bold text-rose-500 dark:text-rose-400">{offline}</span>
+            <span className="text-[10px] text-slate-250 dark:text-slate-650">)</span>
+          </div>
+        )}
+
         <div className={`transition-transform duration-300 ${
           isSelected ? `rotate-180 ${health.chevronOpen}` : 'text-slate-300 group-hover/node:text-slate-400'
         }`}>
           <ChevronDown className="w-3 h-3" />
         </div>
       </div>
-      {hasExpanded && (
-        <div className="px-2.5 pb-2.5 animate-in slide-in-from-top-1 duration-200 cursor-default">
+
+      {isSelected && children && (
+        <div className="px-3 pb-3 animate-in slide-in-from-top-1 duration-200 cursor-default">
           {children}
         </div>
       )}
     </div>
   )
 }
+
+/* ─── Main panel ─── */
 
 export const SettingsPanel = ({
   olts,
@@ -203,6 +285,7 @@ export const SettingsPanel = ({
   onCreateOlt,
   onUpdateOlt,
   onDeleteOlt,
+  onRunDiscovery,
   actionBusy,
   snmpStatus = {},
   oltHealthById = {}
@@ -227,14 +310,22 @@ export const SettingsPanel = ({
   const modelOptions = useMemo(() => modelOptionsForVendor(form.vendor), [modelOptionsForVendor, form.vendor])
   const editModelOptions = useMemo(() => modelOptionsForVendor(editForm?.vendor), [modelOptionsForVendor, editForm?.vendor])
 
-  // Auto-select first OLT / clear selection
+  // Selected OLT object (for dirty detection)
+  const selectedOlt = useMemo(() => {
+    if (!selectedOltId) return null
+    return olts.find((item) => String(item.id) === String(selectedOltId)) || null
+  }, [olts, selectedOltId])
+
+  // Dirty detection — Save only matters when something changed
+  const dirty = useMemo(() => isFormDirty(editForm, selectedOlt, vendorProfiles), [editForm, selectedOlt, vendorProfiles])
+
+  // Clear selection when OLTs disappear
   useEffect(() => {
     if (!olts.length) { setSelectedOltId(null); return }
     if (selectedOltId) {
       const exists = olts.some((item) => String(item.id) === String(selectedOltId))
       if (exists) return
     }
-    // Don't auto-select; user must click
   }, [olts, selectedOltId])
 
   // Sync edit form when selection changes
@@ -314,9 +405,9 @@ export const SettingsPanel = ({
       snmp_version: 'v2c',
       discovery_enabled: true,
       polling_enabled: true,
-      discovery_interval_minutes: toPositiveInteger(form.discovery_interval_minutes, 240),
-      polling_interval_seconds: toPositiveInteger(form.polling_interval_seconds, 300),
-      power_interval_seconds: toPositiveInteger(form.power_interval_seconds, 300)
+      discovery_interval_minutes: Math.round((parseDuration(form.discovery_interval) || 14400) / 60),
+      polling_interval_seconds: parseDuration(form.polling_interval) || 300,
+      power_interval_seconds: parseDuration(form.power_interval) || 300
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -341,9 +432,9 @@ export const SettingsPanel = ({
       vendor_profile: Number(editForm.vendor_profile),
       snmp_community: String(editForm.snmp_community || '').trim(),
       snmp_port: Number(editForm.snmp_port || 161),
-      discovery_interval_minutes: toPositiveInteger(editForm.discovery_interval_minutes, 240),
-      polling_interval_seconds: toPositiveInteger(editForm.polling_interval_seconds, 300),
-      power_interval_seconds: toPositiveInteger(editForm.power_interval_seconds, 300),
+      discovery_interval_minutes: Math.round((parseDuration(editForm.discovery_interval) || 14400) / 60),
+      polling_interval_seconds: parseDuration(editForm.polling_interval) || 300,
+      power_interval_seconds: parseDuration(editForm.power_interval) || 300,
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -352,8 +443,7 @@ export const SettingsPanel = ({
     }
 
     setLocalError('')
-    const updated = await onUpdateOlt?.(selectedOltId, payload)
-    if (!updated) return
+    await onUpdateOlt?.(selectedOltId, payload)
   }
 
   const handleDelete = async (oltId) => {
@@ -361,6 +451,15 @@ export const SettingsPanel = ({
     if (!confirmed) return
     const removed = await onDeleteOlt?.(oltId)
     if (removed) setSelectedOltId(null)
+  }
+
+  const handleDiscovery = async (oltId) => {
+    await onRunDiscovery?.(oltId)
+  }
+
+  const handleDiscard = () => {
+    if (!selectedOlt) return
+    setEditForm(buildEditForm(selectedOlt, vendorProfiles))
   }
 
   const createBusy = Boolean(actionBusy?.create)
@@ -385,34 +484,33 @@ export const SettingsPanel = ({
           </div>
         )}
 
-        <div className="flex items-start gap-3">
-          <div className="w-full flex items-center justify-between">
-            <p className="text-[11px] font-medium text-slate-300 dark:text-slate-600 uppercase tracking-widest select-none">
-              {t('Add an OLT to start')}
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                if (showAddForm) {
-                  addNameRef.current?.focus()
-                } else {
-                  setShowAddForm(true)
-                }
-              }}
-              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 hover:shadow-emerald-600/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              title={t('Add OLT')}
-            >
-              <Plus className="w-5 h-5" />
-            </button>
-          </div>
-          <div className="flex-shrink-0 w-8" />
+        {/* Header row */}
+        <div className="w-full flex items-center justify-between">
+          <p className="text-[11px] font-medium text-slate-300 dark:text-slate-600 uppercase tracking-widest select-none">
+            {t('Add an OLT to start')}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              if (showAddForm) {
+                addNameRef.current?.focus()
+              } else {
+                setShowAddForm(true)
+              }
+            }}
+            className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 hover:shadow-emerald-600/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            title={t('Add OLT')}
+          >
+            <Plus className="w-5 h-5" />
+          </button>
         </div>
 
+        {/* ─── Create OLT form ─── */}
         {showAddForm && (
-          <div className="flex items-start gap-3">
-            <div className="w-full rounded-[12px] border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm px-4 py-4 space-y-3 animate-in fade-in slide-in-from-top-3 duration-300">
-              {/* Row 1: Name, IP, Community, Port */}
-              <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
+          <div className="w-full rounded-[14px] border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm px-4 py-4 space-y-4 animate-in fade-in slide-in-from-top-3 duration-300">
+            <div className="space-y-2.5">
+              <SectionLabel>{t('Device')}</SectionLabel>
+              <div className="grid grid-cols-3 gap-3">
                 <div className="flex flex-col gap-1.5">
                   <FieldLabel>{t('OLT name')}</FieldLabel>
                   <FieldInput
@@ -423,37 +521,6 @@ export const SettingsPanel = ({
                     placeholder="OLT-01"
                   />
                 </div>
-                <div className="flex flex-col gap-1.5">
-                  <FieldLabel>{t('IP')}</FieldLabel>
-                  <FieldInput
-                    value={form.ip_address}
-                    onChange={(e) => setField('ip_address', e.target.value)}
-                    placeholder="10.0.0.1"
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <FieldLabel>SNMP Community</FieldLabel>
-                  <FieldInput
-                    value={form.snmp_community}
-                    onChange={(e) => setField('snmp_community', e.target.value)}
-                    placeholder="public"
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <FieldLabel>{t('Port')}</FieldLabel>
-                  <FieldInput
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={form.snmp_port}
-                    onChange={(e) => setField('snmp_port', e.target.value)}
-                    placeholder="161"
-                  />
-                </div>
-              </div>
-
-              {/* Row 2: Vendor, Model, Discovery interval, Polling interval */}
-              <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
                 <div className="flex flex-col gap-1.5">
                   <FieldLabel>{t('Vendor')}</FieldLabel>
                   <FieldSelect
@@ -478,66 +545,83 @@ export const SettingsPanel = ({
                     ))}
                   </FieldSelect>
                 </div>
-                <div className="flex flex-col gap-1.5">
-                  <FieldLabel>{t('Discovery interval (minutes)')}</FieldLabel>
-                  <FieldInput
-                    type="number"
-                    min={1}
-                    value={form.discovery_interval_minutes}
-                    onChange={(e) => setField('discovery_interval_minutes', e.target.value)}
-                    placeholder="240"
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <FieldLabel>{t('Polling interval (seconds)')}</FieldLabel>
-                  <FieldInput
-                    type="number"
-                    min={1}
-                    value={form.polling_interval_seconds}
-                    onChange={(e) => setField('polling_interval_seconds', e.target.value)}
-                    placeholder="300"
-                  />
-                </div>
               </div>
+            </div>
 
-              {/* Row 3: Power interval + actions */}
-              <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
+            <div className="space-y-2.5">
+              <SectionLabel>{t('Connection')}</SectionLabel>
+              <div className="grid grid-cols-3 gap-3">
                 <div className="flex flex-col gap-1.5">
-                  <FieldLabel>{t('Power interval (seconds)')}</FieldLabel>
+                  <FieldLabel>{t('IP')}</FieldLabel>
+                  <FieldInput
+                    value={form.ip_address}
+                    onChange={(e) => setField('ip_address', e.target.value)}
+                    placeholder="10.0.0.1"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('SNMP community')}</FieldLabel>
+                  <FieldInput
+                    value={form.snmp_community}
+                    onChange={(e) => setField('snmp_community', e.target.value)}
+                    placeholder="public"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('SNMP port')}</FieldLabel>
                   <FieldInput
                     type="number"
                     min={1}
-                    value={form.power_interval_seconds}
-                    onChange={(e) => setField('power_interval_seconds', e.target.value)}
-                    placeholder="300"
+                    max={65535}
+                    value={form.snmp_port}
+                    onChange={(e) => setField('snmp_port', e.target.value)}
+                    placeholder="161"
                   />
-                </div>
-                <div className="col-span-3 flex items-end justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowAddForm(false)}
-                    className="h-8 px-4 rounded-[8px] text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 text-[10px] font-black uppercase tracking-wider transition-colors hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
-                  >
-                    {t('Cancel')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCreate}
-                    disabled={createBusy}
-                    className="h-8 px-5 rounded-[8px] border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-                  >
-                    {createBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                    {t('Save')}
-                  </button>
                 </div>
               </div>
             </div>
-            {/* Spacer to match the trash button column on OLT cards */}
-            <div className="flex-shrink-0 w-8" />
+
+            <div className="space-y-2.5">
+              <SectionLabel>{t('Intervals')}</SectionLabel>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('ONU discovery')}</FieldLabel>
+                  <FieldInput value={form.discovery_interval} onChange={(e) => setField('discovery_interval', e.target.value)} placeholder="4h" />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('Status collection')}</FieldLabel>
+                  <FieldInput value={form.polling_interval} onChange={(e) => setField('polling_interval', e.target.value)} placeholder="5m" />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('Power collection')}</FieldLabel>
+                  <FieldInput value={form.power_interval} onChange={(e) => setField('power_interval', e.target.value)} placeholder="5m" />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowAddForm(false)}
+                className="h-8 px-3.5 rounded-[8px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
+              >
+                {t('Cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={handleCreate}
+                disabled={createBusy}
+                className="h-8 px-4 rounded-[8px] border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+              >
+                {createBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                {t('Save')}
+              </button>
+            </div>
           </div>
         )}
 
-        <div className="space-y-2">
+        {/* ─── OLT list ─── */}
+        <div className="space-y-2.5">
           {loading && !olts.length && (
             <div className="flex items-center justify-center py-20">
               <RefreshCcw className="w-5 h-5 text-slate-300 dark:text-slate-600 animate-spin" />
@@ -547,24 +631,38 @@ export const SettingsPanel = ({
           {olts.map((olt) => {
             const isSelected = String(selectedOltId) === String(olt.id)
             const health = getOltHealth(olt, snmpStatus, oltHealthById)
-            // Robust check for vendor profile
             const vp = vendorProfiles?.find(p => String(p.id) === String(olt.vendor_profile))
             const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || 'Unknown'
+            const discoveryBusy = Boolean(actionBusy?.[`discovery:${olt.id}`])
+            const deleteBusy = Boolean(actionBusy?.[`delete:${olt.id}`])
+            const localUpdateBusy = Boolean(actionBusy?.[`update:${olt.id}`])
+            const snmpBadge = getSnmpBadge(olt, snmpStatus, t)
 
             return (
-              <div key={olt.id} className="flex items-start gap-3 group/row transition-all duration-300">
-                <OltCard
-                  olt={olt}
-                  isSelected={isSelected}
-                  health={health}
-                  onSelect={setSelectedOltId}
-                  resolvedVendor={resolvedVendor}
-                  t={t}
-                >
-                  {isSelected && editForm && (
-                    <div className="pt-2 space-y-3 border-t border-slate-100 dark:border-slate-800/50">
-                      {/* Row 1: Name, IP, Community, Port — equal thirds + small port */}
-                      <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
+              <OltCard
+                key={olt.id}
+                olt={olt}
+                isSelected={isSelected}
+                health={health}
+                onSelect={setSelectedOltId}
+                resolvedVendor={resolvedVendor}
+                t={t}
+              >
+                {isSelected && editForm && (
+                  <div className="pt-3 space-y-4 border-t border-slate-100 dark:border-slate-800/50">
+
+                    {/* ── Status bar ── */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-50 dark:bg-slate-800/80 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                        <Clock className="w-3 h-3" />
+                        {t('Last discovery')}: {formatRelativeTime(olt.last_discovery_at, t)}
+                      </span>
+                    </div>
+
+                    {/* ── Device fields ── */}
+                    <div className="space-y-2.5">
+                      <SectionLabel>{t('Device')}</SectionLabel>
+                      <div className="grid grid-cols-3 gap-3">
                         <div className="flex flex-col gap-1.5">
                           <FieldLabel>{t('OLT name')}</FieldLabel>
                           <FieldInput
@@ -574,37 +672,6 @@ export const SettingsPanel = ({
                             placeholder="OLT-01"
                           />
                         </div>
-                        <div className="flex flex-col gap-1.5">
-                          <FieldLabel>{t('IP')}</FieldLabel>
-                          <FieldInput
-                            value={editForm.ip_address}
-                            onChange={(e) => setEditField('ip_address', e.target.value)}
-                            placeholder="10.0.0.1"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <FieldLabel>SNMP Community</FieldLabel>
-                          <FieldInput
-                            value={editForm.snmp_community}
-                            onChange={(e) => setEditField('snmp_community', e.target.value)}
-                            placeholder="public"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <FieldLabel>{t('Port')}</FieldLabel>
-                          <FieldInput
-                            type="number"
-                            min={1}
-                            max={65535}
-                            value={editForm.snmp_port}
-                            onChange={(e) => setEditField('snmp_port', e.target.value)}
-                            placeholder="161"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Row 2: Vendor, Model, Discovery interval, Polling interval */}
-                      <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
                         <div className="flex flex-col gap-1.5">
                           <FieldLabel>{t('Vendor')}</FieldLabel>
                           <FieldSelect
@@ -629,73 +696,114 @@ export const SettingsPanel = ({
                             ))}
                           </FieldSelect>
                         </div>
-                        <div className="flex flex-col gap-1.5">
-                          <FieldLabel>{t('Discovery interval (minutes)')}</FieldLabel>
-                          <FieldInput
-                            type="number"
-                            min={1}
-                            value={editForm.discovery_interval_minutes}
-                            onChange={(e) => setEditField('discovery_interval_minutes', e.target.value)}
-                            placeholder="240"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <FieldLabel>{t('Polling interval (seconds)')}</FieldLabel>
-                          <FieldInput
-                            type="number"
-                            min={1}
-                            value={editForm.polling_interval_seconds}
-                            onChange={(e) => setEditField('polling_interval_seconds', e.target.value)}
-                            placeholder="300"
-                          />
-                        </div>
                       </div>
+                    </div>
 
-                      {/* Row 3: Power interval + actions */}
-                      <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
+                    {/* ── Connection fields ── */}
+                    <div className="space-y-2.5">
+                      <SectionLabel>{t('Connection')}</SectionLabel>
+                      <div className="grid grid-cols-3 gap-3">
                         <div className="flex flex-col gap-1.5">
-                          <FieldLabel>{t('Power interval (seconds)')}</FieldLabel>
+                          <FieldLabel>{t('IP')}</FieldLabel>
+                          <FieldInput
+                            value={editForm.ip_address}
+                            onChange={(e) => setEditField('ip_address', e.target.value)}
+                            placeholder="10.0.0.1"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('SNMP community')}</FieldLabel>
+                          <FieldInput
+                            value={editForm.snmp_community}
+                            onChange={(e) => setEditField('snmp_community', e.target.value)}
+                            placeholder="public"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('SNMP port')}</FieldLabel>
                           <FieldInput
                             type="number"
                             min={1}
-                            value={editForm.power_interval_seconds}
-                            onChange={(e) => setEditField('power_interval_seconds', e.target.value)}
-                            placeholder="300"
+                            max={65535}
+                            value={editForm.snmp_port}
+                            onChange={(e) => setEditField('snmp_port', e.target.value)}
+                            placeholder="161"
                           />
-                        </div>
-                        <div className="col-span-3 flex items-end justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedOltId(null)}
-                            className="h-8 px-4 rounded-[8px] text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 text-[10px] font-black uppercase tracking-wider transition-colors hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
-                          >
-                            {t('Cancel')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleUpdate}
-                            disabled={updateBusy}
-                            className="h-8 px-5 rounded-[8px] border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-                          >
-                            {updateBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                            {t('Save')}
-                          </button>
                         </div>
                       </div>
                     </div>
-                  )}
-                </OltCard>
 
-                <button
-                  type="button"
-                  onClick={() => handleDelete(olt.id)}
-                  disabled={Boolean(actionBusy?.[`delete:${olt.id}`])}
-                  className="mt-2.5 flex-shrink-0 w-8 h-8 rounded-[10px] flex items-center justify-center text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all opacity-0 group-hover/row:opacity-100 focus:opacity-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={t('Remove OLT')}
-                >
-                  {Boolean(actionBusy?.[`delete:${olt.id}`]) ? <RefreshCcw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                </button>
-              </div>
+                    {/* ── Interval fields ── */}
+                    <div className="space-y-2.5">
+                      <SectionLabel>{t('Intervals')}</SectionLabel>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('ONU discovery')}</FieldLabel>
+                          <FieldInput value={editForm.discovery_interval} onChange={(e) => setEditField('discovery_interval', e.target.value)} placeholder="4h" />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('Status collection')}</FieldLabel>
+                          <FieldInput value={editForm.polling_interval} onChange={(e) => setEditField('polling_interval', e.target.value)} placeholder="5m" />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('Power collection')}</FieldLabel>
+                          <FieldInput value={editForm.power_interval} onChange={(e) => setEditField('power_interval', e.target.value)} placeholder="5m" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── Action bar ── */}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800/30">
+                      {/* Left: destructive action */}
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(olt.id)}
+                        disabled={deleteBusy}
+                        className="h-8 px-3 rounded-[8px] text-[10px] font-black uppercase tracking-wider text-rose-400 dark:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        {deleteBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                        {t('Remove OLT')}
+                      </button>
+
+                      {/* Right: contextual actions */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDiscovery(olt.id)}
+                          disabled={discoveryBusy}
+                          className="h-8 px-3.5 rounded-[8px] border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                        >
+                          {discoveryBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Radar className="w-3.5 h-3.5" />}
+                          {t('Run discovery now')}
+                        </button>
+
+                        {/* Save — only visible when form is dirty */}
+                        {dirty && (
+                          <div className="flex items-center gap-1.5 animate-in fade-in duration-200">
+                            <button
+                              type="button"
+                              onClick={handleDiscard}
+                              className="h-8 px-3 rounded-[8px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
+                            >
+                              {t('Cancel')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleUpdate}
+                              disabled={localUpdateBusy}
+                              className="h-8 px-4 rounded-[8px] bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                            >
+                              {localUpdateBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                              {t('Save')}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+              </OltCard>
             )
           })}
 

@@ -478,6 +478,18 @@ const App = () => {
     return Boolean(removed)
   }
 
+  const runDiscovery = async (oltId) => {
+    await runSettingsAction(
+      `discovery:${oltId}`,
+      async () => {
+        await api.post(`/olts/${oltId}/run_discovery/`)
+        await fetchOlts()
+        return true
+      },
+      t('Discovery executed successfully')
+    )
+  }
+
   const selectedPonData = useMemo(() => {
     if (!selectedPonId) return null
     return findPonById(olts, selectedPonId)
@@ -1049,6 +1061,7 @@ const App = () => {
               onCreateOlt={createOlt}
               onUpdateOlt={updateOlt}
               onDeleteOlt={deleteOlt}
+              onRunDiscovery={runDiscovery}
               actionBusy={settingsActionBusy}
               snmpStatus={snmpStatus}
               oltHealthById={oltHealthById}
