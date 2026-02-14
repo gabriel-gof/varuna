@@ -1,86 +1,60 @@
 # Varuna
 
-SNMP monitoring tool for FTTH networks with support for multiple OLT vendors.
+Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environments.
 
-## Features
+## What It Does
+- Discovers and maintains OLT → Slot → PON → ONU topology.
+- Polls ONU status over SNMP with disconnect-reason mapping.
+- Shows unreachable OLTs clearly (gray state in frontend).
+- Caches hot status/power reads in Redis.
 
-- Multi-vendor OLT support (ZTE first)
-- SNMP-based discovery and status polling
-- Real-time topology display (OLT → Slots → PONs → ONUs)
-- ONU status tracking (online/offline)
-- Disconnect reason detection (link loss, dying gasp)
-- Power level monitoring (OLT RX, ONU RX)
-- Offline event logging
-- Configurable polling and discovery intervals per OLT
+## Runtime Architecture
+- `frontend`: React app (Vite dev / Nginx prod)
+- `backend`: Django + DRF API and SNMP orchestration
+- `db`: PostgreSQL
+- `redis`: Redis
 
-## Getting Started
-
-### Development
-
+## Quick Start
+### Backend
 ```bash
-# Backend (Django)
-cd backend
-source venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py createsuperuser
+cd /Users/gabriel/Documents/varuna
+backend/venv/bin/python backend/manage.py migrate
+backend/venv/bin/python backend/manage.py runserver 0.0.0.0:8000
+```
 
-# Frontend (Vue 3 + Vuetify)
-cd frontend
+### Frontend
+```bash
+cd /Users/gabriel/Documents/varuna/frontend
 npm install
 npm run dev
-
-# Start development environment
-docker-compose -f docker-compose.dev.yml up
 ```
 
-### Production
-
+### Docker (Dev)
 ```bash
-# Build and deploy
-docker-compose -f docker-compose.prod.yml up -d --build
+cd /Users/gabriel/Documents/varuna
+docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-## API Documentation
+## Main API Endpoints
+- `GET /api/olts/`
+- `GET /api/olts/?include_topology=true`
+- `GET /api/olts/{id}/topology/`
+- `POST /api/olts/{id}/run_discovery/`
+- `POST /api/olts/{id}/run_polling/`
+- `POST /api/olts/{id}/snmp_check/`
+- `GET /api/onu/`
+- `GET /api/onu/{id}/power/`
+- `POST /api/onu/batch-power/`
 
-### Endpoints
+## Documentation
+- `/Users/gabriel/Documents/varuna/docs/ARCHITECTURE.md`
+- `/Users/gabriel/Documents/varuna/docs/BACKEND.md`
+- `/Users/gabriel/Documents/varuna/docs/FRONTEND.md`
+- `/Users/gabriel/Documents/varuna/docs/OPERATIONS.md`
+- `/Users/gabriel/Documents/varuna/docs/LLM_CONTEXT.md`
 
-#### OLTs
-- `GET /api/olts/` - List all OLTs
-- `POST /api/olts/` - Create new OLT
-- `GET /api/olts/{id}/` - Get OLT details
-- `PUT /api/olts/{id}/` - Update OLT
-- `DELETE /api/olts/{id}/` - Delete OLT
-
-#### Topology
-- `GET /api/olts/{id}/topology/` - Get complete topology for OLT
-- `GET /api/olts/{id}/stats/` - Get OLT statistics
-
-#### ONUs
-- `GET /api/onu/` - List ONUs (read-only, filtered)
-- `GET /api/onu/{id}/power/` - Get ONU power levels
-- `POST /api/onu/batch-power/` - Batch power refresh
-
-#### Vendor Profiles
-- `GET /api/vendor-profiles/` - List available vendor profiles
-
-## Color Coding
-
-| Status | Color | Priority |
-|--------|--------|----------|
-| Link Loss (LOS) | 🔴 Red (#E53935) | High |
-| Dying Gasp | 🟠 Orange (#FB8C00) | Medium |
-| Unknown | ⚪ Gray (#757575) | Low |
-| Online | 🟢 Green (#43A047) | - |
-
-## Technology Stack
-
-- **Backend**: Django 4.2, Django REST Framework, PostgreSQL, Redis
-- **Frontend**: Vue 3, Vuetify 3, Pinia, Vue Router, Vite
-- **SNMP**: PySNMP for SNMP communication
-- **Deployment**: Docker Compose
-- **Language**: Portuguese (Brazil) - PT-BR
-
-## License
-
-Private/Internal project.
+## Validation
+```bash
+backend/venv/bin/python backend/manage.py test dashboard -v 2
+cd /Users/gabriel/Documents/varuna/frontend && npm run build
+```

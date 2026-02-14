@@ -26,7 +26,7 @@ services:
           memory: 1G
           cpus: '2.0'
 
-  web:
+  backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -68,7 +68,7 @@ services:
       dockerfile: frontend/Dockerfile
       target: production
     depends_on:
-      - web
+      - backend
     ports:
       - "80:80"
       - "443:443"

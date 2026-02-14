@@ -8,19 +8,7 @@ class VendorProfile(models.Model):
     Defines OID templates and capabilities for a vendor/model
     """
     
-    VENDOR_ZTE = 'zte'
-    VENDOR_HUAWEI = 'huawei'
-    VENDOR_FIBERHOME = 'fiberhome'
-    VENDOR_DATACOM = 'datacom'
-    
-    VENDOR_CHOICES = [
-        (VENDOR_ZTE, 'ZTE'),
-        (VENDOR_HUAWEI, 'Huawei'),
-        (VENDOR_FIBERHOME, 'FiberHome'),
-        (VENDOR_DATACOM, 'Datacom'),
-    ]
-    
-    vendor = models.CharField(max_length=50, choices=VENDOR_CHOICES, verbose_name='Fabricante')
+    vendor = models.CharField(max_length=50, verbose_name='Fabricante')
     model_name = models.CharField(max_length=100, verbose_name='Nome do Modelo')
     description = models.TextField(blank=True, verbose_name='Descrição')
     
@@ -37,7 +25,7 @@ class VendorProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
     
     def __str__(self):
-        return f"{self.get_vendor_display()} {self.model_name}"
+        return f"{(self.vendor or '').upper()} {self.model_name}".strip()
     
     class Meta:
         verbose_name = 'Perfil de Fabricante'
@@ -86,13 +74,19 @@ class OLT(models.Model):
     )
     last_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Último Polling')
     next_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Próximo Polling')
+
+    snmp_reachable = models.BooleanField(null=True, blank=True, verbose_name='SNMP Acessível')
+    last_snmp_check_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Verificação SNMP')
+    last_snmp_error = models.TextField(blank=True, default='', verbose_name='Último Erro SNMP')
+    snmp_failure_count = models.IntegerField(default=0, verbose_name='Falhas SNMP Consecutivas')
     
     is_active = models.BooleanField(default=True, verbose_name='Ativo')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Atualizado em')
     
     def __str__(self):
-        return f"{self.name} ({self.vendor_profile.get_vendor_display()} {self.vendor_profile.model_name})"
+        vendor = (self.vendor_profile.vendor or '').upper()
+        return f"{self.name} ({vendor} {self.vendor_profile.model_name})"
     
     class Meta:
         verbose_name = 'OLT'
@@ -203,11 +197,12 @@ class ONU(models.Model):
     pon_id = models.IntegerField(verbose_name='PON ID')
     onu_id = models.IntegerField(verbose_name='ONU ID')
     
-    snmp_index = models.CharField(max_length=200, unique=True, verbose_name='Índice SNMP')
+    snmp_index = models.CharField(max_length=200, verbose_name='Índice SNMP')
     name = models.CharField(max_length=200, blank=True, verbose_name='Nome')
     serial = models.CharField(max_length=100, blank=True, verbose_name='Número de Série')
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_UNKNOWN, verbose_name='Status')
+    is_active = models.BooleanField(default=True, verbose_name='Ativa')
     
     last_discovered_at = models.DateTimeField(auto_now=True, verbose_name='Última Descoberta')
     
@@ -219,8 +214,12 @@ class ONU(models.Model):
         verbose_name_plural = 'ONUs'
         unique_together = ['olt', 'slot_id', 'pon_id', 'onu_id']
         indexes = [
-            models.Index(fields=['olt', 'slot_id', 'pon_id']),
-            models.Index(fields=['snmp_index']),
+            models.Index(fields=['olt', 'is_active', 'slot_id', 'pon_id']),
+            models.Index(fields=['olt', 'snmp_index']),
+            models.Index(fields=['olt', 'is_active', 'status']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['olt', 'snmp_index'], name='dashboard_unique_olt_snmp_index'),
         ]
 
 

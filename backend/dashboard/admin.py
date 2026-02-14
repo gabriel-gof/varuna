@@ -15,7 +15,16 @@ class VendorProfileAdmin(admin.ModelAdmin):
 
 @admin.register(OLT)
 class OLTAdmin(admin.ModelAdmin):
-    list_display = ('name', 'vendor_profile', 'ip_address', 'is_active', 'discovery_enabled', 'polling_enabled')
+    list_display = (
+        'name',
+        'vendor_profile',
+        'ip_address',
+        'snmp_reachable',
+        'snmp_failure_count',
+        'is_active',
+        'discovery_enabled',
+        'polling_enabled',
+    )
     list_filter = ('vendor_profile', 'protocol', 'is_active', 'discovery_enabled', 'polling_enabled')
 
 
@@ -33,8 +42,8 @@ class OLTPONAdmin(admin.ModelAdmin):
 
 @admin.register(ONU)
 class ONUAdmin(admin.ModelAdmin):
-    list_display = ('olt', 'slot_id', 'pon_id', 'onu_id', 'name', 'serial', 'status')
-    list_filter = ('status', 'olt', 'slot_id', 'pon_id')
+    list_display = ('olt', 'slot_id', 'pon_id', 'onu_id', 'name', 'serial', 'status', 'is_active')
+    list_filter = ('status', 'is_active', 'olt', 'slot_id', 'pon_id')
 
 
 @admin.register(ONULog)

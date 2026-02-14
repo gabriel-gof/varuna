@@ -5,8 +5,6 @@ const resources = {
   en: {
     translation: {
       VARUNA: 'VARUNA',
-      Dashboard: 'Dashboard',
-      'Coming soon': 'Coming soon',
       Topology: 'Topology',
       Settings: 'Settings',
       'OLT management': 'OLT management',
@@ -46,8 +44,6 @@ const resources = {
       'Discovery executed successfully': 'Discovery executed successfully',
       'Polling executed successfully': 'Polling executed successfully',
       'Network configuration and backend sync': 'Network configuration and backend sync',
-      'Demo mode enabled': 'Demo mode enabled',
-      'Disable VITE_USE_TEST_DATA to use backend data in all tabs.': 'Disable VITE_USE_TEST_DATA to use backend data in all tabs.',
       Search: 'Search by login or ONU serial...',
       'Filter OLTs': 'Filter OLTs',
       'Filter OLTs help': 'Select which OLTs are shown in topology.',
@@ -120,7 +116,6 @@ const resources = {
       'Offline first': 'Offline first',
       'Offline only': 'Offline only',
       'No clients match offline filter': 'No clients match the offline filter',
-      'Offline trend analysis': 'Offline trend analysis',
       Cliente: 'Client',
       OLTs: 'OLTs',
       'Active OLTs': 'Active OLTs',
@@ -139,16 +134,12 @@ const resources = {
       'Toggle discovery': 'Toggle discovery',
       'Toggle polling': 'Toggle polling',
       'Loading vendor profiles': 'Loading vendor profiles',
-      'No vendor profiles found': 'No vendor profiles found',
-      'Client snapshot': 'Client snapshot',
-      'Top clients in monitored topology': 'Top clients in monitored topology'
+      'No vendor profiles found': 'No vendor profiles found'
     }
   },
   pt: {
     translation: {
       VARUNA: 'VARUNA',
-      Dashboard: 'Dashboard',
-      'Coming soon': 'Em breve',
       Topology: 'Topologia',
       Settings: 'CONFIGURAÇÕES',
       'OLT management': 'Gerenciamento de OLTs',
@@ -188,8 +179,6 @@ const resources = {
       'Discovery executed successfully': 'Descoberta executada com sucesso',
       'Polling executed successfully': 'Polling executado com sucesso',
       'Network configuration and backend sync': 'Configuração da rede e sincronização com backend',
-      'Demo mode enabled': 'Modo demonstração ativo',
-      'Disable VITE_USE_TEST_DATA to use backend data in all tabs.': 'Desative VITE_USE_TEST_DATA para usar dados do backend em todas as abas.',
       Search: 'Buscar por login ou serial da ONU...',
       'Filter OLTs': 'Filtrar OLTs',
       'Filter OLTs help': 'Selecione quais OLTs aparecem na topologia.',
@@ -262,7 +251,6 @@ const resources = {
       'Offline first': 'Inativo primeiro',
       'Offline only': 'Somente inativo',
       'No clients match offline filter': 'Nenhum cliente corresponde ao filtro de inativo',
-      'Offline trend analysis': 'Análise de inativos',
       Cliente: 'Cliente',
       OLTs: 'OLTs',
       'Active OLTs': 'OLTs ativas',
@@ -281,9 +269,7 @@ const resources = {
       'Toggle discovery': 'Alternar descoberta',
       'Toggle polling': 'Alternar polling',
       'Loading vendor profiles': 'Carregando perfis de fabricante',
-      'No vendor profiles found': 'Nenhum perfil de fabricante encontrado',
-      'Client snapshot': 'Resumo de clientes',
-      'Top clients in monitored topology': 'Clientes da topologia monitorada'
+      'No vendor profiles found': 'Nenhum perfil de fabricante encontrado'
     }
   }
 }

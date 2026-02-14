@@ -189,7 +189,6 @@ export const SettingsPanel = ({
   onUpdateOlt,
   onDeleteOlt,
   actionBusy,
-  isDemoMode,
   snmpStatus = {}
 }) => {
   const { t } = useTranslation()
@@ -289,8 +288,6 @@ export const SettingsPanel = ({
   }
 
   const handleCreate = async () => {
-    if (isDemoMode) return
-
     const payload = {
       name: String(form.name || '').trim().slice(0, MAX_OLT_NAME),
       ip_address: String(form.ip_address || '').trim(),
@@ -319,7 +316,7 @@ export const SettingsPanel = ({
   }
 
   const handleUpdate = async () => {
-    if (isDemoMode || !selectedOltId || !editForm) return
+    if (!selectedOltId || !editForm) return
 
     const payload = {
       name: String(editForm.name || '').trim().slice(0, MAX_OLT_NAME),
@@ -336,14 +333,10 @@ export const SettingsPanel = ({
 
     setLocalError('')
     const updated = await onUpdateOlt?.(selectedOltId, payload)
-    if (updated) {
-      // Re-run SNMP check for this OLT
-      runSnmpChecks(olts.filter((o) => String(o.id) === String(selectedOltId)))
-    }
+    if (!updated) return
   }
 
   const handleDelete = async (oltId) => {
-    if (isDemoMode) return
     const confirmed = window.confirm(t('Do you want to remove this OLT?'))
     if (!confirmed) return
     const removed = await onDeleteOlt?.(oltId)
@@ -386,7 +379,6 @@ export const SettingsPanel = ({
                   setShowAddForm(true)
                 }
               }}
-              disabled={isDemoMode}
               className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 hover:shadow-emerald-600/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               title={t('Add OLT')}
             >
@@ -477,7 +469,7 @@ export const SettingsPanel = ({
                   <button
                     type="button"
                     onClick={handleCreate}
-                    disabled={isDemoMode || createBusy}
+                    disabled={createBusy}
                     className="h-8 px-5 rounded-[8px] border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
                   >
                     {createBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
@@ -594,7 +586,7 @@ export const SettingsPanel = ({
                           <button
                             type="button"
                             onClick={handleUpdate}
-                            disabled={isDemoMode || updateBusy}
+                            disabled={updateBusy}
                             className="h-8 px-5 rounded-[8px] border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
                           >
                             {updateBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
@@ -609,7 +601,7 @@ export const SettingsPanel = ({
                 <button
                   type="button"
                   onClick={() => handleDelete(olt.id)}
-                  disabled={isDemoMode || Boolean(actionBusy?.[`delete:${olt.id}`])}
+                  disabled={Boolean(actionBusy?.[`delete:${olt.id}`])}
                   className="mt-2.5 flex-shrink-0 w-8 h-8 rounded-[10px] flex items-center justify-center text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all opacity-0 group-hover/row:opacity-100 focus:opacity-100 disabled:opacity-40 disabled:cursor-not-allowed"
                   title={t('Remove OLT')}
                 >

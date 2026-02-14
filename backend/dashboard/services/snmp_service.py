@@ -86,6 +86,20 @@ class SNMPService:
             return loop.run_until_complete(coro)
         finally:
             loop.close()
+
+    def _build_auth_data(self, olt: Any):
+        snmp_version = str(getattr(olt, 'snmp_version', 'v2c')).lower()
+        if snmp_version == 'v2c':
+            return self.pysnmp_modules['CommunityData'](olt.snmp_community, mpModel=1)
+        if snmp_version == 'v1':
+            return self.pysnmp_modules['CommunityData'](olt.snmp_community, mpModel=0)
+
+        # SNMP v3 needs auth/priv fields that are not yet represented in OLT model.
+        logger.error(
+            "SNMP v3 requested for OLT %s but credentials are not configured in model fields.",
+            getattr(olt, 'name', '<unknown>'),
+        )
+        return None
     
     def get(self, olt: Any, oids: List[str]) -> Optional[Dict[str, Any]]:
         """
@@ -98,6 +112,10 @@ class SNMPService:
         m = self.pysnmp_modules
         var_binds = [m['ObjectType'](m['ObjectIdentity'](oid)) for oid in oids]
 
+        auth_data = self._build_auth_data(olt)
+        if auth_data is None:
+            return None
+
         async def _get():
             try:
                 # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
@@ -109,7 +127,7 @@ class SNMPService:
                 
                 errorIndication, errorStatus, errorIndex, varBinds = await m['getCmd'](
                     self.engine,
-                    m['CommunityData'](olt.snmp_community, mpModel=1),
+                    auth_data,
                     transport,
                     m['ContextData'](),
                     *var_binds
@@ -143,6 +161,9 @@ class SNMPService:
         base_oid = oid.rstrip(".")
         results = []
         m = self.pysnmp_modules
+        auth_data = self._build_auth_data(olt)
+        if auth_data is None:
+            return results
 
         async def _walk():
             # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
@@ -160,7 +181,7 @@ class SNMPService:
                     if bulk_cmd:
                         errorIndication, errorStatus, errorIndex, varBinds = await bulk_cmd(
                             self.engine,
-                            m['CommunityData'](olt.snmp_community, mpModel=1),
+                            auth_data,
                             transport,
                             m['ContextData'](),
                             0,
@@ -171,7 +192,7 @@ class SNMPService:
                     else:
                         errorIndication, errorStatus, errorIndex, varBinds = await m['nextCmd'](
                             self.engine,
-                            m['CommunityData'](olt.snmp_community, mpModel=1),
+                            auth_data,
                             transport,
                             m['ContextData'](),
                             m['ObjectType'](m['ObjectIdentity'](current_oid)),

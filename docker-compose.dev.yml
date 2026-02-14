@@ -19,7 +19,7 @@ services:
       - "6379:6379"
     restart: unless-stopped
 
-  web:
+  backend:
     build: 
       context: .
       dockerfile: backend/Dockerfile
@@ -51,10 +51,10 @@ services:
       dockerfile: frontend/Dockerfile
       target: development
     depends_on:
-      - web
+      - backend
     environment:
       - VITE_API_URL=/api
-      - VITE_API_PROXY=http://web:8000
+      - VITE_API_PROXY=http://backend:8000
     ports:
       - "3000:3000"
     volumes:

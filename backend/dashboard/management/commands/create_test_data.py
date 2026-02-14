@@ -57,7 +57,7 @@ class Command(BaseCommand):
                     "ip_address": olt_data["ip_address"],
                     "snmp_community": "public",
                     "snmp_port": 161,
-                    "snmp_version": "2c",
+                    "snmp_version": "v2c",
                     "discovery_enabled": True,
                     "polling_enabled": True,
                     "is_active": True,
@@ -107,8 +107,7 @@ class Command(BaseCommand):
 
                     # Create ONUs
                     for onu_num in range(1, onus_per_pon + 1):
-                        # Include OLT ID in snmp_index to make it globally unique
-                        snmp_index = f"{olt.id}.{pon_index}.{onu_num}"
+                        snmp_index = f"{pon_index}.{onu_num}"
                         
                         # Determine status distribution:
                         # 70% online, 15% offline (link_loss), 10% offline (dying_gasp), 5% unknown
@@ -141,18 +140,21 @@ class Command(BaseCommand):
                                 "name": name,
                                 "serial": serial,
                                 "status": status,
+                                "is_active": True,
                             }
                         )
 
-                        if onu_created:
-                            # Update status if ONU already existed
+                        if not onu_created:
+                            onu.is_active = True
                             if onu.status != status:
                                 onu.status = status
-                                onu.save(update_fields=["status"])
-                            
-                            # Create ONULog for offline ONUs
-                            if status == ONU.STATUS_OFFLINE and disconnect_reason:
-                                # Random offline time (1 minute to 2 hours ago)
+                                onu.save(update_fields=["status", "is_active"])
+                            else:
+                                onu.save(update_fields=["is_active"])
+
+                        if status == ONU.STATUS_OFFLINE and disconnect_reason:
+                            has_open_log = ONULog.objects.filter(onu=onu, offline_until__isnull=True).exists()
+                            if not has_open_log:
                                 offline_since = timezone.now() - timezone.timedelta(
                                     minutes=random.randint(1, 120)
                                 )
@@ -163,10 +165,10 @@ class Command(BaseCommand):
                                 )
 
         # Summary
-        total_onus = ONU.objects.count()
-        online = ONU.objects.filter(status=ONU.STATUS_ONLINE).count()
-        offline = ONU.objects.filter(status=ONU.STATUS_OFFLINE).count()
-        unknown = ONU.objects.filter(status=ONU.STATUS_UNKNOWN).count()
+        total_onus = ONU.objects.filter(is_active=True).count()
+        online = ONU.objects.filter(is_active=True, status=ONU.STATUS_ONLINE).count()
+        offline = ONU.objects.filter(is_active=True, status=ONU.STATUS_OFFLINE).count()
+        unknown = ONU.objects.filter(is_active=True, status=ONU.STATUS_UNKNOWN).count()
 
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("=== Test Data Created ==="))
@@ -174,6 +176,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Slots: {OLTSlot.objects.count()}")
         self.stdout.write(f"PONs: {OLTPON.objects.count()}")
         self.stdout.write(f"ONUs: {total_onus}")
-        self.stdout.write(f"  - Online: {online} ({online/total_onus*100:.1f}%)")
-        self.stdout.write(f"  - Offline: {offline} ({offline/total_onus*100:.1f}%)")
-        self.stdout.write(f"  - Unknown: {unknown} ({unknown/total_onus*100:.1f}%)")
+        if total_onus:
+            self.stdout.write(f"  - Online: {online} ({online/total_onus*100:.1f}%)")
+            self.stdout.write(f"  - Offline: {offline} ({offline/total_onus*100:.1f}%)")
+            self.stdout.write(f"  - Unknown: {unknown} ({unknown/total_onus*100:.1f}%)")

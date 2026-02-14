@@ -69,7 +69,7 @@ class PowerService:
         onus: Iterable[ONU],
         force_refresh: bool = True,
     ) -> Dict[int, Dict]:
-        onus = [onu for onu in onus if onu and onu.olt_id and onu.snmp_index]
+        onus = [onu for onu in onus if onu and onu.olt_id and onu.snmp_index and onu.is_active]
         if not onus:
             return {}
 
@@ -169,4 +169,3 @@ class PowerService:
 
 
 power_service = PowerService()
-

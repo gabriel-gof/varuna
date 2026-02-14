@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  LayoutDashboard,
   Network,
   Settings as SettingsIcon,
   LogOut,
@@ -17,11 +16,10 @@ import {
 import { useTranslation } from 'react-i18next'
 import './i18n'
 import { NetworkTopology } from './components/NetworkTopology'
-import { Dashboard } from './components/Dashboard'
 import { SettingsPanel } from './components/SettingsPanel'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api from './services/api'
-import { classifyOnu, getOnuStats } from './utils/stats'
+import { classifyOnu } from './utils/stats'
 
 const normalizeList = (data) => {
   if (Array.isArray(data)) return data
@@ -106,192 +104,6 @@ const formatReadingAt = (value, language) => {
   }).format(parsed)
 }
 
-const buildClientLogin = (index) => {
-  if (index === 1) return 'gabriel.gomes'
-  if (index === 2) return 'alexandre.nunes'
-  if (index === 3) return 'paula.macedo22'
-
-  const firstNames = [
-    'carlos', 'fernanda', 'bruno', 'mariana', 'ricardo', 'camila', 'thiago', 'renata',
-    'lucas', 'juliana', 'rodrigo', 'beatriz', 'rafael', 'patricia', 'vinicius', 'larissa'
-  ]
-  const lastNames = [
-    'silva', 'souza', 'oliveira', 'santos', 'lima', 'pereira', 'almeida', 'costa',
-    'rocha', 'martins', 'barbosa', 'cardoso', 'dias', 'teixeira', 'fonseca', 'ribeiro'
-  ]
-
-  const first = firstNames[(index - 1) % firstNames.length]
-  const last = lastNames[Math.floor((index - 1) / firstNames.length) % lastNames.length]
-  const withNumericSuffix = index % 5 === 0 || index % 9 === 0
-  const suffix = withNumericSuffix ? String((index % 90) + 10) : ''
-  return `${first}.${last}${suffix}`
-}
-
-const buildScenarioStatuses = (profile) => {
-  if (profile === 'all_online') {
-    return [
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' }
-    ]
-  }
-
-  if (profile === 'mixed_link_loss') {
-    return [
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'offline', reason: 'link_loss' },
-      { status: 'offline', reason: 'link_loss' }
-    ]
-  }
-
-  if (profile === 'mixed_dying_gasp') {
-    return [
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'offline', reason: 'dying_gasp' },
-      { status: 'offline', reason: 'dying_gasp' }
-    ]
-  }
-
-  if (profile === 'mixed_unknown') {
-    return [
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'online', reason: '' },
-      { status: 'unknown', reason: '' },
-      { status: 'unknown', reason: '' }
-    ]
-  }
-
-  if (profile === 'all_offline_link_loss') {
-    return [
-      { status: 'offline', reason: 'link_loss' },
-      { status: 'offline', reason: 'link_loss' },
-      { status: 'offline', reason: 'link_loss' },
-      { status: 'offline', reason: 'link_loss' },
-      { status: 'offline', reason: 'link_loss' },
-      { status: 'offline', reason: 'link_loss' }
-    ]
-  }
-
-  return buildScenarioStatuses('all_online')
-}
-
-const buildTestTopology = () => {
-  const scenarioOlts = [
-    // OLT fully healthy (all green).
-    {
-      id: 'olt-scenario-green',
-      name: 'OLT-CENARIO-VERDE',
-      slots: [
-        ['all_online', 'all_online', 'all_online', 'all_online'],
-        ['all_online', 'all_online', 'all_online', 'all_online']
-      ]
-    },
-    // Has a red PON but not all red in slot => slot yellow.
-    {
-      id: 'olt-scenario-slot-yellow',
-      name: 'OLT-CENARIO-SLOT-YELLOW',
-      slots: [
-        ['all_offline_link_loss', 'mixed_link_loss', 'all_online', 'all_online'],
-        ['all_online', 'mixed_unknown', 'all_online', 'all_online']
-      ]
-    },
-    // Has one full red slot => OLT yellow.
-    {
-      id: 'olt-scenario-olt-yellow',
-      name: 'OLT-CENARIO-OLT-YELLOW',
-      slots: [
-        ['all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss'],
-        ['all_online', 'mixed_dying_gasp', 'all_online', 'all_online']
-      ]
-    },
-    // All slots red => OLT red.
-    {
-      id: 'olt-scenario-olt-red',
-      name: 'OLT-CENARIO-OLT-RED',
-      slots: [
-        ['all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss'],
-        ['all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss', 'all_offline_link_loss']
-      ]
-    }
-  ]
-
-  let onuIndex = 1
-
-  return scenarioOlts.map((olt) => {
-    const slots = olt.slots.map((ponProfiles, slotIndex) => {
-      const slotNumber = slotIndex + 1
-      const pons = ponProfiles.map((profile, ponIndex) => {
-        const ponNumber = ponIndex + 1
-        const statuses = buildScenarioStatuses(profile)
-        const onus = statuses.map((entry, indexInPon) => {
-          const localOnuNumber = indexInPon + 1
-          const simulatedSerial = `FHTT${(0x10616900 + onuIndex).toString(16).toUpperCase()}`
-          const simulatedLogin = buildClientLogin(onuIndex)
-
-          const onu = {
-            id: `${olt.id}-onu-${slotNumber}-${ponNumber}-${localOnuNumber}-${onuIndex}`,
-            onu_number: localOnuNumber,
-            onu_id: localOnuNumber,
-            client_name: simulatedLogin,
-            name: simulatedLogin,
-            serial_number: simulatedSerial,
-            serial: simulatedSerial,
-            status: entry.status,
-            disconnect_reason: entry.reason,
-            onu_rx_power: entry.status === 'online' ? Number((-17.2 - (onuIndex % 14) * 0.27).toFixed(2)) : null,
-            olt_rx_power: entry.status === 'online' ? Number((-16.4 - (onuIndex % 11) * 0.24).toFixed(2)) : null,
-            power_read_at: entry.status === 'online'
-              ? new Date(Date.now() - ((onuIndex % 30) + 1) * 60000).toISOString()
-              : null,
-            offline_since: entry.status === 'online'
-              ? null
-              : new Date(Date.now() - ((onuIndex % 96) + 1) * 300000).toISOString()
-          }
-
-          onuIndex += 1
-          return onu
-        })
-
-        return {
-          id: `${olt.id}-pon-${slotNumber}-${ponNumber}`,
-          pon_number: ponNumber,
-          pon_id: ponNumber,
-          onus
-        }
-      })
-
-      return {
-        id: `${olt.id}-slot-${slotNumber}`,
-        slot_number: slotNumber,
-        slot_id: slotNumber,
-        pons,
-        pon_count: pons.length
-      }
-    })
-
-    return {
-      id: olt.id,
-      name: olt.name,
-      vendor_profile_name: 'ZTE',
-      slots,
-      slot_count: slots.length
-    }
-  })
-}
-
-const USE_TEST_DATA = String(import.meta.env.VITE_USE_TEST_DATA || 'false').toLowerCase() === 'true'
-
 const mapTopologyToSlots = (olt, topology) => {
   const slots = asList(topology?.slots).map((slot) => {
     const slotId = `${olt.id}-${slot.slot_id}`
@@ -335,16 +147,6 @@ const mapTopologyToSlots = (olt, topology) => {
     slots,
     slot_count: slots.length
   }
-}
-
-const collectOnusFromOlt = (olt) => {
-  const onus = []
-  asList(olt?.slots).forEach((slot) => {
-    asList(slot?.pons).forEach((pon) => {
-      asList(pon?.onus).forEach((onu) => onus.push(onu))
-    })
-  })
-  return onus
 }
 
 const findPonById = (olts, ponId) => {
@@ -409,7 +211,7 @@ const App = () => {
   })
   const [activeNav, setActiveNav] = useState(() => {
     const saved = localStorage.getItem('varuna_active_tab')
-    return ['dashboard', 'topology', 'settings'].includes(saved) ? saved : 'dashboard'
+    return ['topology', 'settings'].includes(saved) ? saved : 'topology'
   })
 
   useEffect(() => {
@@ -502,7 +304,7 @@ const App = () => {
 
   // ─── SNMP connectivity checks (shared across Settings + Topology) ───
   const runSnmpChecks = useCallback(async (oltList) => {
-    if (USE_TEST_DATA || !oltList?.length) return
+    if (!oltList?.length) return
     setSnmpStatus((prev) => {
       const next = { ...prev }
       oltList.forEach((olt) => { next[olt.id] = { status: 'pending' } })
@@ -535,14 +337,13 @@ const App = () => {
 
   // Run SNMP checks when OLTs change, repeat every 60s
   useEffect(() => {
-    if (USE_TEST_DATA || !olts?.length) return
+    if (!olts?.length) return
     runSnmpChecks(olts)
     snmpCheckRef.current = setInterval(() => runSnmpChecks(olts), 60_000)
     return () => clearInterval(snmpCheckRef.current)
   }, [olts, runSnmpChecks])
 
   const runSettingsAction = async (key, request, successMessage = '') => {
-    if (USE_TEST_DATA) return null
     setSettingsActionError(null)
     setSettingsActionMessage('')
     setSettingsActionBusy((prev) => ({ ...prev, [key]: true }))
@@ -604,74 +405,10 @@ const App = () => {
     return Boolean(removed)
   }
 
-  const testOlts = useMemo(() => buildTestTopology(), [])
-  const settingsOlts = USE_TEST_DATA ? testOlts : olts
-  const displayOlts = USE_TEST_DATA ? testOlts : olts
-  const settingsLoading = USE_TEST_DATA ? false : loading
-  const settingsError = USE_TEST_DATA ? null : error
-  const displayLoading = USE_TEST_DATA ? false : loading
-  const displayError = USE_TEST_DATA ? null : error
-
-  const overallStats = useMemo(() => {
-    const allOnus = displayOlts.flatMap(collectOnusFromOlt)
-    return getOnuStats(allOnus)
-  }, [displayOlts])
-
-  const oltStats = useMemo(() => {
-    return displayOlts.map((olt, index) => {
-      const stats = getOnuStats(collectOnusFromOlt(olt))
-      return {
-        id: olt.id,
-        name: olt.name,
-        authorized: stats.total,
-        online: stats.online,
-        offline: stats.offline,
-        dyingGasp: stats.dyingGasp,
-        linkLoss: stats.linkLoss,
-        unknown: stats.unknown,
-        seed: index * 7 + 10
-      }
-    })
-  }, [displayOlts])
-
-  const clientRows = useMemo(() => {
-    const rows = []
-
-    displayOlts.forEach((olt) => {
-      asList(olt?.slots).forEach((slot) => {
-        const slotNumber = slot?.slot_number ?? slot?.slot_id ?? slot?.id
-        asList(slot?.pons).forEach((pon) => {
-          const ponNumber = pon?.pon_number ?? pon?.pon_id ?? pon?.id
-          asList(pon?.onus).forEach((onu) => {
-            const statusInfo = classifyOnu(onu)
-            rows.push({
-              key: `${olt?.id}-${slot?.id}-${pon?.id}-${onu?.id || onu?.serial || onu?.name}`,
-              clientName: onu?.client_name || onu?.name || '—',
-              serial: onu?.serial || onu?.serial_number || '—',
-              oltName: olt?.name || '—',
-              portLabel: `${t('SLOT')} ${slotNumber ?? '—'} / PON ${ponNumber ?? '—'} / ONU ${onu?.onu_number ?? onu?.onu_id ?? '—'}`,
-              statusKey: statusInfo.status === 'online' ? 'online' : 'offline',
-              statusLabel: statusInfo.status === 'online' ? t('Online') : t('Offline')
-            })
-          })
-        })
-      })
-    })
-
-    return rows
-      .sort((a, b) => {
-        if (a.statusKey !== b.statusKey) {
-          return a.statusKey === 'offline' ? -1 : 1
-        }
-        return a.clientName.localeCompare(b.clientName)
-      })
-      .slice(0, 30)
-  }, [displayOlts, t])
-
   const selectedPonData = useMemo(() => {
     if (!selectedPonId) return null
-    return findPonById(displayOlts, selectedPonId)
-  }, [displayOlts, selectedPonId])
+    return findPonById(olts, selectedPonId)
+  }, [olts, selectedPonId])
 
   const mergePowerResultsIntoOlts = (currentOlts, rows) => {
     if (!Array.isArray(rows) || rows.length === 0) return currentOlts
@@ -706,7 +443,6 @@ const App = () => {
   }
 
   const handleRefreshPonPower = async () => {
-    if (USE_TEST_DATA) return
     if (!selectedPonData?.olt || !selectedPonData?.slot || !selectedPonData?.pon) return
 
     const slotId = selectedPonData.slot?.slot_number ?? selectedPonData.slot?.slot_id
@@ -1061,14 +797,6 @@ const App = () => {
 
         <div className="flex items-center gap-1 h-full">
           <button
-            onClick={() => setActiveNav('dashboard')}
-            className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'dashboard' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
-          >
-            <LayoutDashboard className="w-[18px] h-[18px]" />
-            <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Dashboard')}</span>
-            {activeNav === 'dashboard' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
-          </button>
-          <button
             onClick={() => setActiveNav('topology')}
             className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
@@ -1177,21 +905,11 @@ const App = () => {
               : 'flex-1'}
           `}
         >
-          {activeNav === 'dashboard' ? (
-            <Dashboard
-              stats={overallStats}
-              oltStats={oltStats}
-              clientRows={clientRows}
-              loading={displayLoading}
-              error={displayError}
-              onRefresh={handleRefresh}
-              isRefreshing={isRefreshing}
-            />
-          ) : activeNav === 'topology' ? (
+          {activeNav === 'topology' ? (
             <NetworkTopology
-              olts={displayOlts}
-              loading={displayLoading}
-              error={displayError}
+              olts={olts}
+              loading={loading}
+              error={error}
               snmpStatus={snmpStatus}
               selectedPonId={selectedPonId}
               onAlarmModeChange={(config) => {
@@ -1215,11 +933,11 @@ const App = () => {
             />
           ) : (
             <SettingsPanel
-              olts={settingsOlts}
+              olts={olts}
               vendorProfiles={vendorProfiles}
-              loading={settingsLoading}
+              loading={loading}
               vendorLoading={vendorLoading}
-              error={settingsError}
+              error={error}
               vendorError={vendorError}
               actionError={settingsActionError}
               actionMessage={settingsActionMessage}
@@ -1227,7 +945,6 @@ const App = () => {
               onUpdateOlt={updateOlt}
               onDeleteOlt={deleteOlt}
               actionBusy={settingsActionBusy}
-              isDemoMode={USE_TEST_DATA}
               snmpStatus={snmpStatus}
             />
           )}
