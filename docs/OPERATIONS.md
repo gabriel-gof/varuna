@@ -41,6 +41,8 @@ cd /Users/gabriel/Documents/varuna
 backend/venv/bin/python backend/manage.py migrate
 ```
 
+Recent schema additions include OLT interval fields such as `power_interval_seconds`, so migrations are mandatory before opening topology/settings.
+
 If running with Docker, also recreate the stack so containers pick up new code and schema:
 ```bash
 docker compose -f docker-compose.dev.yml down

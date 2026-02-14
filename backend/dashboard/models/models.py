@@ -72,6 +72,11 @@ class OLT(models.Model):
         help_text='Com que frequência verificar o status online/offline das ONUs',
         verbose_name='Intervalo de Polling (segundos)'
     )
+    power_interval_seconds = models.IntegerField(
+        default=300,
+        help_text='Com que frequência atualizar leituras de potência das ONUs',
+        verbose_name='Intervalo de Potência (segundos)'
+    )
     last_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Último Polling')
     next_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Próximo Polling')
 

@@ -131,6 +131,7 @@ const resolveNodeHealthStyle = (healthState) => {
   if (healthState === 'gray') return NODE_HEALTH_STYLE.gray
   if (healthState === 'red') return NODE_HEALTH_STYLE.red
   if (healthState === 'yellow') return NODE_HEALTH_STYLE.yellow
+  if (healthState === 'neutral') return NODE_HEALTH_STYLE.neutral
   return NODE_HEALTH_STYLE.green
 }
 
@@ -286,7 +287,17 @@ const StatusItem = ({ color, count }) => (
   </div>
 )
 
-export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSelect, onSearchMatchSelect, onAlarmModeChange, snmpStatus = {} }) => {
+export const NetworkTopology = ({
+  olts,
+  loading,
+  error,
+  selectedPonId,
+  onPonSelect,
+  onSearchMatchSelect,
+  onAlarmModeChange,
+  snmpStatus = {},
+  oltHealthById = {}
+}) => {
   const { t } = useTranslation()
   const [searchTerm, setSearchTerm] = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
@@ -548,10 +559,11 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
   const renderOlt = (olt) => {
     const sourceOlt = searchedOltMap.get(String(olt.id)) || olt
     const oltId = `olt-${olt.id}`
-    // SNMP unreachable → entire OLT tree goes gray
+    const derivedHealth = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
     const snmpSt = snmpStatus?.[olt.id]
-    const isSnmpUnreachable = snmpSt?.status === 'unreachable'
-    const oltHealthState = isSnmpUnreachable ? 'gray' : getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount)
+    const fallbackUnreachable = snmpSt?.status === 'unreachable'
+    const oltHealthState = derivedHealth?.state || (fallbackUnreachable ? 'gray' : getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount))
+    const isGrayTree = oltHealthState === 'gray'
     const slotCount = olt.slot_count ?? olt.slots?.length ?? 0
     const sourceSlotMap = new Map(
       asList(sourceOlt?.slots)
@@ -578,7 +590,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                   .filter(Boolean)
                   .map((pon) => [String(pon.id), pon])
               )
-              const slotHealthState = isSnmpUnreachable ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons, effectiveAlarmMinCount)
+              const slotHealthState = isGrayTree ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons, effectiveAlarmMinCount)
               const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
               const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
               return (
@@ -595,7 +607,7 @@ export const NetworkTopology = ({ olts, loading, error, selectedPonId, onPonSele
                     .filter(isActiveEntity)
                     .map((pon) => {
                       const sourcePon = sourcePonMap.get(String(pon.id)) || pon
-                      const ponHealth = isSnmpUnreachable
+                      const ponHealth = isGrayTree
                         ? { state: 'gray', stats: { online: 0, dyingGasp: 0, linkLoss: 0, unknown: 0 }, selectedOfflineCount: 0 }
                         : getPonHealthState(sourcePon, activeAlarmReasons, effectiveAlarmMinCount)
                       const stats = ponHealth.stats

@@ -34,6 +34,9 @@ Parser supports:
 - `last_snmp_check_at`
 - `last_snmp_error`
 - `snmp_failure_count`
+- `polling_interval_seconds`
+- `power_interval_seconds`
+- `discovery_interval_minutes`
 
 Updated from:
 - `snmp_check` API action,
@@ -68,6 +71,13 @@ Main endpoints:
 - `GET /api/onu/`
 - `GET /api/onu/{id}/power/`
 - `POST /api/onu/batch-power/`
+
+`GET /api/olts/?include_topology=true` now also returns:
+- `discovery_interval_minutes`
+- `polling_interval_seconds`
+- `power_interval_seconds`
+
+These fields are used by the frontend for stale-data validation and interval-driven refresh behavior.
 
 ## Test Coverage
 Current tests validate:

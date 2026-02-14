@@ -20,6 +20,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api from './services/api'
 import { classifyOnu } from './utils/stats'
+import { deriveOltHealthState, getPowerIntervalSeconds } from './utils/oltHealth'
 
 const normalizeList = (data) => {
   if (Array.isArray(data)) return data
@@ -27,6 +28,16 @@ const normalizeList = (data) => {
   return []
 }
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
+const parseTimestampMs = (value) => {
+  if (!value) return null
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? ms : null
+}
+const toPositiveInt = (value, fallback) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.round(parsed)
+}
 
 const getApiErrorMessage = (error, fallback) => {
   const data = error?.response?.data
@@ -238,8 +249,14 @@ const App = () => {
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isRefreshingPonPower, setIsRefreshingPonPower] = useState(false)
+  const [healthTick, setHealthTick] = useState(() => Date.now())
   const [snmpStatus, setSnmpStatus] = useState({}) // { [oltId]: { status: 'pending'|'reachable'|'unreachable', sysDescr } }
   const snmpCheckRef = useRef(null)
+  const maintenanceLocksRef = useRef({
+    polling: new Set(),
+    discovery: new Set()
+  })
+  const selectedPonDataRef = useRef(null)
   const mainLayoutRef = useRef(null)
   const resizePointerIdRef = useRef(null)
   const previousBodyCursorRef = useRef('')
@@ -254,7 +271,7 @@ const App = () => {
     }
   }, [isDarkMode])
 
-  const fetchOlts = async () => {
+  const fetchOlts = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
@@ -281,9 +298,9 @@ const App = () => {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  const fetchVendorProfiles = async () => {
+  const fetchVendorProfiles = useCallback(async () => {
     setVendorLoading(true)
     setVendorError(null)
     try {
@@ -294,7 +311,7 @@ const App = () => {
     } finally {
       setVendorLoading(false)
     }
-  }
+  }, [])
 
   const handleRefresh = async () => {
     setIsRefreshing(true)
@@ -333,7 +350,63 @@ const App = () => {
     fetchVendorProfiles()
     const interval = setInterval(fetchOlts, 30000)
     return () => clearInterval(interval)
+  }, [fetchOlts, fetchVendorProfiles])
+
+  useEffect(() => {
+    const timer = setInterval(() => setHealthTick(Date.now()), 30_000)
+    return () => clearInterval(timer)
   }, [])
+
+  const runDueMaintenance = useCallback(async (oltList) => {
+    if (!Array.isArray(oltList) || !oltList.length) return
+
+    const nowMs = Date.now()
+    const requests = []
+    const pollLocks = maintenanceLocksRef.current.polling
+    const discoveryLocks = maintenanceLocksRef.current.discovery
+
+    oltList.forEach((olt) => {
+      const oltId = olt?.id
+      if (!oltId) return
+
+      if (olt.polling_enabled !== false) {
+        const pollIntervalMs = toPositiveInt(olt.polling_interval_seconds, 300) * 1000
+        const lastPollMs = parseTimestampMs(olt.last_poll_at)
+        const pollDue = !lastPollMs || nowMs - lastPollMs >= pollIntervalMs
+        if (pollDue && !pollLocks.has(oltId)) {
+          pollLocks.add(oltId)
+          requests.push(
+            api.post(`/olts/${oltId}/run_polling/`)
+              .catch(() => null)
+              .finally(() => pollLocks.delete(oltId))
+          )
+        }
+      }
+
+      if (olt.discovery_enabled !== false) {
+        const discoveryIntervalMs = toPositiveInt(olt.discovery_interval_minutes, 240) * 60 * 1000
+        const lastDiscoveryMs = parseTimestampMs(olt.last_discovery_at)
+        const discoveryDue = !lastDiscoveryMs || nowMs - lastDiscoveryMs >= discoveryIntervalMs
+        if (discoveryDue && !discoveryLocks.has(oltId)) {
+          discoveryLocks.add(oltId)
+          requests.push(
+            api.post(`/olts/${oltId}/run_discovery/`)
+              .catch(() => null)
+              .finally(() => discoveryLocks.delete(oltId))
+          )
+        }
+      }
+    })
+
+    if (!requests.length) return
+    await Promise.allSettled(requests)
+    await fetchOlts()
+  }, [fetchOlts])
+
+  useEffect(() => {
+    if (!olts.length) return
+    runDueMaintenance(olts)
+  }, [olts, runDueMaintenance])
 
   // Run SNMP checks when OLTs change, repeat every 60s
   useEffect(() => {
@@ -410,6 +483,10 @@ const App = () => {
     return findPonById(olts, selectedPonId)
   }, [olts, selectedPonId])
 
+  useEffect(() => {
+    selectedPonDataRef.current = selectedPonData
+  }, [selectedPonData])
+
   const mergePowerResultsIntoOlts = (currentOlts, rows) => {
     if (!Array.isArray(rows) || rows.length === 0) return currentOlts
 
@@ -442,17 +519,18 @@ const App = () => {
     }))
   }
 
-  const handleRefreshPonPower = async () => {
-    if (!selectedPonData?.olt || !selectedPonData?.slot || !selectedPonData?.pon) return
+  const handleRefreshPonPower = useCallback(async () => {
+    const currentPonData = selectedPonDataRef.current
+    if (!currentPonData?.olt || !currentPonData?.slot || !currentPonData?.pon) return
 
-    const slotId = selectedPonData.slot?.slot_number ?? selectedPonData.slot?.slot_id
-    const ponId = selectedPonData.pon?.pon_number ?? selectedPonData.pon?.pon_id
+    const slotId = currentPonData.slot?.slot_number ?? currentPonData.slot?.slot_id
+    const ponId = currentPonData.pon?.pon_number ?? currentPonData.pon?.pon_id
     if (slotId === undefined || ponId === undefined) return
 
     setIsRefreshingPonPower(true)
     try {
       const response = await api.post('/onu/batch-power/', {
-        olt_id: selectedPonData.olt.id,
+        olt_id: currentPonData.olt.id,
         slot_id: slotId,
         pon_id: ponId,
         refresh: true,
@@ -467,7 +545,26 @@ const App = () => {
     } finally {
       setIsRefreshingPonPower(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (activeNav !== 'topology' || activeTab !== 'power') return
+    if (!selectedPonData?.olt || !selectedPonId) return
+
+    const intervalSeconds = getPowerIntervalSeconds(selectedPonData.olt)
+    const timer = setInterval(() => {
+      handleRefreshPonPower()
+    }, intervalSeconds * 1000)
+
+    return () => clearInterval(timer)
+  }, [
+    activeNav,
+    activeTab,
+    selectedPonId,
+    selectedPonData?.olt?.id,
+    selectedPonData?.olt?.power_interval_seconds,
+    handleRefreshPonPower
+  ])
 
   useEffect(() => {
     if (selectedPonId && !selectedPonData) {
@@ -483,6 +580,13 @@ const App = () => {
     `PON ${selectedPonNumber ?? '—'}`
   ]
   const isPonPanelOpen = activeNav === 'topology' && Boolean(selectedPonId)
+
+  const oltHealthById = useMemo(() => {
+    return olts.reduce((acc, olt) => {
+      acc[String(olt.id)] = deriveOltHealthState(olt, snmpStatus?.[olt.id], healthTick)
+      return acc
+    }, {})
+  }, [olts, snmpStatus, healthTick])
 
   const updatePonPanelWidthByClientX = (clientX) => {
     const container = mainLayoutRef.current
@@ -911,6 +1015,7 @@ const App = () => {
               loading={loading}
               error={error}
               snmpStatus={snmpStatus}
+              oltHealthById={oltHealthById}
               selectedPonId={selectedPonId}
               onAlarmModeChange={(config) => {
                 const reasons = Array.isArray(config?.reasons)
@@ -946,6 +1051,7 @@ const App = () => {
               onDeleteOlt={deleteOlt}
               actionBusy={settingsActionBusy}
               snmpStatus={snmpStatus}
+              oltHealthById={oltHealthById}
             />
           )}
         </section>

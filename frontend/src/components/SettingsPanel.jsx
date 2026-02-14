@@ -13,7 +13,10 @@ const buildInitialForm = (vendorProfiles = []) => {
     vendor: firstVendor,
     vendor_profile: firstModel?.id ? String(firstModel.id) : '',
     snmp_community: 'public',
-    snmp_port: '161'
+    snmp_port: '161',
+    discovery_interval_minutes: '240',
+    polling_interval_seconds: '300',
+    power_interval_seconds: '300'
   }
 }
 
@@ -25,8 +28,17 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     vendor: vp?.vendor || '',
     vendor_profile: olt.vendor_profile ? String(olt.vendor_profile) : '',
     snmp_community: olt.snmp_community || 'public',
-    snmp_port: String(olt.snmp_port || 161)
+    snmp_port: String(olt.snmp_port || 161),
+    discovery_interval_minutes: String(olt.discovery_interval_minutes || 240),
+    polling_interval_seconds: String(olt.polling_interval_seconds || 300),
+    power_interval_seconds: String(olt.power_interval_seconds || 300)
   }
+}
+
+const toPositiveInteger = (value, fallback) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.round(parsed)
 }
 
 const FieldLabel = ({ children }) => (
@@ -111,7 +123,10 @@ const OLT_HEALTH = {
 }
 
 /** Resolve health color: gray when SNMP unreachable, neutral while pending, green/yellow/red from ONU data */
-const getOltHealth = (olt, snmpStatuses) => {
+const getOltHealth = (olt, snmpStatuses, oltHealthById) => {
+  const derived = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
+  if (derived?.state && OLT_HEALTH[derived.state]) return OLT_HEALTH[derived.state]
+
   const st = snmpStatuses?.[olt.id]
   // SNMP unreachable → gray (not red) so user doesn't confuse with actual offline ONUs
   if (st?.status === 'unreachable') return OLT_HEALTH.gray
@@ -189,7 +204,8 @@ export const SettingsPanel = ({
   onUpdateOlt,
   onDeleteOlt,
   actionBusy,
-  snmpStatus = {}
+  snmpStatus = {},
+  oltHealthById = {}
 }) => {
   const { t } = useTranslation()
   const [showAddForm, setShowAddForm] = useState(false)
@@ -298,8 +314,9 @@ export const SettingsPanel = ({
       snmp_version: 'v2c',
       discovery_enabled: true,
       polling_enabled: true,
-      discovery_interval_minutes: 240,
-      polling_interval_seconds: 300
+      discovery_interval_minutes: toPositiveInteger(form.discovery_interval_minutes, 240),
+      polling_interval_seconds: toPositiveInteger(form.polling_interval_seconds, 300),
+      power_interval_seconds: toPositiveInteger(form.power_interval_seconds, 300)
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -324,6 +341,9 @@ export const SettingsPanel = ({
       vendor_profile: Number(editForm.vendor_profile),
       snmp_community: String(editForm.snmp_community || '').trim(),
       snmp_port: Number(editForm.snmp_port || 161),
+      discovery_interval_minutes: toPositiveInteger(editForm.discovery_interval_minutes, 240),
+      polling_interval_seconds: toPositiveInteger(editForm.polling_interval_seconds, 300),
+      power_interval_seconds: toPositiveInteger(editForm.power_interval_seconds, 300),
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -432,7 +452,7 @@ export const SettingsPanel = ({
                 </div>
               </div>
 
-              {/* Row 2: Vendor, Model, Cancel, Save */}
+              {/* Row 2: Vendor, Model, Discovery interval, Polling interval */}
               <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
                 <div className="flex flex-col gap-1.5">
                   <FieldLabel>{t('Vendor')}</FieldLabel>
@@ -458,7 +478,41 @@ export const SettingsPanel = ({
                     ))}
                   </FieldSelect>
                 </div>
-                <div className="col-span-2 flex items-end justify-end gap-2">
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('Discovery interval (minutes)')}</FieldLabel>
+                  <FieldInput
+                    type="number"
+                    min={1}
+                    value={form.discovery_interval_minutes}
+                    onChange={(e) => setField('discovery_interval_minutes', e.target.value)}
+                    placeholder="240"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('Polling interval (seconds)')}</FieldLabel>
+                  <FieldInput
+                    type="number"
+                    min={1}
+                    value={form.polling_interval_seconds}
+                    onChange={(e) => setField('polling_interval_seconds', e.target.value)}
+                    placeholder="300"
+                  />
+                </div>
+              </div>
+
+              {/* Row 3: Power interval + actions */}
+              <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>{t('Power interval (seconds)')}</FieldLabel>
+                  <FieldInput
+                    type="number"
+                    min={1}
+                    value={form.power_interval_seconds}
+                    onChange={(e) => setField('power_interval_seconds', e.target.value)}
+                    placeholder="300"
+                  />
+                </div>
+                <div className="col-span-3 flex items-end justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setShowAddForm(false)}
@@ -492,7 +546,7 @@ export const SettingsPanel = ({
 
           {olts.map((olt) => {
             const isSelected = String(selectedOltId) === String(olt.id)
-            const health = getOltHealth(olt, snmpStatus)
+            const health = getOltHealth(olt, snmpStatus, oltHealthById)
             // Robust check for vendor profile
             const vp = vendorProfiles?.find(p => String(p.id) === String(olt.vendor_profile))
             const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || 'Unknown'
@@ -549,7 +603,7 @@ export const SettingsPanel = ({
                         </div>
                       </div>
 
-                      {/* Row 2: Vendor, Model (match Name/IP width), Buttons far right */}
+                      {/* Row 2: Vendor, Model, Discovery interval, Polling interval */}
                       <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
                         <div className="flex flex-col gap-1.5">
                           <FieldLabel>{t('Vendor')}</FieldLabel>
@@ -575,7 +629,41 @@ export const SettingsPanel = ({
                             ))}
                           </FieldSelect>
                         </div>
-                        <div className="col-span-2 flex items-end justify-end gap-2">
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('Discovery interval (minutes)')}</FieldLabel>
+                          <FieldInput
+                            type="number"
+                            min={1}
+                            value={editForm.discovery_interval_minutes}
+                            onChange={(e) => setEditField('discovery_interval_minutes', e.target.value)}
+                            placeholder="240"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('Polling interval (seconds)')}</FieldLabel>
+                          <FieldInput
+                            type="number"
+                            min={1}
+                            value={editForm.polling_interval_seconds}
+                            onChange={(e) => setEditField('polling_interval_seconds', e.target.value)}
+                            placeholder="300"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Row 3: Power interval + actions */}
+                      <div className="grid grid-cols-[1fr_1fr_1fr_4.5rem] gap-3">
+                        <div className="flex flex-col gap-1.5">
+                          <FieldLabel>{t('Power interval (seconds)')}</FieldLabel>
+                          <FieldInput
+                            type="number"
+                            min={1}
+                            value={editForm.power_interval_seconds}
+                            onChange={(e) => setEditField('power_interval_seconds', e.target.value)}
+                            placeholder="300"
+                          />
+                        </div>
+                        <div className="col-span-3 flex items-end justify-end gap-2">
                           <button
                             type="button"
                             onClick={() => setSelectedOltId(null)}

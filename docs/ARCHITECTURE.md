@@ -58,3 +58,4 @@ When to split into dedicated `discovery` and `poller` workers:
 - `poll_onu_status` refactored to avoid per-ONU log queries.
 - Redis invalidation switched from `KEYS` to `SCAN` pattern deletion.
 - Topology serializers now use annotated counts where available.
+- Frontend enforces stale-data gray state using per-OLT `polling_interval_seconds` and synchronizes health colors between topology and settings views.

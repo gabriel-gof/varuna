@@ -228,7 +228,10 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'snmp_reachable',
             'last_snmp_check_at',
             'discovery_enabled',
+            'discovery_interval_minutes',
             'polling_enabled',
+            'polling_interval_seconds',
+            'power_interval_seconds',
             'last_discovery_at',
             'last_poll_at',
             'slots',
@@ -316,6 +319,7 @@ class OLTSerializer(serializers.ModelSerializer):
             'discovery_healthy',
             'polling_enabled',
             'polling_interval_seconds',
+            'power_interval_seconds',
             'last_poll_at',
             'next_poll_at',
             'is_active',
@@ -380,6 +384,10 @@ class OLTSerializer(serializers.ModelSerializer):
         if 'polling_interval_seconds' not in validated_data:
             validated_data['polling_interval_seconds'] = int(
                 defaults_cfg.get('polling_interval_seconds', 300)
+            )
+        if 'power_interval_seconds' not in validated_data:
+            validated_data['power_interval_seconds'] = int(
+                defaults_cfg.get('power_interval_seconds', 300)
             )
 
         return super().create(validated_data)

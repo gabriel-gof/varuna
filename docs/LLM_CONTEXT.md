@@ -13,6 +13,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - `ONU.is_active` defines whether an ONU is part of current topology.
 - Discovery follows lost-resource retention windows (`disable_lost_after_minutes`, `delete_lost_after_minutes`).
 - Polling should avoid false offline alarms during transient SNMP gaps.
+- OLT freshness is interval-driven (`polling_interval_seconds`); stale topology must be rendered gray.
 - Documentation must be updated on every code change (see `/Users/gabriel/Documents/varuna/AGENTS.md`).
 
 ## Where to Read First

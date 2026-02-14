@@ -14,7 +14,18 @@ The UI remains topology-first. No dashboard page is required for current product
 - Fetch OLTs with topology (`/api/olts/?include_topology=true`).
 - Refresh periodically.
 - Run `snmp_check` per OLT and map to `reachable/unreachable`.
-- Render unreachable OLT nodes in gray.
+- Render unreachable or stale OLT nodes in gray.
+
+## Freshness and Coherence Rules
+- OLT health color is shared between topology and settings views.
+- Stale status data is considered unreliable and forced to gray:
+  - if `now - last_poll_at > polling_interval_seconds`.
+- OLT interval settings are editable in Settings:
+  - `discovery_interval_minutes`
+  - `polling_interval_seconds`
+  - `power_interval_seconds`
+- Frontend runs due discovery/polling actions based on configured OLT intervals to keep data current while UI is open.
+- Power panel auto-refresh uses `power_interval_seconds` of the selected OLT.
 
 ## Refactor Notes
 - Removed test/demo topology generator path from runtime.
