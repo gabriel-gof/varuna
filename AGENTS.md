@@ -7,6 +7,11 @@ This file defines how we build and evolve Varuna. It is a permanent operating gu
 - The current product scope has no dashboard module/tab.
 - We prioritize fast fault localization over generic charting.
 
+## Naming Contract
+- Project/runtime name: `varuna`.
+- Backend domain app name: `topology`.
+- Do not introduce new backend modules, labels, migrations, or table prefixes named `dashboard`.
+
 ## Core Ideas (Always True)
 1. Clarity over complexity.
 - Prefer simple, explicit flows for discovery, polling, and topology rendering.

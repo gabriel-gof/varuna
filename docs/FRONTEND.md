@@ -20,6 +20,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - OLT health color is shared between topology and settings views.
 - Stale status data is considered unreliable and forced to gray:
   - if `now - last_poll_at > polling_interval_seconds`.
+- OLT color semantics follow slot health:
+  - `red` when all active slots are critical/offline (`red`),
+  - `yellow` when at least one active slot is degraded (`yellow` or `red`) and not all are `red`.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`
   - `polling_interval_seconds`

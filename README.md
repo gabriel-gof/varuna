@@ -14,6 +14,10 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 - `db`: PostgreSQL
 - `redis`: Redis
 
+## Naming
+- Database (PostgreSQL) can be `varuna_dev` / `varuna_prod` (configured by `POSTGRES_DB`).
+- Backend monitoring domain app is `topology` (no `dashboard` backend app/module).
+
 ## Quick Start
 ### Backend
 ```bash
@@ -32,6 +36,15 @@ npm run dev
 ### Docker (Dev)
 ```bash
 cd /Users/gabriel/Documents/varuna
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+## Migration Reset (Hard Refactor)
+Backend migrations were reset to a clean `topology` app history.
+
+If you had an older local DB created with legacy migration labels, reset local DB state before running:
+```bash
+docker compose -f docker-compose.dev.yml down -v
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
@@ -55,6 +68,6 @@ docker compose -f docker-compose.dev.yml up -d --build
 
 ## Validation
 ```bash
-backend/venv/bin/python backend/manage.py test dashboard -v 2
+backend/venv/bin/python backend/manage.py test topology -v 2
 cd /Users/gabriel/Documents/varuna/frontend && npm run build
 ```

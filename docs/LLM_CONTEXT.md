@@ -7,6 +7,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - No dashboard tab in current scope.
 - Primary views: topology + settings.
 - Unreachable OLTs must be visually gray.
+- Backend domain app is `topology`; do not reintroduce backend `dashboard` naming.
 
 ## Core Data/Behavior Rules
 - `ONU` is scoped to `OLT`; SNMP index uniqueness is `(olt, snmp_index)`.
@@ -20,9 +21,9 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 1. `/Users/gabriel/Documents/varuna/docs/ARCHITECTURE.md`
 2. `/Users/gabriel/Documents/varuna/docs/BACKEND.md`
 3. `/Users/gabriel/Documents/varuna/docs/FRONTEND.md`
-4. `/Users/gabriel/Documents/varuna/backend/dashboard/models/models.py`
-5. `/Users/gabriel/Documents/varuna/backend/dashboard/management/commands/discover_onus.py`
-6. `/Users/gabriel/Documents/varuna/backend/dashboard/management/commands/poll_onu_status.py`
+4. `/Users/gabriel/Documents/varuna/backend/topology/models/models.py`
+5. `/Users/gabriel/Documents/varuna/backend/topology/management/commands/discover_onus.py`
+6. `/Users/gabriel/Documents/varuna/backend/topology/management/commands/poll_onu_status.py`
 
 ## Safe Extension Pattern
 - Add vendor support by extending `VendorProfile.oid_templates` and validating index/status parsing.

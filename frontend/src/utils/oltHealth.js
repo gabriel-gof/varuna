@@ -2,6 +2,8 @@ const asCount = (value) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
+const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
+const isActiveEntity = (entity) => Boolean(entity) && entity.is_active !== false
 
 const toPositiveSeconds = (value, fallbackSeconds = 300) => {
   const parsed = Number(value)
@@ -26,6 +28,29 @@ export const isStatusStale = (olt, nowMs = Date.now()) => {
   return nowMs - lastPollMs > staleAfterMs
 }
 
+const getPonHealthState = (pon) => {
+  const online = asCount(pon?.online_count)
+  const offline = asCount(pon?.offline_count)
+  const total = online + offline || asList(pon?.onus).length
+
+  if (total <= 0) return 'green'
+  if (online === 0 && offline > 0) return 'red'
+  return 'green'
+}
+
+const getSlotHealthState = (slot) => {
+  const activePons = asList(slot?.pons).filter(isActiveEntity)
+  if (!activePons.length) return 'green'
+
+  const redPons = activePons.reduce((count, pon) => (
+    getPonHealthState(pon) === 'red' ? count + 1 : count
+  ), 0)
+
+  if (redPons === activePons.length) return 'red'
+  if (redPons > 0) return 'yellow'
+  return 'green'
+}
+
 export const deriveOltHealthState = (olt, snmpState, nowMs = Date.now()) => {
   const snmpStatus = snmpState?.status
   if (snmpStatus === 'unreachable' || olt?.snmp_reachable === false) {
@@ -38,6 +63,24 @@ export const deriveOltHealthState = (olt, snmpState, nowMs = Date.now()) => {
 
   if (snmpStatus === 'pending' && olt?.snmp_reachable == null) {
     return { state: 'neutral', reason: 'checking' }
+  }
+
+  const activeSlots = asList(olt?.slots).filter(isActiveEntity)
+  if (activeSlots.length > 0) {
+    const slotStates = activeSlots.map((slot) => getSlotHealthState(slot))
+    const redSlots = slotStates.reduce((count, state) => (
+      state === 'red' ? count + 1 : count
+    ), 0)
+    const degradedSlots = slotStates.reduce((count, state) => (
+      state === 'red' || state === 'yellow' ? count + 1 : count
+    ), 0)
+    if (redSlots === slotStates.length) {
+      return { state: 'red', reason: 'all_slots_red' }
+    }
+    if (degradedSlots > 0) {
+      return { state: 'yellow', reason: 'slots_degraded' }
+    }
+    return { state: 'green', reason: 'slots_healthy' }
   }
 
   const online = asCount(olt?.online_count)

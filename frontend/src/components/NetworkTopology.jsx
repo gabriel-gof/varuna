@@ -190,12 +190,16 @@ const getOltHealthState = (olt, selectedReasons, minCount) => {
   if (!activeSlots.length && !asList(olt?.slots).length) return 'gray'
   if (!activeSlots.length) return 'green'
 
-  const redSlotCount = activeSlots.reduce((count, slot) => (
-    getSlotHealthState(slot, selectedReasons, minCount) === 'red' ? count + 1 : count
+  const slotStates = activeSlots.map((slot) => getSlotHealthState(slot, selectedReasons, minCount))
+  const redSlotCount = slotStates.reduce((count, state) => (
+    state === 'red' ? count + 1 : count
+  ), 0)
+  const degradedSlotCount = slotStates.reduce((count, state) => (
+    state === 'red' || state === 'yellow' ? count + 1 : count
   ), 0)
 
-  if (redSlotCount === activeSlots.length) return 'red'
-  if (redSlotCount > 0) return 'yellow'
+  if (redSlotCount === slotStates.length) return 'red'
+  if (degradedSlotCount > 0) return 'yellow'
   return 'green'
 }
 

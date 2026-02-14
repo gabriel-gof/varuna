@@ -35,6 +35,22 @@ docker compose -f docker-compose.dev.yml up -d --build --force-recreate
 ```
 
 ## Common Recovery Steps
+If this workspace still has pre-refactor DB state from legacy backend migration labels, reset DB first.
+
+Docker reset:
+```bash
+cd /Users/gabriel/Documents/varuna
+docker compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+Local SQLite reset:
+```bash
+cd /Users/gabriel/Documents/varuna
+rm -f backend/db.sqlite3 backend/varuna_dev
+backend/venv/bin/python backend/manage.py migrate
+```
+
 Topology endpoint fails with DB column errors (example: missing `snmp_reachable` or `is_active`):
 ```bash
 cd /Users/gabriel/Documents/varuna
@@ -69,7 +85,7 @@ backend/venv/bin/python backend/manage.py poll_onu_status --olt-id <ID>
 ## Validation
 Backend tests:
 ```bash
-backend/venv/bin/python backend/manage.py test dashboard -v 2
+backend/venv/bin/python backend/manage.py test topology -v 2
 ```
 
 Frontend build check:

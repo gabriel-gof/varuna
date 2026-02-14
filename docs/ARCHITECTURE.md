@@ -11,6 +11,11 @@
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
+## Naming Conventions
+- PostgreSQL database names are environment-specific `varuna_*` (`POSTGRES_DB`).
+- Backend monitoring domain is the Django app `topology`.
+- The legacy backend label/name `dashboard` is not part of the active architecture.
+
 ## Why No Separate SNMP Container (Now)
 A dedicated SNMP worker container is not required for the current scale (5-6 OLTs, multiple cards/PONs) because:
 - SNMP discovery/polling are already isolated by management commands.

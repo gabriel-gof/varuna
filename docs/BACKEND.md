@@ -6,15 +6,20 @@
 - Redis
 - PySNMP
 
+## Naming and Boundaries
+- Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
+- Backend monitoring domain app is `topology` (models, migrations, API routes).
+- `dashboard` is not a backend app/module in current architecture.
+
 ## Backend Layout
-- `backend/dashboard/models/models.py`: domain models.
-- `backend/dashboard/api/views.py`: REST endpoints/actions.
-- `backend/dashboard/api/serializers.py`: API serialization.
-- `backend/dashboard/services/snmp_service.py`: SNMP transport.
-- `backend/dashboard/services/vendor_profile.py`: vendor index/status parsing helpers.
-- `backend/dashboard/services/olt_health_service.py`: OLT SNMP health persistence.
-- `backend/dashboard/management/commands/discover_onus.py`: topology discovery.
-- `backend/dashboard/management/commands/poll_onu_status.py`: status polling.
+- `backend/topology/models/models.py`: domain models.
+- `backend/topology/api/views.py`: REST endpoints/actions.
+- `backend/topology/api/serializers.py`: API serialization.
+- `backend/topology/services/snmp_service.py`: SNMP transport.
+- `backend/topology/services/vendor_profile.py`: vendor index/status parsing helpers.
+- `backend/topology/services/olt_health_service.py`: OLT SNMP health persistence.
+- `backend/topology/management/commands/discover_onus.py`: topology discovery.
+- `backend/topology/management/commands/poll_onu_status.py`: status polling.
 
 ## Vendor Extensibility Contract
 Vendor behavior is controlled by `VendorProfile.oid_templates`:
@@ -22,6 +27,8 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
 - `discovery`: OIDs for name/serial/status and stale-deactivation policy.
 - `status`: status OID, chunk size, and `status_map`.
 - `power`: OIDs/suffix for RX reads.
+
+Default seed migration (`topology.0002_seed_zte_vendor_profile`) creates baseline ZTE C300 templates and thresholds.
 
 Parser supports:
 - regex-based index extraction,
@@ -86,4 +93,4 @@ Current tests validate:
 - polling unreachable handling,
 - polling online/offline transition logs.
 
-File: `backend/dashboard/tests.py`
+File: `backend/topology/tests.py`
