@@ -3,12 +3,22 @@
 ## Scope
 The UI remains topology-first. No dashboard page is required for current product scope.
 
+## Dev Runtime
+- Frontend Vite dev server runs on port `4000` in Docker development mode.
+- Backend API remains on port `8000` and is proxied via `/api`.
+
 ## Structure
 - `frontend/src/App.jsx`: app shell, topology/settings tabs, polling refresh, SNMP checks.
 - `frontend/src/components/NetworkTopology.jsx`: topology tree and alarm/search/filter interactions.
 - `frontend/src/components/SettingsPanel.jsx`: OLT CRUD/configuration UX.
 - `frontend/src/services/api.js`: Axios API client.
 - `frontend/src/utils/stats.js`: ONU status classification helpers.
+
+## Threshold Control Logic
+- The **Threshold Control** uses a single input for the "Normal Limit" (Good -> Warning boundary).
+- The "Critical Limit" (Warning -> Critical boundary) is automatically derived as `Normal Limit - 3dB`.
+- Input fields accept intermediate typing states (`-`, `-.`) to improve UX for negative values.
+- The UI renders a visual gradient bar showing the three zones relative to the current input.
 
 ## Live Data Flow
 - Fetch OLTs with topology (`/api/olts/?include_topology=true`).

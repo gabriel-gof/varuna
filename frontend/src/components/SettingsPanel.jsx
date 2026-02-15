@@ -29,9 +29,9 @@ const buildInitialForm = (vendorProfiles = []) => {
     vendor_profile: firstModel?.id ? String(firstModel.id) : '',
     snmp_community: 'public',
     snmp_port: '161',
-    discovery_interval: '4h',
+    discovery_interval: '5h',
     polling_interval: '5m',
-    power_interval: '5m'
+    power_interval: '1d'
   }
 }
 
@@ -250,24 +250,24 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, reso
             {olt.name || '\u2014'}
           </p>
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{olt.ip_address || '\u2014'}:{olt.snmp_port || '161'}</span>
-            <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
-            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{String(resolvedVendor || 'Unknown').toUpperCase()}</span>
-            <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
-            <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">{olt.model_display || olt.vendor_profile_name || '\u2014'}</span>
+            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">{olt.ip_address || '\u2014'}:{olt.snmp_port || '161'}</span>
+            <span className="w-[3px] h-[3px] rounded-full bg-slate-300 dark:bg-slate-600" />
+            <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">{String(resolvedVendor || 'Unknown').toUpperCase()}</span>
+            <span className="w-[3px] h-[3px] rounded-full bg-slate-300 dark:bg-slate-600" />
+            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{olt.model_display || olt.vendor_profile_name || '\u2014'}</span>
           </div>
         </div>
 
         {/* Header stats */}
         <div className="flex flex-col items-end mr-2 text-right">
            {hasOnus ? (
-             <div className="flex items-center gap-1.5 leading-none">
-                <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 tabular-nums">{total} <span className="text-[8px] uppercase font-bold text-slate-300 dark:text-slate-600">ONUs</span></span>
-                <span className="w-[2px] h-2 bg-slate-200 dark:bg-slate-700" />
-                <div className="flex items-center gap-0.5">
-                  <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{online}</span>
-                  <span className="text-[8px] text-slate-300 dark:text-slate-600">/</span>
-                  <span className="text-[10px] font-bold text-rose-500 dark:text-rose-400 tabular-nums">{offline}</span>
+             <div className="flex items-center gap-2 leading-none">
+                <span className="text-[11px] font-black text-slate-700 dark:text-slate-300 tabular-nums">{total} <span className="text-[9px] uppercase font-bold text-slate-400 dark:text-slate-500">ONUs</span></span>
+                <span className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
+                <div className="flex items-center gap-1">
+                  <span className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">{online}</span>
+                  <span className="text-[9px] font-bold text-slate-300 dark:text-slate-600">/</span>
+                  <span className="text-[11px] font-black text-rose-500 dark:text-rose-400 tabular-nums">{offline}</span>
                 </div>
              </div>
            ) : (
@@ -282,24 +282,11 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, reso
         </div>
       </div>
 
-      {/* Subtle delete icon - shown on hover */}
-      {isSelected && (
-        <div className="absolute top-2 right-2 z-20">
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onDelete?.(olt.id) }}
-            disabled={deleteBusy}
-            className="w-6 h-6 rounded-md flex items-center justify-center text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            title={t('Remove OLT')}
-          >
-            {deleteBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-          </button>
-        </div>
-      )}
-
       {isSelected && children && (
-        <div className="px-3 pb-3 animate-in slide-in-from-top-1 duration-200 cursor-default">
-          {children}
+        <div className="border-t border-slate-100 dark:border-slate-800/50">
+          <div className="px-3 pb-3 animate-in slide-in-from-top-1 duration-200 cursor-default">
+            {children}
+          </div>
         </div>
       )}
     </div>
@@ -308,128 +295,102 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, reso
 
 /* ─── Threshold Control Component ─── */
 
-const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
-  const good = Number(values[goodKey])
-  const bad = Number(values[badKey])
+const THRESHOLD_GAP = 3 // dB gap between Normal→Warning and Warning→Critical
 
-  const handleGoodChange = (e) => {
-    const val = Number(e.target.value)
-    onChange(goodKey, val)
-    // Ensure good is always > bad (at least 1dB diff)
-    if (val <= bad) {
-       onChange(badKey, val - 1)
+const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
+  const goodRaw = values[goodKey]
+  const goodNum = typeof goodRaw === 'number' ? goodRaw : parseFloat(goodRaw)
+  const goodValid = Number.isFinite(goodNum)
+
+  // Auto-derived zones
+  const warningAt = goodValid ? goodNum - THRESHOLD_GAP : null
+  const criticalAt = goodValid ? goodNum - (THRESHOLD_GAP * 2) : null
+
+  const goodDisplay = typeof goodRaw === 'string' ? goodRaw : (goodValid ? String(goodNum) : '')
+
+  const handleChange = (e) => {
+    const raw = e.target.value
+    if (raw === '' || raw === '-' || raw === '-.' || raw === '.') {
+      onChange(goodKey, raw)
+      return
+    }
+    const num = parseFloat(raw)
+    if (Number.isFinite(num)) {
+      onChange(goodKey, num)
+      // Auto-set bad = normal - THRESHOLD_GAP
+      onChange(badKey, num - THRESHOLD_GAP)
+    } else {
+      onChange(goodKey, raw)
     }
   }
 
-  const handleBadChange = (e) => {
-    const val = Number(e.target.value)
-    onChange(badKey, val)
-    // Ensure bad is always < good (at least 1dB diff)
-    if (val >= good) {
-       onChange(goodKey, val + 1)
+  const handleBlur = () => {
+    if (!goodValid) {
+      onChange(goodKey, -25)
+      onChange(badKey, -25 - THRESHOLD_GAP)
     }
   }
   
   return (
-    <div className="flex flex-col gap-4">
-       <div className="flex items-center justify-between">
+    <div className="flex flex-col gap-3">
+       <div className="flex items-center justify-center">
           <SectionLabel>{label}</SectionLabel>
        </div>
 
-       {/* Visual Interactive Bar */}
-       <div className="relative pt-8 pb-6 px-2">
-          {/* Bar Background: Green -> Yellow -> Red */}
-          <div className="h-2 w-full rounded-full flex overflow-hidden">
-             {/* Normal Zone (>= good) */}
-             <div className="flex-1 bg-emerald-400 relative group/bar-normal">
-               <div className="absolute inset-0 bg-emerald-300 opacity-0 group-hover/bar-normal:opacity-100 transition-opacity" />
-             </div>
-             
-             {/* Warning Zone */}
-             <div className="flex-1 bg-yellow-400 relative group/bar-warn">
-               <div className="absolute inset-0 bg-yellow-300 opacity-0 group-hover/bar-warn:opacity-100 transition-opacity" />
-             </div>
-
-             {/* Critical Zone (< bad) */}
-             <div className="flex-1 bg-rose-400 relative group/bar-crit">
-               <div className="absolute inset-0 bg-rose-300 opacity-0 group-hover/bar-crit:opacity-100 transition-opacity" />
-             </div>
+       {/* Visual Power Bar */}
+       <div className="relative pt-8 pb-4 px-2 select-none">
+          {/* Bar */}
+          <div className="h-2 w-full rounded-full flex overflow-hidden ring-1 ring-slate-200 dark:ring-slate-700">
+             <div className="flex-1 bg-gradient-to-r from-emerald-400 to-emerald-500 shadow-inner" />
+             <div className="flex-1 bg-gradient-to-r from-amber-300 to-amber-400 shadow-inner" />
+             <div className="flex-1 bg-gradient-to-r from-rose-400 to-rose-500 shadow-inner" />
           </div>
 
-          {/* Labels BELOW the bar */}
-          <div className="absolute top-12 left-0 w-full flex text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">
+          {/* Zone labels below bar */}
+          <div className="absolute top-12 left-0 w-full flex text-[9px] font-black uppercase tracking-widest opacity-80">
              <div className="flex-1 text-center text-emerald-600 dark:text-emerald-400">{t('Good')}</div>
-             <div className="flex-1 text-center text-yellow-600 dark:text-yellow-400">{t('Warning')}</div>
+             <div className="flex-1 text-center text-amber-600 dark:text-amber-400">{t('Warning')}</div>
              <div className="flex-1 text-center text-rose-500 dark:text-rose-400">{t('Critical')}</div>
           </div>
 
-          {/* Marker 1: The "Good" Threshold (Separates Green/Yellow) */}
-          <div className="absolute top-0 bottom-6 left-1/3 -ml-px flex flex-col justify-end items-center z-10 pointer-events-none transform -translate-x-1/2">
-             {/* Label Value Floating Above - Centered on tick */}
-             <div className="mb-1 text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-emerald-100 dark:border-emerald-500/30">
-                {good}
+          {/* Marker: Normal → Warning boundary */}
+          <div className="absolute top-0 bottom-6 left-1/3 flex flex-col justify-end items-center z-10 pointer-events-none -translate-x-1/2">
+             <div className="mb-0.5 text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded shadow-sm border border-emerald-100 dark:border-emerald-500/30 tabular-nums">
+                {goodValid ? goodNum : '—'}
              </div>
-             {/* The Tick Line */}
-             <div className="w-0.5 h-3 bg-slate-300 dark:bg-slate-600 z-10 rounded-full"></div>
+             <div className="w-[2px] h-3 bg-slate-800 dark:bg-white rounded-full opacity-20" />
           </div>
 
-          {/* Marker 2: The "Bad" Threshold (Separates Yellow/Red) */}
-          <div className="absolute top-0 bottom-6 left-2/3 -ml-px flex flex-col justify-end items-center z-10 pointer-events-none transform -translate-x-1/2">
-             {/* Label Value Floating Above - Centered on tick */}
-             <div className="mb-1 text-[10px] font-black text-rose-500 dark:text-rose-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-rose-100 dark:border-rose-500/30">
-                {bad}
+          {/* Marker: Warning → Critical boundary */}
+          <div className="absolute top-0 bottom-6 left-2/3 flex flex-col justify-end items-center z-10 pointer-events-none -translate-x-1/2">
+             <div className="mb-0.5 text-[10px] font-black text-rose-500 dark:text-rose-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded shadow-sm border border-rose-100 dark:border-rose-500/30 tabular-nums">
+                {warningAt !== null ? warningAt : '—'}
              </div>
-             {/* The Tick Line */}
-             <div className="w-0.5 h-3 bg-slate-300 dark:bg-slate-600 z-10 rounded-full"></div>
+             <div className="w-[2px] h-3 bg-slate-800 dark:bg-white rounded-full opacity-20" />
           </div>
        </div>
 
-       {/* Input Controls - Smaller Pills */}
-       <div className="flex items-center justify-center gap-6">
-          {/* Normal Input */}
-          <div className="relative group w-28">
-             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5 whitespace-nowrap">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
-                {t('Normal limit')}
-             </label>
-             <div className="relative">
+       {/* Single Input: Normal Limit */}
+       <div className="flex items-center justify-center mt-1">
+          <div className="relative w-24">
+             <div className="relative group">
                 <input
-                   type="number"
-                   step="0.5"
-                   value={good}
-                   onChange={handleGoodChange}
-                   className="w-full h-8 pl-8 pr-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
-                              text-[11px] font-bold text-slate-700 dark:text-slate-200
-                              focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all
-                              [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                   type="text"
+                   inputMode="decimal"
+                   value={goodDisplay}
+                   onChange={handleChange}
+                   onBlur={handleBlur}
+                   className="w-full h-7 pl-6 pr-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
+                              text-[12px] font-black text-slate-700 dark:text-slate-200 text-center tracking-tight shadow-sm
+                              focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 outline-none transition-all"
                    placeholder="-25"
                 />
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-black text-emerald-500">&ge;</span>
+                <span className="absolute left-2.5 top-1/2 -translate-y-[45%] text-[12px] font-black text-emerald-500 group-focus-within:scale-110 transition-transform">&ge;</span>
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400 pointer-events-none">dBm</span>
              </div>
-          </div>
-
-          {/* Critical Input */}
-          <div className="relative group w-28">
-             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5 whitespace-nowrap">
-                <div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div>
-                {t('Critical limit')}
+             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide mt-1.5 flex items-center justify-center gap-1.5">
+                {t('Normal limit')}
              </label>
-             <div className="relative">
-                <input
-                   type="number"
-                   step="0.5"
-                   value={bad}
-                   onChange={handleBadChange}
-                   className="w-full h-8 pl-8 pr-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40
-                              text-[11px] font-bold text-slate-700 dark:text-slate-200 
-                              focus:bg-white dark:focus:bg-slate-800 focus:border-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none transition-all
-                              [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                   placeholder="-28"
-                />
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-black text-rose-500">&lt;</span>
-                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400 pointer-events-none">dBm</span>
-             </div>
           </div>
        </div>
     </div>
@@ -464,8 +425,10 @@ export const SettingsPanel = ({
   const [editForm, setEditForm] = useState(null)
   const [localError, setLocalError] = useState('')
   const addNameRef = useRef(null)
-  const [cardTab, setCardTab] = useState('device')
+  const [createCardTab, setCreateCardTab] = useState('device')
+  const [editCardTab, setEditCardTab] = useState('device')
   const [thresholdForm, setThresholdForm] = useState(null)
+  const [createThresholdForm, setCreateThresholdForm] = useState(DEFAULT_THRESHOLDS)
 
   const vendorOptions = useMemo(() => {
     return [...new Set((vendorProfiles || []).map((item) => item?.vendor).filter(Boolean))]
@@ -490,7 +453,7 @@ export const SettingsPanel = ({
 
   // Reset card tab + threshold form when selection changes
   useEffect(() => {
-    setCardTab('device')
+    setEditCardTab('device')
     if (!selectedOltId) { setThresholdForm(null); return }
     setThresholdForm(getOltThresholds(selectedOltId))
   }, [selectedOltId])
@@ -516,6 +479,7 @@ export const SettingsPanel = ({
   useEffect(() => {
     if (!showAddForm) {
       setForm(buildInitialForm(vendorProfiles))
+      setCreateThresholdForm(DEFAULT_THRESHOLDS)
       setLocalError('')
       return
     }
@@ -551,6 +515,14 @@ export const SettingsPanel = ({
 
   const setField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }))
   const setEditField = (key, value) => setEditForm((prev) => prev ? ({ ...prev, [key]: value }) : prev)
+  
+  const setCreateThresholdField = (key, rawValue) => {
+    const numValue = rawValue === '' || rawValue === '-' ? rawValue : parseFloat(rawValue)
+    setCreateThresholdForm((prev) => ({ 
+      ...prev, 
+      [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue 
+    }))
+  }
 
   const handleVendorChange = (nextVendor) => {
     const nextModel = (vendorProfiles || []).find((item) => item.vendor === nextVendor)
@@ -581,9 +553,9 @@ export const SettingsPanel = ({
       snmp_version: 'v2c',
       discovery_enabled: true,
       polling_enabled: true,
-      discovery_interval_minutes: Math.round((parseDuration(form.discovery_interval) || 14400) / 60),
+      discovery_interval_minutes: Math.round((parseDuration(form.discovery_interval) || 18000) / 60),
       polling_interval_seconds: parseDuration(form.polling_interval) || 300,
-      power_interval_seconds: parseDuration(form.power_interval) || 300
+      power_interval_seconds: parseDuration(form.power_interval) || 86400
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -594,8 +566,12 @@ export const SettingsPanel = ({
     setLocalError('')
     const created = await onCreateOlt?.(payload)
     if (created?.id) {
+      if (createThresholdForm) {
+        saveOltThresholds(created.id, createThresholdForm)
+      }
       setShowAddForm(false)
       setForm(buildInitialForm(vendorProfiles))
+      setCreateThresholdForm(DEFAULT_THRESHOLDS)
     }
   }
 
@@ -608,9 +584,9 @@ export const SettingsPanel = ({
       vendor_profile: Number(editForm.vendor_profile),
       snmp_community: String(editForm.snmp_community || '').trim(),
       snmp_port: Number(editForm.snmp_port || 161),
-      discovery_interval_minutes: Math.round((parseDuration(editForm.discovery_interval) || 14400) / 60),
+      discovery_interval_minutes: Math.round((parseDuration(editForm.discovery_interval) || 18000) / 60),
       polling_interval_seconds: parseDuration(editForm.polling_interval) || 300,
-      power_interval_seconds: parseDuration(editForm.power_interval) || 300,
+      power_interval_seconds: parseDuration(editForm.power_interval) || 86400,
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -705,116 +681,263 @@ export const SettingsPanel = ({
 
         {/* ─── Create OLT form ─── */}
         {showAddForm && (
-          <div className="w-full rounded-[14px] border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm px-4 py-4 space-y-4 animate-in fade-in slide-in-from-top-3 duration-300">
-            <div className="space-y-2.5">
-              <SectionLabel>{t('Device')}</SectionLabel>
-              <div className="grid grid-cols-8 gap-3">
-                <div className="col-span-3 flex flex-col gap-1.5">
-                  <FieldLabel>{t('OLT name')}</FieldLabel>
-                  <FieldInput
-                    ref={addNameRef}
-                    value={form.name}
-                    onChange={(e) => setField('name', e.target.value.slice(0, MAX_OLT_NAME))}
-                    maxLength={MAX_OLT_NAME}
-                    placeholder="OLT-01"
-                  />
+          <div className="animate-in fade-in slide-in-from-top-3 duration-300">
+             {/* We use the exact same card structure for creating */}
+             <div className={`
+                w-full bg-white dark:bg-slate-900
+                rounded-[14px] border border-slate-200 dark:border-slate-700 shadow-sm
+             `}>
+                {/* Header Preview */}
+                <div className="relative flex items-center gap-2.5 px-3 py-2.5 select-none border-b border-transparent">
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-emerald-500 transition-all duration-300" />
+                    <div className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-[10px] bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/15 dark:ring-emerald-400/25">
+                       <Plus className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0 flex flex-col justify-center">
+                       <p className="text-[11px] font-black uppercase tracking-tight leading-none mb-0.5 text-slate-900 dark:text-white transition-all">
+                          {form.name || t('New OLT')}
+                       </p>
+                       <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">
+                              {form.ip_address || '0.0.0.0'}:{form.snmp_port || '161'}
+                          </span>
+                          <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
+                          <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                              {form.vendor ? String(form.vendor).toUpperCase() : '\u2014'}
+                          </span>
+                          <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
+                          <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">
+                              {modelOptions.find(m => String(m.id) === String(form.vendor_profile))?.model_name || '\u2014'}
+                          </span>
+                       </div>
+                    </div>
+                    {/* Chevron (static open) */}
+                    <div className="text-emerald-600 dark:text-emerald-400 rotate-180 transition-transform">
+                       <ChevronDown className="w-3 h-3" />
+                    </div>
                 </div>
-                <div className="col-span-3 flex flex-col gap-1.5">
-                  <FieldLabel>{t('Vendor')}</FieldLabel>
-                  <FieldSelect
-                    value={form.vendor}
-                    onChange={(e) => handleVendorChange(e.target.value)}
-                    disabled={vendorLoading || !vendorOptions.length}
-                  >
-                    {vendorOptions.map((vendor) => (
-                      <option key={vendor} value={vendor}>{String(vendor).toUpperCase()}</option>
-                    ))}
-                  </FieldSelect>
-                </div>
-                <div className="col-span-2 flex flex-col gap-1.5">
-                  <FieldLabel>{t('Model')}</FieldLabel>
-                  <FieldSelect
-                    value={form.vendor_profile}
-                    onChange={(e) => setField('vendor_profile', e.target.value)}
-                    disabled={vendorLoading || !modelOptions.length}
-                  >
-                    {modelOptions.map((item) => (
-                      <option key={item.id} value={item.id}>{item.model_name}</option>
-                    ))}
-                  </FieldSelect>
-                </div>
-              </div>
-            </div>
 
-            <div className="space-y-2.5">
-              <SectionLabel>{t('Connection')}</SectionLabel>
-              <div className="grid grid-cols-8 gap-3">
-                <div className="col-span-3 flex flex-col gap-1.5">
-                  <FieldLabel>{t('IP')}</FieldLabel>
-                  <FieldInput
-                    value={form.ip_address}
-                    onChange={(e) => setField('ip_address', e.target.value)}
-                    placeholder="10.0.0.1"
-                  />
-                </div>
-                <div className="col-span-3 flex flex-col gap-1.5">
-                  <FieldLabel>{t('SNMP community')}</FieldLabel>
-                  <FieldInput
-                    value={form.snmp_community}
-                    onChange={(e) => setField('snmp_community', e.target.value)}
-                    placeholder="public"
-                  />
-                </div>
-                <div className="col-span-2 flex flex-col gap-1.5">
-                  <FieldLabel>{t('SNMP port')}</FieldLabel>
-                  <FieldInput
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={form.snmp_port}
-                    onChange={(e) => setField('snmp_port', e.target.value)}
-                    placeholder="161"
-                  />
-                </div>
-              </div>
-            </div>
+                {/* Body Content - Exact Same Tabs */}
+                <div className="border-t border-slate-100 dark:border-slate-800/50">
+                  <div className="px-3 pb-3 pt-3 space-y-4">
+                    
+                    {/* Tab Navigation */}
+                    <div className="flex justify-center mb-5">
+                      <div className="inline-flex rounded-full bg-slate-100/80 p-0.5 border border-slate-200/50 dark:bg-slate-800 dark:border-slate-700/50">
+                        {['device', 'intervals', 'thresholds'].map((tab) => (
+                          <button
+                            key={tab}
+                            type="button"
+                            onClick={() => setCreateCardTab(tab)}
+                            className={`w-24 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
+                              createCardTab === tab
+                                ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-emerald-500/10'
+                                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-700/30'
+                            }`}
+                          >
+                            {t(tab === 'device' ? 'General' : tab === 'intervals' ? 'Intervals' : 'Thresholds')}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-            <div className="space-y-2.5">
-              <SectionLabel>{t('Intervals')}</SectionLabel>
-              <div className="grid grid-cols-8 gap-3">
-                <div className="col-span-3 flex flex-col gap-1.5">
-                  <FieldLabel>{t('ONU discovery')}</FieldLabel>
-                  <FieldInput value={form.discovery_interval} onChange={(e) => setField('discovery_interval', e.target.value)} placeholder="4h" />
-                </div>
-                <div className="col-span-3 flex flex-col gap-1.5">
-                  <FieldLabel>{t('Status collection')}</FieldLabel>
-                  <FieldInput value={form.polling_interval} onChange={(e) => setField('polling_interval', e.target.value)} placeholder="5m" />
-                </div>
-                <div className="col-span-2 flex flex-col gap-1.5">
-                  <FieldLabel>{t('Power collection')}</FieldLabel>
-                  <FieldInput value={form.power_interval} onChange={(e) => setField('power_interval', e.target.value)} placeholder="5m" />
-                </div>
-              </div>
-            </div>
+                    <div className="h-[170px] w-full overflow-y-auto custom-scrollbar relative">
+                    
+                    {/* TAB: General (Create) */}
+                    {createCardTab === 'device' && (
+                        <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-200 px-2 pt-2 pb-1">
+                            <div className="grid grid-cols-12 gap-x-4 gap-y-4 w-full max-w-xl">
+                               {/* Row 1 */}
+                               <div className="col-span-4 flex flex-col gap-1.5">
+                                  <FieldLabel>{t('OLT name')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center"
+                                    ref={addNameRef}
+                                    value={form.name}
+                                    onChange={(e) => setField('name', e.target.value.slice(0, MAX_OLT_NAME))}
+                                    maxLength={MAX_OLT_NAME}
+                                    placeholder="OLT-01"
+                                  />
+                               </div>
+                               <div className="col-span-4 flex flex-col gap-1.5">
+                                  <FieldLabel>{t('Vendor')}</FieldLabel>
+                                  <FieldSelect
+                                    className="text-center"
+                                    value={form.vendor}
+                                    onChange={(e) => handleVendorChange(e.target.value)}
+                                    disabled={vendorLoading || !vendorOptions.length}
+                                  >
+                                    {vendorOptions.map((vendor) => (
+                                      <option key={vendor} value={vendor}>{String(vendor).toUpperCase()}</option>
+                                    ))}
+                                  </FieldSelect>
+                               </div>
+                               <div className="col-span-4 flex flex-col gap-1.5">
+                                  <FieldLabel>{t('Model')}</FieldLabel>
+                                  <FieldSelect
+                                    className="text-center"
+                                    value={form.vendor_profile}
+                                    onChange={(e) => setField('vendor_profile', e.target.value)}
+                                    disabled={vendorLoading || !modelOptions.length}
+                                  >
+                                    {modelOptions.map((item) => (
+                                      <option key={item.id} value={item.id}>{item.model_name}</option>
+                                    ))}
+                                  </FieldSelect>
+                               </div>
 
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setShowAddForm(false)}
-                className="h-8 px-3.5 rounded-[8px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
-              >
-                {t('Cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={handleCreate}
-                disabled={createBusy}
-                className="h-8 px-4 rounded-[8px] border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
-              >
-                {createBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                {t('Save')}
-              </button>
-            </div>
+                               {/* Row 2 */}
+                               <div className="col-span-4 flex flex-col gap-1.5">
+                                  <FieldLabel>{t('IP')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center"
+                                    value={form.ip_address}
+                                    onChange={(e) => setField('ip_address', e.target.value)}
+                                    placeholder="10.0.0.1"
+                                  />
+                               </div>
+                               <div className="col-span-4 flex flex-col gap-1.5">
+                                  <FieldLabel>{t('SNMP community')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center"
+                                    value={form.snmp_community}
+                                    onChange={(e) => setField('snmp_community', e.target.value)}
+                                    placeholder="public"
+                                  />
+                               </div>
+                               <div className="col-span-4 flex flex-col gap-1.5">
+                                  <FieldLabel>{t('Port')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center"
+                                    type="number"
+                                    min={1}
+                                    max={65535}
+                                    value={form.snmp_port}
+                                    onChange={(e) => setField('snmp_port', e.target.value)}
+                                    placeholder="161"
+                                  />
+                               </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* TAB: Intervals (Create) */}
+                    {createCardTab === 'intervals' && (
+                        <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-300 px-2 pt-4 pb-2">
+                            <div className="grid grid-cols-3 gap-6">
+                              {/* Item 1 */}
+                              <div className="group flex flex-col items-center gap-2.5">
+                                <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                                  {t('ONU discovery')}
+                                </label>
+                                <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                                  <input
+                                    className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                    value={form.discovery_interval}
+                                    onChange={(e) => setField('discovery_interval', e.target.value)}
+                                    placeholder="5h"
+                                  />
+                                   <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
+                                   {/* Disabled run button for create mode */}
+                                  <button disabled className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
+                                    <span>{t('Run')}</span>
+                                  </button>
+                                </div>
+                              </div>
+                              
+                              {/* Item 2 */}
+                              <div className="group flex flex-col items-center gap-2.5">
+                                <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                                  {t('Status collection')}
+                                </label>
+                                <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                                  <input
+                                    className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                    value={form.polling_interval}
+                                    onChange={(e) => setField('polling_interval', e.target.value)}
+                                    placeholder="5m"
+                                  />
+                                   <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
+                                  <button disabled className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
+                                    <span>{t('Run')}</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Item 3 */}
+                              <div className="group flex flex-col items-center gap-2.5">
+                                <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                                  {t('Power collection')}
+                                </label>
+                                <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                                  <input
+                                    className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                    value={form.power_interval}
+                                    onChange={(e) => setField('power_interval', e.target.value)}
+                                    placeholder="1d"
+                                  />
+                                   <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
+                                  <button disabled className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
+                                    <span>{t('Run')}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* TAB: Thresholds (Create) */}
+                    {createCardTab === 'thresholds' && (
+                        <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
+                             {/* Two columns: ONU RX | OLT RX */}
+                             <div className="grid grid-cols-2 gap-4 relative">
+                                {/* Vertical Divider */}
+                                <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
+                                
+                                <ThresholdControl 
+                                    label="ONU RX"
+                                    goodKey="onu_rx_good"
+                                    badKey="onu_rx_bad"
+                                    values={createThresholdForm}
+                                    onChange={(key, val) => setCreateThresholdField(key, val)}
+                                    t={t}
+                                />
+                                <ThresholdControl 
+                                    label="OLT RX"
+                                    goodKey="olt_rx_good"
+                                    badKey="olt_rx_bad"
+                                    values={createThresholdForm}
+                                    onChange={(key, val) => setCreateThresholdField(key, val)}
+                                    t={t}
+                                />
+                             </div>
+                        </div>
+                    )}
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/50 mt-4">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddForm(false)}
+                        className="h-7 px-3 rounded-[6px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
+                      >
+                        {t('Cancel')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCreate}
+                        disabled={createBusy}
+                        className="h-7 px-3.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                      >
+                        {createBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                        {t('Save')}
+                      </button>
+                    </div>
+
+                  </div>
+                </div>
+             </div>
           </div>
         )}
 
@@ -839,35 +962,47 @@ export const SettingsPanel = ({
             const snmpBadge = getSnmpBadge(olt, snmpStatus, t)
 
             return (
-              <OltCard
-                key={olt.id}
-                olt={olt}
-                isSelected={isSelected}
-                health={health}
-                onSelect={setSelectedOltId}
-                onDelete={handleDelete}
-                deleteBusy={deleteBusy}
-                resolvedVendor={resolvedVendor}
-                t={t}
-              >
+              <div key={olt.id} className="relative group/olt-row">
+                {/* Delete button floating outside - simplified and consistent */}
+                {isSelected && (
+                   <div className="absolute -right-8 top-3 animate-in fade-in zoom-in duration-200 z-10">
+                      <button 
+                        onClick={() => handleDelete(olt.id)}
+                        disabled={deleteBusy}
+                        className="w-6 h-6 rounded-full bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-400 dark:text-slate-500 hover:text-rose-500 hover:border-rose-200 dark:hover:border-rose-900 transition-all disabled:opacity-50"
+                        title={t('Remove OLT')}
+                      >
+                         {deleteBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                      </button>
+                   </div>
+                )}
+
+                <OltCard
+                  olt={olt}
+                  isSelected={isSelected}
+                  health={health}
+                  onSelect={setSelectedOltId}
+                  resolvedVendor={resolvedVendor}
+                  t={t}
+                >
                 {isSelected && editForm && (
                   <div className="pt-3 space-y-4 border-t border-slate-100 dark:border-slate-800/50">
 
                     {/* ── Tab bar (Segmented Toggle) ── */}
-                    <div className="flex justify-start mb-4">
-                      <div className="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                    <div className="flex justify-center mb-5">
+                      <div className="inline-flex rounded-full bg-slate-100/80 p-0.5 border border-slate-200/50 dark:bg-slate-800 dark:border-slate-700/50">
                         {['device', 'intervals', 'thresholds'].map((tab) => (
                           <button
                             key={tab}
                             type="button"
-                            onClick={() => setCardTab(tab)}
-                            className={`px-4 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${
-                              cardTab === tab
-                                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
+                            onClick={() => setEditCardTab(tab)}
+                            className={`w-24 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
+                              editCardTab === tab
+                                ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-emerald-500/10'
+                                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-700/30'
                             }`}
                           >
-                            {t(tab === 'device' ? 'Device' : tab === 'intervals' ? 'Intervals' : 'Thresholds')}
+                            {t(tab === 'device' ? 'General' : tab === 'intervals' ? 'Intervals' : 'Thresholds')}
                           </button>
                         ))}
                       </div>
@@ -877,23 +1012,26 @@ export const SettingsPanel = ({
                     <div className="h-[170px] w-full overflow-y-auto custom-scrollbar relative">
 
                     {/* ── TAB: Device + Connection ── */}
-                    {cardTab === 'device' && (
-                      <div className="space-y-3 animate-in fade-in slide-in-from-left-1 duration-200">
-                        <div className="space-y-1.5">
-                          <SectionLabel>{t('Device')}</SectionLabel>
-                          <div className="grid grid-cols-6 gap-3">
-                            <div className="col-span-2 flex flex-col gap-1">
+                    {editCardTab === 'device' && (
+                      <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-200 px-2 pt-2 pb-1">
+                        <div className="grid grid-cols-12 gap-x-4 gap-y-4 w-full max-w-xl">
+                           
+                           {/* Row 1 */}
+                           <div className="col-span-4 flex flex-col gap-1.5">
                               <FieldLabel>{t('OLT name')}</FieldLabel>
                               <FieldInput
+                                className="text-center"
                                 value={editForm.name}
                                 onChange={(e) => setEditField('name', e.target.value.slice(0, MAX_OLT_NAME))}
                                 maxLength={MAX_OLT_NAME}
                                 placeholder="OLT-01"
                               />
-                            </div>
-                            <div className="col-span-2 flex flex-col gap-1">
+                           </div>
+
+                           <div className="col-span-4 flex flex-col gap-1.5">
                               <FieldLabel>{t('Vendor')}</FieldLabel>
                               <FieldSelect
+                                className="text-center"
                                 value={editForm.vendor}
                                 onChange={(e) => handleEditVendorChange(e.target.value)}
                                 disabled={vendorLoading || !vendorOptions.length}
@@ -902,10 +1040,12 @@ export const SettingsPanel = ({
                                   <option key={vendor} value={vendor}>{String(vendor).toUpperCase()}</option>
                                 ))}
                               </FieldSelect>
-                            </div>
-                            <div className="col-span-2 flex flex-col gap-1">
+                           </div>
+
+                           <div className="col-span-4 flex flex-col gap-1.5">
                               <FieldLabel>{t('Model')}</FieldLabel>
                               <FieldSelect
+                                className="text-center"
                                 value={editForm.vendor_profile}
                                 onChange={(e) => setEditField('vendor_profile', e.target.value)}
                                 disabled={vendorLoading || !editModelOptions.length}
@@ -914,32 +1054,33 @@ export const SettingsPanel = ({
                                   <option key={item.id} value={item.id}>{item.model_name}</option>
                                 ))}
                               </FieldSelect>
-                            </div>
-                          </div>
-                        </div>
+                           </div>
 
-                        <div className="space-y-1.5">
-                          <SectionLabel>{t('Connection')}</SectionLabel>
-                          <div className="grid grid-cols-6 gap-3">
-                            <div className="col-span-2 flex flex-col gap-1">
+                           {/* Row 2 */}
+                           <div className="col-span-4 flex flex-col gap-1.5">
                               <FieldLabel>{t('IP')}</FieldLabel>
                               <FieldInput
+                                className="text-center"
                                 value={editForm.ip_address}
                                 onChange={(e) => setEditField('ip_address', e.target.value)}
                                 placeholder="10.0.0.1"
                               />
-                            </div>
-                            <div className="col-span-2 flex flex-col gap-1">
+                           </div>
+
+                           <div className="col-span-4 flex flex-col gap-1.5">
                               <FieldLabel>{t('SNMP community')}</FieldLabel>
                               <FieldInput
+                                className="text-center"
                                 value={editForm.snmp_community}
                                 onChange={(e) => setEditField('snmp_community', e.target.value)}
                                 placeholder="public"
                               />
-                            </div>
-                            <div className="col-span-2 flex flex-col gap-1">
-                              <FieldLabel>{t('SNMP port')}</FieldLabel>
+                           </div>
+
+                           <div className="col-span-4 flex flex-col gap-1.5">
+                              <FieldLabel>{t('Port')}</FieldLabel>
                               <FieldInput
+                                className="text-center px-1"
                                 type="number"
                                 min={1}
                                 max={65535}
@@ -947,93 +1088,94 @@ export const SettingsPanel = ({
                                 onChange={(e) => setEditField('snmp_port', e.target.value)}
                                 placeholder="161"
                               />
-                            </div>
-                          </div>
+                           </div>
+
                         </div>
                       </div>
                     )}
 
                     {/* ── TAB: Intervals ── */}
-                    {cardTab === 'intervals' && (
-                      <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-300 px-1 pt-2">
-                        <div className="space-y-3">
-                          <div className="flex justify-center">
-                            <SectionLabel>{t('Timers')}</SectionLabel>
-                          </div>
-                          <div className="grid grid-cols-3 gap-3">
-                            <div className="group flex flex-col items-center gap-1.5">
-                              <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase overflow-hidden text-ellipsis whitespace-nowrap transition-colors group-focus-within:text-emerald-500/80 text-center w-full">
-                                {t('ONU discovery')}
-                              </label>
-                              <FieldInput
-                                className="text-center h-8 !w-20 text-xs font-bold bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700/50 focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 transition-all rounded-lg shadow-sm placeholder:font-medium placeholder:text-slate-300"
+                    {editCardTab === 'intervals' && (
+                      <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-300 px-2 pt-4 pb-2">
+                        
+                        <div className="grid grid-cols-3 gap-6">
+                          {/* Item 1: Discovery */}
+                          <div className="group flex flex-col items-center gap-2.5">
+                            <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                              {t('ONU discovery')}
+                            </label>
+                            <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                              <input
+                                className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={editForm.discovery_interval}
                                 onChange={(e) => setEditField('discovery_interval', e.target.value)}
-                                placeholder="4h"
+                                placeholder="5h"
                               />
+                               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
+                              <button
+                                type="button"
+                                onClick={() => handleDiscovery(olt.id)}
+                                disabled={discoveryBusy}
+                                className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                              >
+                                {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
+                              </button>
                             </div>
-                            <div className="group flex flex-col items-center gap-1.5">
-                              <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase overflow-hidden text-ellipsis whitespace-nowrap transition-colors group-focus-within:text-emerald-500/80 text-center w-full">
-                                {t('Status collection')}
-                              </label>
-                              <FieldInput
-                                className="text-center h-8 !w-20 text-xs font-bold bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700/50 focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 transition-all rounded-lg shadow-sm placeholder:font-medium placeholder:text-slate-300"
+                          </div>
+
+                          {/* Item 2: Status */}
+                          <div className="group flex flex-col items-center gap-2.5">
+                            <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                              {t('Status collection')}
+                            </label>
+                            <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                              <input
+                                className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={editForm.polling_interval}
                                 onChange={(e) => setEditField('polling_interval', e.target.value)}
                                 placeholder="5m"
                               />
+                               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
+                              <button
+                                type="button"
+                                onClick={() => onRunPolling?.(olt.id)}
+                                disabled={pollingBusy}
+                                className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                              >
+                                {pollingBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
+                              </button>
                             </div>
-                            <div className="group flex flex-col items-center gap-1.5">
-                              <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase overflow-hidden text-ellipsis whitespace-nowrap transition-colors group-focus-within:text-emerald-500/80 text-center w-full">
-                                {t('Power collection')}
-                              </label>
-                              <FieldInput
-                                className="text-center h-8 !w-20 text-xs font-bold bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700/50 focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 transition-all rounded-lg shadow-sm placeholder:font-medium placeholder:text-slate-300"
+                          </div>
+
+                          {/* Item 3: Power */}
+                          <div className="group flex flex-col items-center gap-2.5">
+                            <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                              {t('Power collection')}
+                            </label>
+                            <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                              <input
+                                className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={editForm.power_interval}
                                 onChange={(e) => setEditField('power_interval', e.target.value)}
-                                placeholder="5m"
+                                placeholder="1d"
                               />
+                               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
+                              <button
+                                type="button"
+                                onClick={() => onRefreshPower?.(olt.id)}
+                                disabled={powerBusy}
+                                className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                              >
+                                {powerBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
+                              </button>
                             </div>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-3 pt-1">
-                          <div className="flex justify-center">
-                            <button
-                              type="button"
-                              onClick={() => handleDiscovery(olt.id)}
-                              disabled={discoveryBusy}
-                              className="h-8 w-24 rounded-lg border border-slate-200/60 dark:border-slate-700/60 bg-white dark:bg-slate-800/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[9px] font-black uppercase tracking-[0.10em] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-emerald-500/10 active:scale-[0.98]"
-                            >
-                              {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute')}</span>}
-                            </button>
-                          </div>
-                          <div className="flex justify-center">
-                            <button
-                              type="button"
-                              onClick={() => onRunPolling?.(olt.id)}
-                              disabled={pollingBusy}
-                              className="h-8 w-24 rounded-lg border border-slate-200/60 dark:border-slate-700/60 bg-white dark:bg-slate-800/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[9px] font-black uppercase tracking-[0.10em] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-emerald-500/10 active:scale-[0.98]"
-                            >
-                              {pollingBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute')}</span>}
-                            </button>
-                          </div>
-                          <div className="flex justify-center">
-                            <button
-                              type="button"
-                              onClick={() => onRefreshPower?.(olt.id)}
-                              disabled={powerBusy}
-                              className="h-8 w-24 rounded-lg border border-slate-200/60 dark:border-slate-700/60 bg-white dark:bg-slate-800/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[9px] font-black uppercase tracking-[0.10em] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-emerald-500/10 active:scale-[0.98]"
-                            >
-                              {powerBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute')}</span>}
-                            </button>
                           </div>
                         </div>
                       </div>
                     )}
 
                     {/* ── TAB: Thresholds ── */}
-                    {cardTab === 'thresholds' && thresholdForm && (
+                    {editCardTab === 'thresholds' && thresholdForm && (
                       <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
                          {/* Two columns: ONU RX | OLT RX */}
                          <div className="grid grid-cols-2 gap-4 relative">
@@ -1041,7 +1183,7 @@ export const SettingsPanel = ({
                             <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
                             
                             <ThresholdControl 
-                                label={t('ONU RX Power')}
+                                label="ONU RX"
                                 goodKey="onu_rx_good"
                                 badKey="onu_rx_bad"
                                 values={thresholdForm}
@@ -1049,7 +1191,7 @@ export const SettingsPanel = ({
                                 t={t}
                             />
                             <ThresholdControl 
-                                label={t('OLT RX Power')}
+                                label="OLT RX"
                                 goodKey="olt_rx_good"
                                 badKey="olt_rx_bad"
                                 values={thresholdForm}
@@ -1076,33 +1218,34 @@ export const SettingsPanel = ({
 
                       {/* Right: save actions */}
                       <div className="flex items-center gap-2">
-                        {/* Save — only visible when form is dirty */}
-                        {dirty && (
                           <div className="flex items-center gap-1.5 animate-in fade-in duration-200">
                             <button
                               type="button"
                               onClick={handleDiscard}
-                              className="h-8 px-3 rounded-[8px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
+                              // Only disable if not dirty to prevent accidental clears? User asked for always present. 
+                              // Usually cancel resets to original state. If not dirty, it does nothing essentially.
+                              disabled={!dirty}
+                              className="h-7 px-3 rounded-[6px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {t('Cancel')}
                             </button>
                             <button
                               type="button"
                               onClick={handleUpdate}
-                              disabled={localUpdateBusy}
-                              className="h-8 px-4 rounded-[8px] bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                              disabled={localUpdateBusy || !dirty}
+                              className="h-7 px-3.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all whitespace-nowrap"
                             >
-                              {localUpdateBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                              {localUpdateBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                               {t('Save')}
                             </button>
                           </div>
-                        )}
                       </div>
                     </div>
 
                   </div>
                 )}
               </OltCard>
+             </div>
             )
           })}
 

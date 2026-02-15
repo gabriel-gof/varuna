@@ -179,7 +179,8 @@ const resources = {
       'Duration format': 'Format',
       Execute: 'Execute',
       'Execute now': 'Execute now',
-      'Power refresh executed successfully': 'Power refresh executed successfully'
+      'Power refresh executed successfully': 'Power refresh executed successfully',
+      Run: 'Run'
     }
   },
   pt: {
@@ -359,7 +360,8 @@ const resources = {
       'Duration format': 'Formato',
       Execute: 'Executar',
       'Execute now': 'EXECUTAR AGORA',
-      'Power refresh executed successfully': 'Potência atualizada com sucesso'
+      'Power refresh executed successfully': 'Potência atualizada com sucesso',
+      Run: 'RODAR'
     }
   }
 }
