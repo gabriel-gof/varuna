@@ -317,31 +317,31 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
           </div>
 
           {/* Marker 1: The "Good" Threshold (Separates Green/Yellow) */}
-          <div className="absolute top-0 bottom-8 left-1/3 -ml-px flex flex-col items-center justify-end z-10 pointer-events-none">
-             {/* Label Value Floating Above */}
-             <div className="mb-2 text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-emerald-100 dark:border-emerald-500/30">
+          <div className="absolute top-0 bottom-6 left-1/3 -ml-px flex flex-col justify-end items-center z-10 pointer-events-none transform -translate-x-1/2">
+             {/* Label Value Floating Above - Centered on tick */}
+             <div className="mb-1 text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-emerald-100 dark:border-emerald-500/30">
                 {good}
              </div>
              {/* The Tick Line */}
-             <div className="w-0.5 h-3.5 bg-slate-300 dark:bg-slate-600 z-10"></div>
+             <div className="w-0.5 h-3 bg-slate-300 dark:bg-slate-600 z-10 rounded-full"></div>
           </div>
 
           {/* Marker 2: The "Bad" Threshold (Separates Yellow/Red) */}
-          <div className="absolute top-0 bottom-8 left-2/3 -ml-px flex flex-col items-center justify-end z-10 pointer-events-none">
-             {/* Label Value Floating Above */}
-             <div className="mb-2 text-[10px] font-black text-rose-500 dark:text-rose-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-rose-100 dark:border-rose-500/30">
+          <div className="absolute top-0 bottom-6 left-2/3 -ml-px flex flex-col justify-end items-center z-10 pointer-events-none transform -translate-x-1/2">
+             {/* Label Value Floating Above - Centered on tick */}
+             <div className="mb-1 text-[10px] font-black text-rose-500 dark:text-rose-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-rose-100 dark:border-rose-500/30">
                 {bad}
              </div>
              {/* The Tick Line */}
-             <div className="w-0.5 h-3.5 bg-slate-300 dark:bg-slate-600 z-10"></div>
+             <div className="w-0.5 h-3 bg-slate-300 dark:bg-slate-600 z-10 rounded-full"></div>
           </div>
        </div>
 
        {/* Input Controls - Smaller Pills */}
-       <div className="grid grid-cols-2 gap-4">
+       <div className="flex items-center justify-center gap-6">
           {/* Normal Input */}
-          <div className="relative group">
-             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5">
+          <div className="relative group w-28">
+             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5 whitespace-nowrap">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
                 {t('Normal limit')}
              </label>
@@ -351,19 +351,20 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    step="0.5"
                    value={good}
                    onChange={(e) => onChange(goodKey, e.target.value)}
-                   className="w-full h-8 pl-8 pr-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
+                   className="w-full h-8 pl-8 pr-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
                               text-[11px] font-bold text-slate-700 dark:text-slate-200
-                              focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all"
+                              focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all
+                              [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                    placeholder="-25"
                 />
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-black text-emerald-500">&ge;</span>
-                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">dBm</span>
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400 pointer-events-none">dBm</span>
              </div>
           </div>
 
           {/* Critical Input */}
-          <div className="relative group">
-             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5">
+          <div className="relative group w-28">
+             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5 whitespace-nowrap">
                 <div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div>
                 {t('Critical limit')}
              </label>
@@ -373,13 +374,14 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    step="0.5"
                    value={bad}
                    onChange={(e) => onChange(badKey, e.target.value)}
-                   className="w-full h-8 pl-8 pr-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40
+                   className="w-full h-8 pl-8 pr-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40
                               text-[11px] font-bold text-slate-700 dark:text-slate-200 
-                              focus:bg-white dark:focus:bg-slate-800 focus:border-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none transition-all"
+                              focus:bg-white dark:focus:bg-slate-800 focus:border-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none transition-all
+                              [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                    placeholder="-28"
                 />
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-black text-rose-500">&lt;</span>
-                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">dBm</span>
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400 pointer-events-none">dBm</span>
              </div>
           </div>
        </div>
@@ -947,18 +949,7 @@ export const SettingsPanel = ({
                          </div>
 
                         {/* Reset & Instructions (optional, keeps it clean) */}
-                        {isOverride && (
-                           <div className="flex justify-end pt-1">
-                             <button
-                               type="button"
-                               onClick={resetThresholds}
-                               className="text-[9px] font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1"
-                             >
-                               <RotateCcw className="w-2.5 h-2.5" />
-                               {t('Reset to defaults')}
-                             </button>
-                           </div>
-                        )}
+                        {isOverride && null}
                       </div>
                     )}
                     </div>{/* End fixed height */}
@@ -976,10 +967,6 @@ export const SettingsPanel = ({
                           {deleteBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                           {t('Remove OLT')}
                         </button>
-                        <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-slate-400 dark:text-slate-500 whitespace-nowrap">
-                          <Clock className="w-3 h-3" />
-                          {t('Last discovery')}: {formatRelativeTime(olt.last_discovery_at, t)}
-                        </span>
                       </div>
 
                       {/* Right: contextual actions */}
