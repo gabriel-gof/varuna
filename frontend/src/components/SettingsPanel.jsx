@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Trash2, RefreshCcw, X, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Play, Clock, RotateCcw, ArrowRight, Signal } from 'lucide-react'
+import { Plus, Trash2, RefreshCcw, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Clock } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, clearOltThresholds, hasOltOverride } from '../utils/powerThresholds'
 
@@ -832,6 +832,8 @@ export const SettingsPanel = ({
             const vp = vendorProfiles?.find(p => String(p.id) === String(olt.vendor_profile))
             const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || 'Unknown'
             const discoveryBusy = Boolean(actionBusy?.[`discovery:${olt.id}`])
+            const pollingBusy = Boolean(actionBusy?.[`polling:${olt.id}`])
+            const powerBusy = Boolean(actionBusy?.[`power:${olt.id}`])
             const deleteBusy = Boolean(actionBusy?.[`delete:${olt.id}`])
             const localUpdateBusy = Boolean(actionBusy?.[`update:${olt.id}`])
             const snmpBadge = getSnmpBadge(olt, snmpStatus, t)
@@ -951,92 +953,66 @@ export const SettingsPanel = ({
 
                     {/* ── TAB: Intervals ── */}
                     {cardTab === 'intervals' && (
-                      <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
-                        <SectionLabel>{t('Timers')}</SectionLabel>
-                        <div className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800">
-                          
-                          {/* Discovery Row */}
-                          <div className="grid grid-cols-[140px_1fr_auto] items-center py-3 first:pt-0 gap-4">
-                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('ONU discovery')}</span>
-                            
-                            <div className="flex justify-center">
-                                <FieldInput 
-                                    className="w-20 text-center px-1 h-8 text-xs font-medium"
-                                    value={editForm.discovery_interval} 
-                                    onChange={(e) => setEditField('discovery_interval', e.target.value)} 
-                                    placeholder="4h" 
-                                />
+                      <div className="space-y-3 animate-in fade-in slide-in-from-left-1 duration-200">
+                        <div className="space-y-1.5">
+                          <SectionLabel>{t('Timers')}</SectionLabel>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="flex flex-col gap-1">
+                              <FieldLabel>{t('ONU discovery')}</FieldLabel>
+                              <FieldInput
+                                className="text-center h-9 text-[12px] font-black"
+                                value={editForm.discovery_interval}
+                                onChange={(e) => setEditField('discovery_interval', e.target.value)}
+                                placeholder="4h"
+                              />
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={() => handleDiscovery(olt.id)}
-                              disabled={discoveryBusy}
-                              className="h-7 px-3 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
-                            >
-                              {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <Play className="w-3 h-3" />}
-                              <span>{t('Execute')}</span>
-                            </button>
-                          </div>
-
-                          {/* Status Row */}
-                          <div className="grid grid-cols-[140px_1fr_auto] items-center py-3 gap-4">
-                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Status collection')}</span>
-                            
-                            <div className="flex justify-center">
-                                <FieldInput 
-                                    className="w-20 text-center px-1 h-8 text-xs font-medium"
-                                    value={editForm.polling_interval} 
-                                    onChange={(e) => setEditField('polling_interval', e.target.value)} 
-                                    placeholder="5m" 
-                                />
+                            <div className="flex flex-col gap-1">
+                              <FieldLabel>{t('Status collection')}</FieldLabel>
+                              <FieldInput
+                                className="text-center h-9 text-[12px] font-black"
+                                value={editForm.polling_interval}
+                                onChange={(e) => setEditField('polling_interval', e.target.value)}
+                                placeholder="5m"
+                              />
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={() => onRunPolling?.(olt.id)}
-                              disabled={Boolean(actionBusy?.[`polling:${olt.id}`])}
-                              className="h-7 px-3 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
-                            >
-                              {Boolean(actionBusy?.[`polling:${olt.id}`]) ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <Play className="w-3 h-3" />}
-                              <span>{t('Execute')}</span>
-                            </button>
-                          </div>
-
-                          {/* Power Row */}
-                          <div className="grid grid-cols-[140px_1fr_auto] items-center py-3 gap-4">
-                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Power collection')}</span>
-                            
-                            <div className="flex justify-center">
-                                <FieldInput 
-                                    className="w-20 text-center px-1 h-8 text-xs font-medium"
-                                    value={editForm.power_interval} 
-                                    onChange={(e) => setEditField('power_interval', e.target.value)} 
-                                    placeholder="5m" 
-                                />
+                            <div className="flex flex-col gap-1">
+                              <FieldLabel>{t('Power collection')}</FieldLabel>
+                              <FieldInput
+                                className="text-center h-9 text-[12px] font-black"
+                                value={editForm.power_interval}
+                                onChange={(e) => setEditField('power_interval', e.target.value)}
+                                placeholder="5m"
+                              />
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={() => onRefreshPower?.(olt.id)}
-                              disabled={Boolean(actionBusy?.[`power:${olt.id}`])}
-                              className="h-7 px-3 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
-                            >
-                              {Boolean(actionBusy?.[`power:${olt.id}`]) ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <Play className="w-3 h-3" />}
-                              <span>{t('Execute')}</span>
-                            </button>
                           </div>
                         </div>
-                        <p className="text-[9px] font-medium text-slate-400 dark:text-slate-500 pt-3 flex items-center justify-center gap-1.5 border-t border-slate-100 dark:border-slate-800/50 mt-1">
-                          <Clock className="w-3 h-3 text-slate-300 dark:text-slate-600" />
-                          {olt.last_discovery_at ? (
-                             <span>
-                               {t('Last discovery')}: <span className="text-slate-600 dark:text-slate-300 font-bold ml-1">{timeAgo(olt.last_discovery_at, t)}</span>
-                             </span>
-                          ) : (
-                             <span>{t('No discovery yet')}</span>
-                          )}
-                        </p>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleDiscovery(olt.id)}
+                            disabled={discoveryBusy}
+                            className="h-8 w-full px-3 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[10px] font-black uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          >
+                            {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute now')}</span>}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRunPolling?.(olt.id)}
+                            disabled={pollingBusy}
+                            className="h-8 w-full px-3 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[10px] font-black uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          >
+                            {pollingBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute now')}</span>}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRefreshPower?.(olt.id)}
+                            disabled={powerBusy}
+                            className="h-8 w-full px-3 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[10px] font-black uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          >
+                            {powerBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute now')}</span>}
+                          </button>
+                        </div>
                       </div>
                     )}
 

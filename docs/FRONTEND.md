@@ -43,11 +43,14 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Settings Panel Design
 - OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
 - Container width: `max-w-2xl` for compact, focused layout.
-- **Tabs inside expanded card**: `Geral` (General) and `Limiares` (Thresholds).
-- General tab uses three sections with **proportional columns** (`grid-cols-8`):
-  1. **Device section** (`col-span-3 / col-span-3 / col-span-2`): Name, Vendor, Model.
-  2. **Connection section** (`col-span-3 / col-span-3 / col-span-2`): IP, SNMP Community, Port.
-  3. **Intervals section** (`col-span-3 / col-span-3 / col-span-2`): ONU Discovery, Status Collection, Power Collection.
+- **Tabs inside expanded card**: `Device`, `Intervals`, and `Thresholds`.
+- Device tab uses two sections with equal 3-column layout (`grid-cols-6`):
+  1. **Device section** (`col-span-2 / col-span-2 / col-span-2`): Name, Vendor, Model.
+  2. **Connection section** (`col-span-2 / col-span-2 / col-span-2`): IP, SNMP Community, Port.
+- Intervals tab is grouped in a dedicated timer panel with:
+  1. Three side-by-side timer fields (`ONU discovery`, `Status collection`, `Power collection`) with centered duration inputs.
+  2. Minimal visual style (no extra icons or nested timer cards) to reduce visual noise.
+  3. Three action buttons aligned in a single row under the fields, each labeled `Execute now` and mapped by position to discovery, status polling, and power refresh.
 - Thresholds tab configures power color-coding:
   - **ONU RX Power**: Normal (dBm) and Critical (dBm) breakpoints.
   - **OLT RX Power**: Normal (dBm) and Critical (dBm) breakpoints.
@@ -56,7 +59,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - Stored in `localStorage` with global defaults and per-OLT overrides.
   - Auto-saves when all values are valid; `Reset to defaults` clears per-OLT overrides.
   - Color legend (dots + range text) updates live as thresholds change.
-- Action bar always visible at bottom: Delete + last-discovery timestamp (left); Run Discovery with Play icon (right); Save + Cancel (right, shown only when general form is dirty).
+- Action bar at card bottom keeps last-discovery timestamp (left) and Save/Cancel controls (right, shown only when form is dirty).
 - Interval inputs accept **Zabbix-style durations**: bare numbers (seconds), or suffixed values (`30s`, `5m`, `1h`, `4h`, `1d`).
   - `parseDuration()` converts input string → seconds; `formatDuration()` converts seconds → human-readable string.
   - Form state stores human-readable strings; save handlers convert back to `discovery_interval_minutes` / `polling_interval_seconds` / `power_interval_seconds` for the API.
