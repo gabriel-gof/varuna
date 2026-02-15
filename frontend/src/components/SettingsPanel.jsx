@@ -290,51 +290,58 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
        </div>
 
        {/* Visual Interactive Bar */}
-       <div className="relative pt-6 pb-2 px-1">
-          {/* Bar Background with Symmetrical Segments */}
+       <div className="relative pt-8 pb-6 px-2">
+          {/* Bar Background: Green -> Yellow -> Red */}
           <div className="h-2 w-full rounded-full flex overflow-hidden">
-             {/* Normal Zone */}
+             {/* Normal Zone (>= good) */}
              <div className="flex-1 bg-emerald-400 relative group/bar-normal">
                <div className="absolute inset-0 bg-emerald-300 opacity-0 group-hover/bar-normal:opacity-100 transition-opacity" />
              </div>
              
-             {/* Warning Zone (Middle) */}
+             {/* Warning Zone */}
              <div className="flex-1 bg-yellow-400 relative group/bar-warn">
                <div className="absolute inset-0 bg-yellow-300 opacity-0 group-hover/bar-warn:opacity-100 transition-opacity" />
              </div>
 
-             {/* Critical Zone */}
+             {/* Critical Zone (< bad) */}
              <div className="flex-1 bg-rose-400 relative group/bar-crit">
                <div className="absolute inset-0 bg-rose-300 opacity-0 group-hover/bar-crit:opacity-100 transition-opacity" />
              </div>
           </div>
 
-          {/* Marker 1: Between Normal and Warning (The "Good" Threshold) */}
-          <div className="absolute top-0 bottom-0 left-1/3 -ml-px flex flex-col items-center justify-center z-10 pointer-events-none">
+          {/* Labels BELOW the bar */}
+          <div className="absolute top-12 left-0 w-full flex text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">
+             <div className="flex-1 text-center text-emerald-600 dark:text-emerald-400">{t('Good')}</div>
+             <div className="flex-1 text-center text-yellow-600 dark:text-yellow-400">{t('Warning')}</div>
+             <div className="flex-1 text-center text-rose-500 dark:text-rose-400">{t('Critical')}</div>
+          </div>
+
+          {/* Marker 1: The "Good" Threshold (Separates Green/Yellow) */}
+          <div className="absolute top-0 bottom-8 left-1/3 -ml-px flex flex-col items-center justify-end z-10 pointer-events-none">
              {/* Label Value Floating Above */}
-             <div className="mb-3 text-[11px] font-black text-emerald-600 dark:text-emerald-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded shadow-sm border border-emerald-100 dark:border-emerald-500/30 transform -translate-y-1">
+             <div className="mb-2 text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-emerald-100 dark:border-emerald-500/30">
                 {good}
              </div>
              {/* The Tick Line */}
-             <div className="w-0.5 h-full bg-white dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 z-10"></div>
+             <div className="w-0.5 h-3.5 bg-slate-300 dark:bg-slate-600 z-10"></div>
           </div>
 
-          {/* Marker 2: Between Warning and Critical (The "Bad" Threshold) */}
-          <div className="absolute top-0 bottom-0 left-2/3 -ml-px flex flex-col items-center justify-center z-10 pointer-events-none">
+          {/* Marker 2: The "Bad" Threshold (Separates Yellow/Red) */}
+          <div className="absolute top-0 bottom-8 left-2/3 -ml-px flex flex-col items-center justify-end z-10 pointer-events-none">
              {/* Label Value Floating Above */}
-             <div className="mb-3 text-[11px] font-black text-rose-500 dark:text-rose-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded shadow-sm border border-rose-100 dark:border-rose-500/30 transform -translate-y-1">
+             <div className="mb-2 text-[10px] font-black text-rose-500 dark:text-rose-400 bg-white dark:bg-slate-900 px-1.5 py-px rounded shadow-sm border border-rose-100 dark:border-rose-500/30">
                 {bad}
              </div>
              {/* The Tick Line */}
-             <div className="w-0.5 h-full bg-white dark:bg-slate-900 ring-1 ring-slate-200 dark:ring-slate-700 z-10"></div>
+             <div className="w-0.5 h-3.5 bg-slate-300 dark:bg-slate-600 z-10"></div>
           </div>
        </div>
 
-       {/* Input Controls - Driven by the visual metaphors */}
+       {/* Input Controls - Smaller Pills */}
        <div className="grid grid-cols-2 gap-4">
           {/* Normal Input */}
           <div className="relative group">
-             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1.5 block flex items-center gap-1.5">
+             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
                 {t('Normal limit')}
              </label>
@@ -344,18 +351,19 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    step="0.5"
                    value={good}
                    onChange={(e) => onChange(goodKey, e.target.value)}
-                   className="w-full h-9 pl-3 pr-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
+                   className="w-full h-8 pl-8 pr-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
                               text-[11px] font-bold text-slate-700 dark:text-slate-200
                               focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all"
                    placeholder="-25"
                 />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">dBm</span>
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-black text-emerald-500">&ge;</span>
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">dBm</span>
              </div>
           </div>
 
           {/* Critical Input */}
           <div className="relative group">
-             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1.5 block flex items-center gap-1.5">
+             <label className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-1 block flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div>
                 {t('Critical limit')}
              </label>
@@ -365,27 +373,15 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    step="0.5"
                    value={bad}
                    onChange={(e) => onChange(badKey, e.target.value)}
-                   className="w-full h-9 pl-3 pr-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40
+                   className="w-full h-8 pl-8 pr-3 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40
                               text-[11px] font-bold text-slate-700 dark:text-slate-200 
                               focus:bg-white dark:focus:bg-slate-800 focus:border-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none transition-all"
                    placeholder="-28"
                 />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">dBm</span>
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] font-black text-rose-500">&lt;</span>
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400">dBm</span>
              </div>
           </div>
-       </div>
-    
-       {/* Descriptive Legend */}
-       <div className="flex items-center justify-between px-1">
-          <span className="text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
-             {t('Signal')} &ge; {good}
-          </span>
-          <span className="text-[9px] font-medium text-yellow-600 dark:text-yellow-400">
-            {t('Warning zone')}
-          </span>
-          <span className="text-[9px] font-medium text-rose-500 dark:text-rose-400">
-             {t('Signal')} &lt; {bad}
-          </span>
        </div>
     </div>
   )
@@ -928,7 +924,10 @@ export const SettingsPanel = ({
                     {cardTab === 'thresholds' && thresholdForm && (
                       <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
                          {/* Two columns: ONU RX | OLT RX */}
-                         <div className="grid grid-cols-2 gap-4">
+                         <div className="grid grid-cols-2 gap-4 relative">
+                            {/* Vertical Divider */}
+                            <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
+                            
                             <ThresholdControl 
                                 label={t('ONU RX Power')}
                                 goodKey="onu_rx_good"
