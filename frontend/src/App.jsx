@@ -491,6 +491,30 @@ const App = () => {
     )
   }
 
+  const runPolling = async (oltId) => {
+    await runSettingsAction(
+      `polling:${oltId}`,
+      async () => {
+        await api.post(`/olts/${oltId}/run_polling/`)
+        await fetchOlts()
+        return true
+      },
+      t('Polling executed successfully')
+    )
+  }
+
+  const refreshPower = async (oltId) => {
+    await runSettingsAction(
+      `power:${oltId}`,
+      async () => {
+        await api.post(`/olts/${oltId}/refresh_power/`)
+        await fetchOlts()
+        return true
+      },
+      t('Power refresh executed successfully')
+    )
+  }
+
   const selectedPonData = useMemo(() => {
     if (!selectedPonId) return null
     return findPonById(olts, selectedPonId)
@@ -1063,6 +1087,8 @@ const App = () => {
               onUpdateOlt={updateOlt}
               onDeleteOlt={deleteOlt}
               onRunDiscovery={runDiscovery}
+              onRunPolling={runPolling}
+              onRefreshPower={refreshPower}
               actionBusy={settingsActionBusy}
               snmpStatus={snmpStatus}
               oltHealthById={oltHealthById}

@@ -5,6 +5,20 @@ import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, clearOltThresh
 
 const MAX_OLT_NAME = 12
 
+const timeAgo = (dateStr, t) => {
+  if (!dateStr) return '-'
+  const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return dateStr
+  const seconds = Math.floor((new Date() - date) / 1000)
+  if (seconds < 60) return t('just now')
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} ${t('min ago')}`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} ${t('h ago')}`
+  const days = Math.floor(hours / 24)
+  return `${days} ${t('d ago')}`
+}
+
 const buildInitialForm = (vendorProfiles = []) => {
   const firstVendor = vendorProfiles[0]?.vendor || ''
   const firstModel = vendorProfiles.find((item) => item.vendor === firstVendor)
@@ -203,7 +217,7 @@ const getSnmpBadge = (olt, snmpStatuses, t) => {
 
 /* ─── OLT Card header ─── */
 
-const OltCard = ({ olt, isSelected, health, onSelect, resolvedVendor, t, children }) => {
+const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, resolvedVendor, t, children }) => {
   const total = Number(olt.onu_count || 0)
   const online = Number(olt.online_count || 0)
   const offline = Number(olt.offline_count || 0)
@@ -212,7 +226,7 @@ const OltCard = ({ olt, isSelected, health, onSelect, resolvedVendor, t, childre
   return (
     <div className={`
       w-full transition-all duration-300 bg-white dark:bg-slate-900
-      rounded-[14px] border
+      rounded-[14px] border relative
       ${isSelected ? health.borderActive : health.borderIdle}
     `}>
       <div
@@ -268,6 +282,21 @@ const OltCard = ({ olt, isSelected, health, onSelect, resolvedVendor, t, childre
         </div>
       </div>
 
+      {/* Subtle delete icon - shown on hover */}
+      {isSelected && (
+        <div className="absolute top-2 right-2 z-20">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDelete?.(olt.id) }}
+            disabled={deleteBusy}
+            className="w-6 h-6 rounded-md flex items-center justify-center text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            title={t('Remove OLT')}
+          >
+            {deleteBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+          </button>
+        </div>
+      )}
+
       {isSelected && children && (
         <div className="px-3 pb-3 animate-in slide-in-from-top-1 duration-200 cursor-default">
           {children}
@@ -280,8 +309,26 @@ const OltCard = ({ olt, isSelected, health, onSelect, resolvedVendor, t, childre
 /* ─── Threshold Control Component ─── */
 
 const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
-  const good = values[goodKey]
-  const bad = values[badKey]
+  const good = Number(values[goodKey])
+  const bad = Number(values[badKey])
+
+  const handleGoodChange = (e) => {
+    const val = Number(e.target.value)
+    onChange(goodKey, val)
+    // Ensure good is always > bad (at least 1dB diff)
+    if (val <= bad) {
+       onChange(badKey, val - 1)
+    }
+  }
+
+  const handleBadChange = (e) => {
+    const val = Number(e.target.value)
+    onChange(badKey, val)
+    // Ensure bad is always < good (at least 1dB diff)
+    if (val >= good) {
+       onChange(goodKey, val + 1)
+    }
+  }
   
   return (
     <div className="flex flex-col gap-4">
@@ -350,7 +397,7 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    type="number"
                    step="0.5"
                    value={good}
-                   onChange={(e) => onChange(goodKey, e.target.value)}
+                   onChange={handleGoodChange}
                    className="w-full h-8 pl-8 pr-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
                               text-[11px] font-bold text-slate-700 dark:text-slate-200
                               focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all
@@ -373,7 +420,7 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    type="number"
                    step="0.5"
                    value={bad}
-                   onChange={(e) => onChange(badKey, e.target.value)}
+                   onChange={handleBadChange}
                    className="w-full h-8 pl-8 pr-8 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40
                               text-[11px] font-bold text-slate-700 dark:text-slate-200 
                               focus:bg-white dark:focus:bg-slate-800 focus:border-rose-400 focus:ring-2 focus:ring-rose-500/20 outline-none transition-all
@@ -404,6 +451,8 @@ export const SettingsPanel = ({
   onUpdateOlt,
   onDeleteOlt,
   onRunDiscovery,
+  onRunPolling,
+  onRefreshPower,
   actionBusy,
   snmpStatus = {},
   oltHealthById = {}
@@ -794,6 +843,8 @@ export const SettingsPanel = ({
                 isSelected={isSelected}
                 health={health}
                 onSelect={setSelectedOltId}
+                onDelete={handleDelete}
+                deleteBusy={deleteBusy}
                 resolvedVendor={resolvedVendor}
                 t={t}
               >
@@ -900,24 +951,91 @@ export const SettingsPanel = ({
 
                     {/* ── TAB: Intervals ── */}
                     {cardTab === 'intervals' && (
-                      <div className="space-y-2 animate-in fade-in slide-in-from-left-1 duration-200">
+                      <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
                         <SectionLabel>{t('Timers')}</SectionLabel>
-                        <div className="grid grid-cols-6 gap-3">
-                          <div className="col-span-2 flex flex-col gap-1">
-                            <FieldLabel>{t('ONU discovery')}</FieldLabel>
-                            <FieldInput value={editForm.discovery_interval} onChange={(e) => setEditField('discovery_interval', e.target.value)} placeholder="4h" />
+                        <div className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800">
+                          
+                          {/* Discovery Row */}
+                          <div className="grid grid-cols-[140px_1fr_auto] items-center py-3 first:pt-0 gap-4">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('ONU discovery')}</span>
+                            
+                            <div className="flex justify-center">
+                                <FieldInput 
+                                    className="w-20 text-center px-1 h-8 text-xs font-medium"
+                                    value={editForm.discovery_interval} 
+                                    onChange={(e) => setEditField('discovery_interval', e.target.value)} 
+                                    placeholder="4h" 
+                                />
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDiscovery(olt.id)}
+                              disabled={discoveryBusy}
+                              className="h-7 px-3 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
+                            >
+                              {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <Play className="w-3 h-3" />}
+                              <span>{t('Execute')}</span>
+                            </button>
                           </div>
-                          <div className="col-span-2 flex flex-col gap-1">
-                            <FieldLabel>{t('Status collection')}</FieldLabel>
-                            <FieldInput value={editForm.polling_interval} onChange={(e) => setEditField('polling_interval', e.target.value)} placeholder="5m" />
+
+                          {/* Status Row */}
+                          <div className="grid grid-cols-[140px_1fr_auto] items-center py-3 gap-4">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Status collection')}</span>
+                            
+                            <div className="flex justify-center">
+                                <FieldInput 
+                                    className="w-20 text-center px-1 h-8 text-xs font-medium"
+                                    value={editForm.polling_interval} 
+                                    onChange={(e) => setEditField('polling_interval', e.target.value)} 
+                                    placeholder="5m" 
+                                />
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => onRunPolling?.(olt.id)}
+                              disabled={Boolean(actionBusy?.[`polling:${olt.id}`])}
+                              className="h-7 px-3 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
+                            >
+                              {Boolean(actionBusy?.[`polling:${olt.id}`]) ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <Play className="w-3 h-3" />}
+                              <span>{t('Execute')}</span>
+                            </button>
                           </div>
-                          <div className="col-span-2 flex flex-col gap-1">
-                            <FieldLabel>{t('Power collection')}</FieldLabel>
-                            <FieldInput value={editForm.power_interval} onChange={(e) => setEditField('power_interval', e.target.value)} placeholder="5m" />
+
+                          {/* Power Row */}
+                          <div className="grid grid-cols-[140px_1fr_auto] items-center py-3 gap-4">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Power collection')}</span>
+                            
+                            <div className="flex justify-center">
+                                <FieldInput 
+                                    className="w-20 text-center px-1 h-8 text-xs font-medium"
+                                    value={editForm.power_interval} 
+                                    onChange={(e) => setEditField('power_interval', e.target.value)} 
+                                    placeholder="5m" 
+                                />
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => onRefreshPower?.(olt.id)}
+                              disabled={Boolean(actionBusy?.[`power:${olt.id}`])}
+                              className="h-7 px-3 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
+                            >
+                              {Boolean(actionBusy?.[`power:${olt.id}`]) ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <Play className="w-3 h-3" />}
+                              <span>{t('Execute')}</span>
+                            </button>
                           </div>
                         </div>
-                        <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 pt-1">
-                          {t('Duration format')}: 300, 5m, 1h, 4h, 1d
+                        <p className="text-[9px] font-medium text-slate-400 dark:text-slate-500 pt-3 flex items-center justify-center gap-1.5 border-t border-slate-100 dark:border-slate-800/50 mt-1">
+                          <Clock className="w-3 h-3 text-slate-300 dark:text-slate-600" />
+                          {olt.last_discovery_at ? (
+                             <span>
+                               {t('Last discovery')}: <span className="text-slate-600 dark:text-slate-300 font-bold ml-1">{timeAgo(olt.last_discovery_at, t)}</span>
+                             </span>
+                          ) : (
+                             <span>{t('No discovery yet')}</span>
+                          )}
                         </p>
                       </div>
                     )}
@@ -956,39 +1074,16 @@ export const SettingsPanel = ({
 
                     {/* ── Action bar ── */}
                     <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800/30">
-                      {/* Left: destructive + last discovery */}
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(olt.id)}
-                          disabled={deleteBusy}
-                          className="h-8 px-3 rounded-[8px] text-[10px] font-black uppercase tracking-wider text-rose-400 dark:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap"
-                        >
-                          {deleteBusy ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                          {t('Remove OLT')}
-                        </button>
+                      {/* Left: info */}
+                      <div className="flex items-center gap-1.5">
+                        <Clock className="w-3 h-3 text-slate-300 dark:text-slate-600" />
+                        <span className="text-[9px] font-semibold text-slate-400 dark:text-slate-500">
+                          {t('Last discovery')}: {formatRelativeTime(olt.last_discovery_at, t)}
+                        </span>
                       </div>
 
-                      {/* Right: contextual actions */}
+                      {/* Right: save actions */}
                       <div className="flex items-center gap-2">
-                         {/* Redesigned Discovery Button */}
-                        <button
-                          type="button"
-                          onClick={() => handleDiscovery(olt.id)}
-                          disabled={discoveryBusy}
-                          className="h-8 px-3.5 rounded-[8px] border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 text-[10px] font-black uppercase tracking-wider flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap group"
-                        >
-                             {discoveryBusy ? (
-                                 <RefreshCcw className="w-3.5 h-3.5 animate-spin text-emerald-500" />
-                             ) : (
-                                 <span className="flex relative w-2 h-2">
-                                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                                 </span>
-                             )}
-                            {t('Run discovery')}
-                        </button>
-
                         {/* Save — only visible when form is dirty */}
                         {dirty && (
                           <div className="flex items-center gap-1.5 animate-in fade-in duration-200">

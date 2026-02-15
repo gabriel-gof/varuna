@@ -176,7 +176,9 @@ const resources = {
       Critical: 'Critical',
       Reset: 'Reset',
       'Reset to defaults': 'Reset to defaults',
-      'Duration format': 'Format'
+      'Duration format': 'Format',
+      Execute: 'Execute',
+      'Power refresh executed successfully': 'Power refresh executed successfully'
     }
   },
   pt: {
@@ -353,7 +355,9 @@ const resources = {
       Critical: 'Crítico',
       Reset: 'Restaurar',
       'Reset to defaults': 'Restaurar padrões',
-      'Duration format': 'Formato'
+      'Duration format': 'Formato',
+      Execute: 'Executar',
+      'Power refresh executed successfully': 'Potência atualizada com sucesso'
     }
   }
 }
