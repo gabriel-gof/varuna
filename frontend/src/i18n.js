@@ -178,6 +178,7 @@ const resources = {
       'Reset to defaults': 'Reset to defaults',
       'Duration format': 'Format',
       Execute: 'Execute',
+      'Execute now': 'Execute now',
       'Power refresh executed successfully': 'Power refresh executed successfully'
     }
   },
@@ -357,6 +358,7 @@ const resources = {
       'Reset to defaults': 'Restaurar padrões',
       'Duration format': 'Formato',
       Execute: 'Executar',
+      'Execute now': 'EXECUTAR AGORA',
       'Power refresh executed successfully': 'Potência atualizada com sucesso'
     }
   }

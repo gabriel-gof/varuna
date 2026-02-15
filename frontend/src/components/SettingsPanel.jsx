@@ -853,22 +853,24 @@ export const SettingsPanel = ({
                 {isSelected && editForm && (
                   <div className="pt-3 space-y-4 border-t border-slate-100 dark:border-slate-800/50">
 
-                    {/* ── Tab bar ── */}
-                    <div className="flex gap-1 mb-2">
-                      {['device', 'intervals', 'thresholds'].map((tab) => (
-                        <button
-                          key={tab}
-                          type="button"
-                          onClick={() => setCardTab(tab)}
-                          className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
-                            cardTab === tab
-                              ? 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
-                              : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
-                          }`}
-                        >
-                          {t(tab === 'device' ? 'Device' : tab === 'intervals' ? 'Intervals' : 'Thresholds')}
-                        </button>
-                      ))}
+                    {/* ── Tab bar (Segmented Toggle) ── */}
+                    <div className="flex justify-start mb-4">
+                      <div className="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                        {['device', 'intervals', 'thresholds'].map((tab) => (
+                          <button
+                            key={tab}
+                            type="button"
+                            onClick={() => setCardTab(tab)}
+                            className={`px-4 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${
+                              cardTab === tab
+                                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
+                                : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
+                            }`}
+                          >
+                            {t(tab === 'device' ? 'Device' : tab === 'intervals' ? 'Intervals' : 'Thresholds')}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
                     {/* ── Fixed height content area ── */}
@@ -953,32 +955,40 @@ export const SettingsPanel = ({
 
                     {/* ── TAB: Intervals ── */}
                     {cardTab === 'intervals' && (
-                      <div className="space-y-3 animate-in fade-in slide-in-from-left-1 duration-200">
-                        <div className="space-y-1.5">
-                          <SectionLabel>{t('Timers')}</SectionLabel>
+                      <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-300 px-1 pt-2">
+                        <div className="space-y-3">
+                          <div className="flex justify-center">
+                            <SectionLabel>{t('Timers')}</SectionLabel>
+                          </div>
                           <div className="grid grid-cols-3 gap-3">
-                            <div className="flex flex-col gap-1">
-                              <FieldLabel>{t('ONU discovery')}</FieldLabel>
+                            <div className="group flex flex-col items-center gap-1.5">
+                              <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase overflow-hidden text-ellipsis whitespace-nowrap transition-colors group-focus-within:text-emerald-500/80 text-center w-full">
+                                {t('ONU discovery')}
+                              </label>
                               <FieldInput
-                                className="text-center h-9 text-[12px] font-black"
+                                className="text-center h-8 !w-20 text-xs font-bold bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700/50 focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 transition-all rounded-lg shadow-sm placeholder:font-medium placeholder:text-slate-300"
                                 value={editForm.discovery_interval}
                                 onChange={(e) => setEditField('discovery_interval', e.target.value)}
                                 placeholder="4h"
                               />
                             </div>
-                            <div className="flex flex-col gap-1">
-                              <FieldLabel>{t('Status collection')}</FieldLabel>
+                            <div className="group flex flex-col items-center gap-1.5">
+                              <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase overflow-hidden text-ellipsis whitespace-nowrap transition-colors group-focus-within:text-emerald-500/80 text-center w-full">
+                                {t('Status collection')}
+                              </label>
                               <FieldInput
-                                className="text-center h-9 text-[12px] font-black"
+                                className="text-center h-8 !w-20 text-xs font-bold bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700/50 focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 transition-all rounded-lg shadow-sm placeholder:font-medium placeholder:text-slate-300"
                                 value={editForm.polling_interval}
                                 onChange={(e) => setEditField('polling_interval', e.target.value)}
                                 placeholder="5m"
                               />
                             </div>
-                            <div className="flex flex-col gap-1">
-                              <FieldLabel>{t('Power collection')}</FieldLabel>
+                            <div className="group flex flex-col items-center gap-1.5">
+                              <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase overflow-hidden text-ellipsis whitespace-nowrap transition-colors group-focus-within:text-emerald-500/80 text-center w-full">
+                                {t('Power collection')}
+                              </label>
                               <FieldInput
-                                className="text-center h-9 text-[12px] font-black"
+                                className="text-center h-8 !w-20 text-xs font-bold bg-slate-50 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700/50 focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 transition-all rounded-lg shadow-sm placeholder:font-medium placeholder:text-slate-300"
                                 value={editForm.power_interval}
                                 onChange={(e) => setEditField('power_interval', e.target.value)}
                                 placeholder="5m"
@@ -987,31 +997,37 @@ export const SettingsPanel = ({
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleDiscovery(olt.id)}
-                            disabled={discoveryBusy}
-                            className="h-8 w-full px-3 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[10px] font-black uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                          >
-                            {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute now')}</span>}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onRunPolling?.(olt.id)}
-                            disabled={pollingBusy}
-                            className="h-8 w-full px-3 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[10px] font-black uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                          >
-                            {pollingBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute now')}</span>}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onRefreshPower?.(olt.id)}
-                            disabled={powerBusy}
-                            className="h-8 w-full px-3 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[10px] font-black uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                          >
-                            {powerBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute now')}</span>}
-                          </button>
+                        <div className="grid grid-cols-3 gap-3 pt-1">
+                          <div className="flex justify-center">
+                            <button
+                              type="button"
+                              onClick={() => handleDiscovery(olt.id)}
+                              disabled={discoveryBusy}
+                              className="h-8 w-24 rounded-lg border border-slate-200/60 dark:border-slate-700/60 bg-white dark:bg-slate-800/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[9px] font-black uppercase tracking-[0.10em] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-emerald-500/10 active:scale-[0.98]"
+                            >
+                              {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute')}</span>}
+                            </button>
+                          </div>
+                          <div className="flex justify-center">
+                            <button
+                              type="button"
+                              onClick={() => onRunPolling?.(olt.id)}
+                              disabled={pollingBusy}
+                              className="h-8 w-24 rounded-lg border border-slate-200/60 dark:border-slate-700/60 bg-white dark:bg-slate-800/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[9px] font-black uppercase tracking-[0.10em] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-emerald-500/10 active:scale-[0.98]"
+                            >
+                              {pollingBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute')}</span>}
+                            </button>
+                          </div>
+                          <div className="flex justify-center">
+                            <button
+                              type="button"
+                              onClick={() => onRefreshPower?.(olt.id)}
+                              disabled={powerBusy}
+                              className="h-8 w-24 rounded-lg border border-slate-200/60 dark:border-slate-700/60 bg-white dark:bg-slate-800/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 hover:border-emerald-200 dark:hover:border-emerald-500/30 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center justify-center text-[9px] font-black uppercase tracking-[0.10em] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-emerald-500/10 active:scale-[0.98]"
+                            >
+                              {powerBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Execute')}</span>}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )}
