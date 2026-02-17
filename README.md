@@ -39,6 +39,10 @@ cd /Users/gabriel/Documents/varuna
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
+Dev URLs:
+- Frontend: http://localhost:4000
+- Backend API: http://localhost:8000/api/
+
 ## Migration Reset (Hard Refactor)
 Backend migrations were reset to a clean `topology` app history.
 

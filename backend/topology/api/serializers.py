@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework import serializers
 
 from topology.models import OLTPON, OLT, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
@@ -285,6 +288,14 @@ class OLTSerializer(serializers.ModelSerializer):
     Serializer for OLT (standard, without nested topology)
     """
 
+    MAX_DISCOVERY_INTERVAL_MINUTES = 7 * 24 * 60
+    MAX_POLLING_INTERVAL_SECONDS = 7 * 24 * 60 * 60
+    MAX_POWER_INTERVAL_SECONDS = 7 * 24 * 60 * 60
+
+    name = serializers.CharField(max_length=100, trim_whitespace=True)
+    vendor_profile = serializers.PrimaryKeyRelatedField(
+        queryset=VendorProfile.objects.filter(is_active=True)
+    )
     vendor_display = serializers.SerializerMethodField()
     model_display = serializers.CharField(source='vendor_profile.model_name', read_only=True)
     vendor_profile_name = serializers.CharField(source='vendor_profile.model_name', read_only=True)
@@ -371,7 +382,109 @@ class OLTSerializer(serializers.ModelSerializer):
             return int(obj.offline_count)
         return ONU.objects.filter(olt=obj, is_active=True).exclude(status=ONU.STATUS_ONLINE).count()
 
-    def create(self, validated_data):
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not name:
+            raise serializers.ValidationError('Name cannot be empty.')
+
+        queryset = OLT.objects.filter(name=name)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.filter(is_active=True).exists():
+            raise serializers.ValidationError('An active OLT with this name already exists.')
+        return name
+
+    def validate_protocol(self, value):
+        if value != OLT.PROTOCOL_SNMP:
+            raise serializers.ValidationError('Only SNMP protocol is supported.')
+        return value
+
+    def validate_snmp_community(self, value):
+        community = str(value or '').strip()
+        if not community:
+            raise serializers.ValidationError('SNMP community cannot be empty.')
+        return community
+
+    def validate_snmp_port(self, value):
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('SNMP port must be an integer.')
+        if port < 1 or port > 65535:
+            raise serializers.ValidationError('SNMP port must be between 1 and 65535.')
+        return port
+
+    def validate_snmp_version(self, value):
+        version = str(value or '').strip().lower()
+        if version != 'v2c':
+            raise serializers.ValidationError('Only SNMP v2c is currently supported.')
+        return version
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if not self.instance:
+            attrs = self._apply_vendor_defaults(attrs)
+
+        discovery_interval = attrs.get(
+            'discovery_interval_minutes',
+            getattr(self.instance, 'discovery_interval_minutes', None),
+        )
+        polling_interval = attrs.get(
+            'polling_interval_seconds',
+            getattr(self.instance, 'polling_interval_seconds', None),
+        )
+        power_interval = attrs.get(
+            'power_interval_seconds',
+            getattr(self.instance, 'power_interval_seconds', None),
+        )
+
+        self._validate_interval_ranges(
+            discovery_interval=discovery_interval,
+            polling_interval=polling_interval,
+            power_interval=power_interval,
+        )
+        return attrs
+
+    def _validate_interval_ranges(self, discovery_interval, polling_interval, power_interval):
+        if discovery_interval is None or int(discovery_interval) <= 0:
+            raise serializers.ValidationError(
+                {'discovery_interval_minutes': 'Discovery interval must be greater than 0 minutes.'}
+            )
+        if polling_interval is None or int(polling_interval) <= 0:
+            raise serializers.ValidationError(
+                {'polling_interval_seconds': 'Polling interval must be greater than 0 seconds.'}
+            )
+        if power_interval is None or int(power_interval) <= 0:
+            raise serializers.ValidationError(
+                {'power_interval_seconds': 'Power interval must be greater than 0 seconds.'}
+            )
+
+        if int(discovery_interval) > self.MAX_DISCOVERY_INTERVAL_MINUTES:
+            raise serializers.ValidationError(
+                {
+                    'discovery_interval_minutes': (
+                        f'Discovery interval must be <= {self.MAX_DISCOVERY_INTERVAL_MINUTES} minutes.'
+                    )
+                }
+            )
+        if int(polling_interval) > self.MAX_POLLING_INTERVAL_SECONDS:
+            raise serializers.ValidationError(
+                {
+                    'polling_interval_seconds': (
+                        f'Polling interval must be <= {self.MAX_POLLING_INTERVAL_SECONDS} seconds.'
+                    )
+                }
+            )
+        if int(power_interval) > self.MAX_POWER_INTERVAL_SECONDS:
+            raise serializers.ValidationError(
+                {
+                    'power_interval_seconds': (
+                        f'Power interval must be <= {self.MAX_POWER_INTERVAL_SECONDS} seconds.'
+                    )
+                }
+            )
+
+    def _apply_vendor_defaults(self, validated_data):
         vendor_profile = validated_data.get('vendor_profile')
         defaults_cfg = {}
         if vendor_profile and isinstance(vendor_profile.default_thresholds, dict):
@@ -389,8 +502,83 @@ class OLTSerializer(serializers.ModelSerializer):
             validated_data['power_interval_seconds'] = int(
                 defaults_cfg.get('power_interval_seconds', 300)
             )
+        return validated_data
 
+    def _reset_runtime_state(self, olt):
+        olt.snmp_reachable = None
+        olt.last_snmp_check_at = None
+        olt.last_snmp_error = ''
+        olt.snmp_failure_count = 0
+        olt.next_discovery_at = None
+        olt.discovery_healthy = True
+        olt.next_poll_at = None
+        return {
+            'snmp_reachable',
+            'last_snmp_check_at',
+            'last_snmp_error',
+            'snmp_failure_count',
+            'next_discovery_at',
+            'discovery_healthy',
+            'next_poll_at',
+        }
+
+    def create(self, validated_data):
+        validated_data = self._apply_vendor_defaults(validated_data)
+        existing = OLT.objects.filter(name=validated_data.get('name'), is_active=False).first()
+        if existing:
+            for field, value in validated_data.items():
+                setattr(existing, field, value)
+            existing.is_active = True
+            reset_fields = self._reset_runtime_state(existing)
+            update_fields = set(validated_data.keys()) | {'is_active'} | reset_fields
+            existing.save(update_fields=sorted(update_fields))
+            return existing
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        tracked_connectivity_fields = {
+            'vendor_profile',
+            'protocol',
+            'ip_address',
+            'snmp_port',
+            'snmp_community',
+            'snmp_version',
+        }
+        tracked_interval_fields = {
+            'discovery_interval_minutes',
+            'polling_interval_seconds',
+        }
+        connectivity_changed = any(
+            field in validated_data and validated_data[field] != getattr(instance, field)
+            for field in tracked_connectivity_fields
+        )
+        interval_changed = any(
+            field in validated_data and validated_data[field] != getattr(instance, field)
+            for field in tracked_interval_fields
+        )
+
+        olt = super().update(instance, validated_data)
+        extra_update_fields = set()
+
+        if connectivity_changed:
+            extra_update_fields |= self._reset_runtime_state(olt)
+        elif interval_changed:
+            if 'discovery_interval_minutes' in validated_data and olt.last_discovery_at:
+                olt.next_discovery_at = olt.last_discovery_at + timedelta(
+                    minutes=olt.discovery_interval_minutes
+                )
+                extra_update_fields.add('next_discovery_at')
+            if 'polling_interval_seconds' in validated_data and olt.last_poll_at:
+                olt.next_poll_at = olt.last_poll_at + timedelta(
+                    seconds=olt.polling_interval_seconds
+                )
+                extra_update_fields.add('next_poll_at')
+
+        if extra_update_fields:
+            olt.updated_at = timezone.now()
+            extra_update_fields.add('updated_at')
+            olt.save(update_fields=sorted(extra_update_fields))
+        return olt
 
 
 class OLTSlotSerializer(serializers.ModelSerializer):

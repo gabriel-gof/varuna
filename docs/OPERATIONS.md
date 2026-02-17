@@ -22,6 +22,10 @@ cd /Users/gabriel/Documents/varuna
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
+Development service URLs:
+- Frontend: `http://localhost:4000`
+- Backend API: `http://localhost:8000/api/`
+
 Production:
 ```bash
 cd /Users/gabriel/Documents/varuna

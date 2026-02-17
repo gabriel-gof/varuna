@@ -2,8 +2,10 @@ import logging
 from io import StringIO
 
 from django.core.management import call_command
+from django.db import transaction
 from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -146,6 +148,104 @@ class OLTViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
 
+    def perform_create(self, serializer):
+        olt = serializer.save()
+        cache_service.invalidate_olt_cache(olt.id)
+
+    def perform_update(self, serializer):
+        tracked_fields = {
+            'vendor_profile_id',
+            'protocol',
+            'ip_address',
+            'snmp_port',
+            'snmp_community',
+            'snmp_version',
+            'discovery_interval_minutes',
+            'polling_interval_seconds',
+            'power_interval_seconds',
+            'discovery_enabled',
+            'polling_enabled',
+        }
+        current = serializer.instance
+        before = {field: getattr(current, field) for field in tracked_fields}
+        olt = serializer.save()
+        if any(before[field] != getattr(olt, field) for field in tracked_fields):
+            cache_service.invalidate_olt_cache(olt.id)
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Soft-delete OLT and deactivate discovered topology to preserve history.
+        """
+        olt = self.get_object()
+        if not olt.is_active:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        now = timezone.now()
+        with transaction.atomic():
+            OLT.objects.filter(id=olt.id).update(
+                is_active=False,
+                discovery_enabled=False,
+                polling_enabled=False,
+                next_discovery_at=None,
+                next_poll_at=None,
+            )
+            ONULog.objects.filter(onu__olt=olt, offline_until__isnull=True).update(offline_until=now)
+            ONU.objects.filter(olt=olt, is_active=True).update(
+                is_active=False,
+                status=ONU.STATUS_UNKNOWN,
+            )
+            OLTPON.objects.filter(olt=olt, is_active=True).update(is_active=False)
+            OLTSlot.objects.filter(olt=olt, is_active=True).update(is_active=False)
+
+        cache_service.invalidate_olt_cache(olt.id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _validate_vendor_action(self, olt, *, capability_field, required_template_paths, action_name):
+        profile = olt.vendor_profile
+        if not profile.is_active:
+            return Response(
+                {
+                    'status': 'error',
+                    'olt_id': olt.id,
+                    'detail': 'Vendor profile is inactive.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if capability_field and not getattr(profile, capability_field, False):
+            return Response(
+                {
+                    'status': 'error',
+                    'olt_id': olt.id,
+                    'detail': f'Vendor profile does not support {action_name}.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        oid_templates = profile.oid_templates if isinstance(profile.oid_templates, dict) else {}
+        missing_paths = []
+        for path in required_template_paths:
+            node = oid_templates
+            for key in path:
+                if not isinstance(node, dict):
+                    node = None
+                    break
+                node = node.get(key)
+            if node in (None, ''):
+                missing_paths.append('.'.join(path))
+
+        if missing_paths:
+            return Response(
+                {
+                    'status': 'error',
+                    'olt_id': olt.id,
+                    'detail': 'Vendor profile is missing required OID templates.',
+                    'missing_templates': missing_paths,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
     def _build_power_map(self, olts):
         power_map = {}
         for olt in olts:
@@ -173,6 +273,15 @@ class OLTViewSet(viewsets.ModelViewSet):
         Triggers power refresh for all ONUs in this OLT
         """
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        validation_error = self._validate_vendor_action(
+            olt,
+            capability_field='supports_power_monitoring',
+            required_template_paths=[('power', 'onu_rx_oid'), ('power', 'olt_rx_oid')],
+            action_name='power refresh',
+        )
+        if validation_error is not None:
+            return validation_error
+
         onus = list(
             ONU.objects.filter(olt=olt, is_active=True)
             .select_related('olt', 'olt__vendor_profile')
@@ -195,6 +304,15 @@ class OLTViewSet(viewsets.ModelViewSet):
         Run ONU discovery immediately for one OLT.
         """
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        validation_error = self._validate_vendor_action(
+            olt,
+            capability_field='supports_onu_discovery',
+            required_template_paths=[('discovery', 'onu_name_oid'), ('discovery', 'onu_serial_oid')],
+            action_name='ONU discovery',
+        )
+        if validation_error is not None:
+            return validation_error
+
         output = StringIO()
         try:
             call_command('discover_onus', olt_id=olt.id, force=True, stdout=output)
@@ -213,6 +331,20 @@ class OLTViewSet(viewsets.ModelViewSet):
         Returns { reachable: bool, sys_descr: str|null, olt_id: int }
         """
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        if str(olt.snmp_version).lower() != 'v2c':
+            detail = 'SNMP v3 is not yet supported by backend runtime credentials.'
+            mark_olt_unreachable(olt, error=detail)
+            return Response(
+                {
+                    'reachable': False,
+                    'sys_descr': None,
+                    'olt_id': olt.id,
+                    'detail': detail,
+                    'failure_count': olt.snmp_failure_count,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         sys_descr_oid = '1.3.6.1.2.1.1.1.0'
         try:
             result = snmp_service.get(olt, [sys_descr_oid])
@@ -247,6 +379,15 @@ class OLTViewSet(viewsets.ModelViewSet):
         Run ONU status polling immediately for one OLT.
         """
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        validation_error = self._validate_vendor_action(
+            olt,
+            capability_field='supports_onu_status',
+            required_template_paths=[('status', 'onu_status_oid')],
+            action_name='ONU status polling',
+        )
+        if validation_error is not None:
+            return validation_error
+
         output = StringIO()
         try:
             call_command('poll_onu_status', olt_id=olt.id, force=True, stdout=output)

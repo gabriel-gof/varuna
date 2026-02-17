@@ -12,8 +12,10 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 ## Core Data/Behavior Rules
 - `ONU` is scoped to `OLT`; SNMP index uniqueness is `(olt, snmp_index)`.
 - `ONU.is_active` defines whether an ONU is part of current topology.
+- OLT removal is lifecycle-based (`is_active=False`) rather than immediate hard delete.
 - Discovery follows lost-resource retention windows (`disable_lost_after_minutes`, `delete_lost_after_minutes`).
 - Polling should avoid false offline alarms during transient SNMP gaps.
+- Settings actions validate vendor capabilities/OID templates before executing discovery/polling/power commands.
 - OLT freshness is interval-driven (`polling_interval_seconds`); stale topology must be rendered gray.
 - Documentation must be updated on every code change (see `/Users/gabriel/Documents/varuna/AGENTS.md`).
 

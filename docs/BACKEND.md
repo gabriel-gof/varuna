@@ -50,6 +50,21 @@ Updated from:
 - discovery command,
 - polling command.
 
+## Settings API Guardrails
+The OLT configuration API now enforces strict runtime-safe validation:
+- `protocol` must be `snmp`.
+- `snmp_version` must be `v2c` (v3 credentials are not represented yet in the data model).
+- `snmp_port` must be in `[1, 65535]`.
+- `name` and `snmp_community` are normalized and cannot be empty.
+- Intervals must be positive and bounded:
+  - `discovery_interval_minutes` <= `10080` (7 days)
+  - `polling_interval_seconds` <= `604800` (7 days)
+  - `power_interval_seconds` <= `604800` (7 days)
+
+Create semantics were also hardened:
+- Creating an OLT with the same name as an inactive OLT reactivates that record instead of failing or creating duplicates.
+- Reactivation resets runtime health/scheduling fields so discovery/polling restarts from a clean state.
+
 ## ONU Lifecycle
 `ONU.is_active` is used to keep history without polluting live topology.
 - Seen in discovery: `is_active=True`.
@@ -66,6 +81,24 @@ Default ZTE profile policy:
 - Missing status for one ONU: mark ONU `unknown`, do not create false offline event.
 - Full SNMP status failure for OLT: mark OLT unreachable and stop status mutation.
 - Offline/online transitions create/close `ONULog` correctly.
+
+## OLT Deletion Contract
+`DELETE /api/olts/{id}/` is a soft-deactivation flow:
+- OLT is marked `is_active=False`.
+- Discovery/polling are disabled.
+- Related active slots/PONs/ONUs are deactivated.
+- Active ONU offline logs are closed (`offline_until` set).
+- Redis cache for that OLT is invalidated.
+
+This preserves topology/history data while removing the OLT from active runtime views.
+
+## Action Preflight Validation
+Settings actions now validate vendor capability/template prerequisites before running commands:
+- `run_discovery`: requires `supports_onu_discovery` and discovery OIDs (`discovery.onu_name_oid`, `discovery.onu_serial_oid`).
+- `run_polling`: requires `supports_onu_status` and `status.onu_status_oid`.
+- `refresh_power`: requires `supports_power_monitoring` and power OIDs (`power.onu_rx_oid`, `power.olt_rx_oid`).
+
+If prerequisites are missing, API returns `400` with explicit `detail` and `missing_templates` (when applicable).
 
 ## API Notes
 Main endpoints:
@@ -91,6 +124,9 @@ Current tests validate:
 - vendor index/status mapping behavior,
 - discovery stale deactivation,
 - polling unreachable handling,
-- polling online/offline transition logs.
+- polling online/offline transition logs,
+- settings API validation guardrails,
+- soft OLT deactivation lifecycle,
+- action preflight capability/template checks.
 
 File: `backend/topology/tests.py`

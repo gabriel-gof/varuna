@@ -78,6 +78,12 @@ The UI remains topology-first. No dashboard page is required for current product
 - `onRunDiscovery` prop triggers `POST /olts/:id/run_discovery/` from App.jsx.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 
+## Settings API Contract Expectations
+- OLT removal from Settings maps to backend soft-deactivation (not hard delete), so removed OLTs disappear from active UI while history is preserved server-side.
+- Save actions can return explicit `400` validation errors for invalid runtime configuration (unsupported SNMP version, invalid intervals/ports, missing required fields).
+- Manual action buttons (`Run` for discovery/polling/power) can return explicit `400` errors when the vendor profile lacks required capabilities or OID templates.
+- Frontend should continue surfacing backend `detail` errors directly so operator misconfiguration is visible and actionable.
+
 ## Power Threshold Coloring
 - Utility: `frontend/src/utils/powerThresholds.js`.
 - Power values in the topology power tab are color-coded per OLT thresholds.

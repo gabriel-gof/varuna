@@ -11,6 +11,10 @@
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
+### Dev Port Mapping
+- Frontend (Vite): `http://localhost:4000`
+- Backend API: `http://localhost:8000/api/`
+
 ## Naming Conventions
 - PostgreSQL database names are environment-specific `varuna_*` (`POSTGRES_DB`).
 - Backend monitoring domain is the Django app `topology`.

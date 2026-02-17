@@ -3,37 +3,50 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APIClient
 
-from topology.models import OLT, ONU, ONULog, VendorProfile
+from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, VendorProfile
 from topology.services.vendor_profile import map_status_code, parse_onu_index
 
 
-def build_vendor_profile(name='C300'):
+def build_vendor_profile(
+    name='C300',
+    *,
+    oid_templates=None,
+    supports_onu_discovery=True,
+    supports_onu_status=True,
+    supports_power_monitoring=True,
+):
+    templates = oid_templates or {
+        'indexing': {
+            'pon_encoding': '0x11rrsspp',
+            'slot_from': 'shelf',
+            'pon_from': 'port',
+        },
+        'discovery': {
+            'onu_name_oid': '1.3.6.1.4.1.test.1',
+            'onu_serial_oid': '1.3.6.1.4.1.test.2',
+            'onu_status_oid': '1.3.6.1.4.1.test.3',
+            'deactivate_missing': True,
+        },
+        'status': {
+            'onu_status_oid': '1.3.6.1.4.1.test.3',
+            'get_chunk_size': 5,
+            'status_map': {
+                '4': {'status': 'online'},
+                '5': {'status': 'offline', 'reason': 'dying_gasp'},
+                '2': {'status': 'offline', 'reason': 'link_loss'},
+            },
+        },
+    }
     return VendorProfile.objects.create(
         vendor='zte',
         model_name=name,
-        oid_templates={
-            'indexing': {
-                'pon_encoding': '0x11rrsspp',
-                'slot_from': 'shelf',
-                'pon_from': 'port',
-            },
-            'discovery': {
-                'onu_name_oid': '1.3.6.1.4.1.test.1',
-                'onu_serial_oid': '1.3.6.1.4.1.test.2',
-                'onu_status_oid': '1.3.6.1.4.1.test.3',
-                'deactivate_missing': True,
-            },
-            'status': {
-                'onu_status_oid': '1.3.6.1.4.1.test.3',
-                'get_chunk_size': 5,
-                'status_map': {
-                    '4': {'status': 'online'},
-                    '5': {'status': 'offline', 'reason': 'dying_gasp'},
-                    '2': {'status': 'offline', 'reason': 'link_loss'},
-                },
-            },
-        },
+        oid_templates=templates,
+        supports_onu_discovery=supports_onu_discovery,
+        supports_onu_status=supports_onu_status,
+        supports_power_monitoring=supports_power_monitoring,
         default_thresholds={'discovery_interval_minutes': 5, 'polling_interval_seconds': 60},
         is_active=True,
     )
@@ -255,3 +268,178 @@ class PollingCommandTests(TestCase):
         open_log.refresh_from_db()
         self.assertEqual(self.onu.status, ONU.STATUS_ONLINE)
         self.assertIsNotNone(open_log.offline_until)
+
+
+class SettingsApiContractTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.vendor = build_vendor_profile(name='SETTINGS-API')
+
+    def _create_olt(self, **kwargs):
+        payload = {
+            'name': 'OLT-API-1',
+            'vendor_profile': self.vendor,
+            'ip_address': '10.0.0.10',
+            'snmp_community': 'public',
+            'snmp_port': 161,
+            'snmp_version': 'v2c',
+            'discovery_enabled': True,
+            'polling_enabled': True,
+            'discovery_interval_minutes': 240,
+            'polling_interval_seconds': 300,
+            'power_interval_seconds': 300,
+            'is_active': True,
+        }
+        payload.update(kwargs)
+        return OLT.objects.create(**payload)
+
+    def test_create_rejects_invalid_runtime_config_values(self):
+        response = self.client.post(
+            '/api/olts/',
+            {
+                'name': 'OLT-INVALID',
+                'vendor_profile': self.vendor.id,
+                'protocol': 'snmp',
+                'ip_address': '10.0.0.20',
+                'snmp_community': '',
+                'snmp_port': 70000,
+                'snmp_version': 'v3',
+                'discovery_interval_minutes': 0,
+                'polling_interval_seconds': 0,
+                'power_interval_seconds': 0,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('snmp_community', response.data)
+        self.assertIn('snmp_port', response.data)
+        self.assertIn('snmp_version', response.data)
+
+    def test_create_rejects_non_positive_intervals(self):
+        response = self.client.post(
+            '/api/olts/',
+            {
+                'name': 'OLT-INVALID-INTERVALS',
+                'vendor_profile': self.vendor.id,
+                'protocol': 'snmp',
+                'ip_address': '10.0.0.21',
+                'snmp_community': 'public',
+                'snmp_port': 161,
+                'snmp_version': 'v2c',
+                'discovery_interval_minutes': 0,
+                'polling_interval_seconds': 0,
+                'power_interval_seconds': 0,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('discovery_interval_minutes', response.data)
+
+    def test_create_reactivates_inactive_olt_with_same_name(self):
+        olt = self._create_olt(name='OLT-REUSE', is_active=False, ip_address='10.0.0.1')
+
+        response = self.client.post(
+            '/api/olts/',
+            {
+                'name': 'OLT-REUSE',
+                'vendor_profile': self.vendor.id,
+                'protocol': 'snmp',
+                'ip_address': '10.0.0.99',
+                'snmp_community': 'private',
+                'snmp_port': 162,
+                'snmp_version': 'v2c',
+                'discovery_interval_minutes': 60,
+                'polling_interval_seconds': 120,
+                'power_interval_seconds': 180,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(OLT.objects.filter(name='OLT-REUSE').count(), 1)
+        olt.refresh_from_db()
+        self.assertTrue(olt.is_active)
+        self.assertEqual(olt.ip_address, '10.0.0.99')
+        self.assertEqual(olt.snmp_port, 162)
+        self.assertEqual(olt.id, response.data['id'])
+
+    def test_delete_soft_deactivates_olt_and_topology(self):
+        olt = self._create_olt(name='OLT-SOFT-DELETE')
+        slot = OLTSlot.objects.create(
+            olt=olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=olt,
+            slot=slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        log = ONULog.objects.create(
+            onu=onu,
+            offline_since=timezone.now() - timezone.timedelta(minutes=5),
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+        )
+
+        response = self.client.delete(f'/api/olts/{olt.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+        olt.refresh_from_db()
+        slot.refresh_from_db()
+        pon.refresh_from_db()
+        onu.refresh_from_db()
+        log.refresh_from_db()
+
+        self.assertFalse(olt.is_active)
+        self.assertFalse(olt.discovery_enabled)
+        self.assertFalse(olt.polling_enabled)
+        self.assertFalse(slot.is_active)
+        self.assertFalse(pon.is_active)
+        self.assertFalse(onu.is_active)
+        self.assertEqual(onu.status, ONU.STATUS_UNKNOWN)
+        self.assertIsNotNone(log.offline_until)
+
+    def test_run_polling_rejects_unsupported_vendor_capability(self):
+        vendor = build_vendor_profile(
+            name='NO-POLL',
+            supports_onu_status=False,
+        )
+        olt = self._create_olt(name='OLT-NO-POLL', vendor_profile=vendor)
+        response = self.client.post(f'/api/olts/{olt.id}/run_polling/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['status'], 'error')
+        self.assertIn('does not support ONU status polling', response.data['detail'])
+
+    def test_refresh_power_rejects_missing_vendor_power_templates(self):
+        olt = self._create_olt(name='OLT-NO-POWER-TPL')
+        response = self.client.post(f'/api/olts/{olt.id}/refresh_power/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['status'], 'error')
+        self.assertEqual(
+            sorted(response.data['missing_templates']),
+            ['power.olt_rx_oid', 'power.onu_rx_oid'],
+        )
+
+    def test_snmp_check_rejects_snmp_v3_until_credentials_exist(self):
+        olt = self._create_olt(name='OLT-SNMP-V3', snmp_version='v3')
+        response = self.client.post(f'/api/olts/{olt.id}/snmp_check/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data['reachable'])
+        self.assertIn('SNMP v3', response.data['detail'])

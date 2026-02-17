@@ -56,13 +56,13 @@ services:
       - VITE_API_URL=/api
       - VITE_API_PROXY=http://backend:8000
     ports:
-      - "3000:3000"
+      - "4000:4000"
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/index.html:/app/index.html
       - ./frontend/vite.config.js:/app/vite.config.js
     restart: unless-stopped
-    command: npx vite --host 0.0.0.0 --port 3000
+    command: npx vite --host 0.0.0.0 --port 4000
 
 volumes:
   static:
