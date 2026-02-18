@@ -102,13 +102,18 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Mobile PON Panel
 - The PON detail panel uses responsive CSS (`hidden lg:flex` / `lg:hidden`) to render separate desktop and mobile layouts at the `lg` (1024px) breakpoint.
 - Desktop (>=1024px): unchanged table layout with `minWidth: 520px` for both Status and Power tabs.
-- Mobile (<1024px): card-based layout with compact header (back arrow + breadcrumb + PON name).
-  - Cards use a 2-column layout: left column (ID, name, serial stacked), right column (contextual data right-aligned).
-  - Status cards right column: status badge + offline-since timestamp.
+- Mobile (<1024px): card-based layout with compact header (back arrow + breadcrumb + PON description nested inside breadcrumb's flex container for natural alignment).
+  - Cards use `rounded-md` (6px) inside `rounded-xl` (12px) containers for geometric nesting.
+  - Card spacing: `space-y-1.5` (6px) between cards, `py-1.5` vertical padding inside cards.
+  - ONU number styled at `text-[12px] font-bold` for clear ID presence.
+  - Status cards: offline-since timestamp only renders for non-online ONUs (no `—` on online cards).
   - Power cards right column: ONU RX / OLT RX with color coding + reading timestamp (no status dot).
   - Search highlight is preserved on mobile cards (green border + box-shadow).
+  - Empty states use `py-12 text-[12px]` for centered vertical presence.
 - The `onSave` handler for PON description editing is shared between desktop and mobile headers.
 - Sort dropdown uses `w-[130px] lg:w-[156px]` for narrower mobile fit.
+- Tab buttons use `min-w-[72px] lg:min-w-[88px]` to prevent toolbar overflow on narrow (<380px) screens.
+- Back arrow includes `active:scale-95` tap feedback consistent with other interactive elements.
 
 ## Frontend Invariants
 - Do not change visual identity without explicit product request.

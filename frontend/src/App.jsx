@@ -1202,7 +1202,7 @@ const App = () => {
                   <div className="flex items-center gap-2">
                     <button
                       onClick={handleClosePanel}
-                      className="h-8 w-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 -ml-1"
+                      className="h-8 w-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-95 shrink-0 -ml-1"
                       aria-label={t('Close')}
                     >
                       <ArrowLeft className="w-[18px] h-[18px]" />
@@ -1218,14 +1218,12 @@ const App = () => {
                           </React.Fragment>
                         ))}
                       </div>
+                      <InlineEditableText
+                        value={selectedPonData?.pon?.description || ''}
+                        placeholder={t('addDescription')}
+                        onSave={handleDescriptionSave}
+                      />
                     </div>
-                  </div>
-                  <div className="pl-9">
-                    <InlineEditableText
-                      value={selectedPonData?.pon?.description || ''}
-                      placeholder={t('addDescription')}
-                      onSave={handleDescriptionSave}
-                    />
                   </div>
                 </div>
 
@@ -1243,7 +1241,7 @@ const App = () => {
                             type="button"
                             onClick={() => setActiveTab(tab.id)}
                             className={`
-                              h-7 min-w-[88px] px-3 rounded-md text-[10px] font-black uppercase tracking-[0.06em] transition-all
+                              h-7 min-w-[72px] lg:min-w-[88px] px-3 rounded-md text-[10px] font-black uppercase tracking-[0.06em] transition-all
                               ${isActive
                                 ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                                 : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/60'}
@@ -1427,7 +1425,7 @@ const App = () => {
                     </div>
                     {/* Mobile status cards */}
                     <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-                      <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-2">
+                      <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
                         {statusRows.map(({ onu, statusKey }) => {
                           const statusLabel = statusKey === 'online'
                             ? t('Online')
@@ -1452,11 +1450,11 @@ const App = () => {
                             <div
                               key={onu.id}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-lg border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-1.5 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col">
-                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                <span className="text-[12px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
                                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
                               </div>
@@ -1465,13 +1463,13 @@ const App = () => {
                                   <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
                                   {statusLabel}
                                 </span>
-                                <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{offlineSince}</span>
+                                {statusKey !== 'online' && offlineSince !== '—' && <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{offlineSince}</span>}
                               </div>
                             </div>
                           )
                         })}
                         {statusRows.length === 0 && (
-                          <div className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                          <div className="py-12 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
                             {t('No ONU data available')}
                           </div>
                         )}
@@ -1589,7 +1587,7 @@ const App = () => {
                     </div>
                     {/* Mobile power cards */}
                     <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-                      <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-2">
+                      <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
                         {powerRows.map(({ onu, statusKey }) => {
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                           const serialValue = onu.serial_number || onu.serial || '—'
@@ -1614,11 +1612,11 @@ const App = () => {
                             <div
                               key={`power-${onu.id}`}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-lg border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-1.5 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col">
-                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                <span className="text-[12px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
                                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
                               </div>
@@ -1633,17 +1631,17 @@ const App = () => {
                                       <span className="w-8 text-right font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
                                       <span className={`ml-1 font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(parsedOltRx) : '—'}</span>
                                     </span>
+                                    <span className={`text-[10px] font-semibold tabular-nums ${!hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
                                   </>
                                 ) : (
                                   <span className={`text-[11px] font-semibold tabular-nums ${isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
                                 )}
-                                <span className={`text-[10px] font-semibold tabular-nums ${!hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
                               </div>
                             </div>
                           )
                         })}
                         {powerRows.length === 0 && (
-                          <div className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
+                          <div className="py-12 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
                             {t('No ONU data available')}
                           </div>
                         )}

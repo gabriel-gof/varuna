@@ -59,7 +59,7 @@ export const InlineEditableText = ({ value, placeholder, onSave }) => {
           onBlur={commit}
           onKeyDown={handleKeyDown}
           disabled={saving}
-          className="h-7 flex-1 min-w-0 bg-white dark:bg-slate-800 border border-emerald-400/60 dark:border-emerald-500/40 rounded-md px-2 text-[13px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200 placeholder:text-slate-400/50 placeholder:font-bold placeholder:normal-case focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+          className="h-7 flex-1 min-w-0 bg-white dark:bg-slate-800 border border-emerald-400/60 dark:border-emerald-500/40 rounded-md px-2 text-[13px] font-bold tracking-wide text-slate-700 dark:text-slate-200 placeholder:text-slate-400/50 placeholder:font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
           placeholder={placeholder}
         />
         {saving && (
@@ -78,8 +78,8 @@ export const InlineEditableText = ({ value, placeholder, onSave }) => {
       <span
         className={`text-[13px] font-bold tracking-wide truncate leading-none ${
           value
-            ? 'uppercase text-slate-500 dark:text-slate-400'
-            : 'normal-case text-slate-400/50 dark:text-slate-500/50'
+            ? 'text-slate-500 dark:text-slate-400'
+            : 'text-slate-400/50 dark:text-slate-500/50'
         }`}
       >
         {value || placeholder}
