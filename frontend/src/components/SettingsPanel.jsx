@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2, RefreshCcw, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Clock } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, clearOltThresholds, hasOltOverride } from '../utils/powerThresholds'
+import { HEALTH_STYLES } from '../utils/healthStyles'
 
 const MAX_OLT_NAME = 12
 
@@ -122,7 +123,7 @@ const FieldInput = React.forwardRef(({ className = '', ...props }, ref) => (
   <input
     ref={ref}
     {...props}
-    className={`h-8 w-full px-2.5 rounded-[8px] border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
+    className={`h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
       text-[11px] font-semibold text-slate-800 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600
       focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all
       [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${className}`}
@@ -132,7 +133,7 @@ const FieldInput = React.forwardRef(({ className = '', ...props }, ref) => (
 const FieldSelect = ({ className = '', children, ...props }) => (
   <select
     {...props}
-    className={`h-8 w-full px-2.5 rounded-[8px] border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
+    className={`h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
       text-[11px] font-semibold text-slate-800 dark:text-slate-200
       focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all disabled:opacity-50 ${className}`}
   >
@@ -144,68 +145,13 @@ const SectionLabel = ({ children }) => (
   <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-300 dark:text-slate-600 select-none">{children}</span>
 )
 
-/* ─── OLT Health colors ─── */
-
-const OLT_HEALTH = {
-  green: {
-    borderActive: 'border-emerald-500/35 shadow-md shadow-emerald-500/10',
-    borderIdle: 'border-emerald-300 dark:border-emerald-500/25 hover:border-emerald-400 dark:hover:border-emerald-500/40 shadow-sm',
-    accentActive: 'bg-emerald-500 scale-y-100',
-    accentIdle: 'bg-emerald-200/60 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-400 scale-y-60',
-    iconActive: 'bg-emerald-600 dark:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20',
-    iconIdle: 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/15 dark:ring-emerald-400/25',
-    labelActive: 'text-emerald-950 dark:text-emerald-50',
-    chevronOpen: 'text-emerald-600 dark:text-emerald-400',
-  },
-  yellow: {
-    borderActive: 'border-yellow-500/40 shadow-md shadow-yellow-500/10',
-    borderIdle: 'border-yellow-300 dark:border-yellow-500/20 hover:border-yellow-400 dark:hover:border-yellow-500/40 shadow-sm',
-    accentActive: 'bg-yellow-500 scale-y-100',
-    accentIdle: 'bg-yellow-200/60 dark:bg-yellow-500/20 group-hover/node:bg-yellow-300 dark:group-hover/node:bg-yellow-400 scale-y-60',
-    iconActive: 'bg-yellow-500 text-white shadow-lg shadow-yellow-500/30',
-    iconIdle: 'bg-yellow-100 dark:bg-yellow-500/15 text-yellow-800 dark:text-yellow-400 ring-1 ring-inset ring-yellow-600/20 dark:ring-yellow-400/20',
-    labelActive: 'text-yellow-950 dark:text-yellow-50',
-    chevronOpen: 'text-yellow-600 dark:text-yellow-400',
-  },
-  red: {
-    borderActive: 'border-rose-500/35 shadow-md shadow-rose-500/10',
-    borderIdle: 'border-rose-300 dark:border-rose-500/25 hover:border-rose-400 dark:hover:border-rose-500/40 shadow-sm',
-    accentActive: 'bg-rose-500 scale-y-100',
-    accentIdle: 'bg-rose-200/60 dark:bg-rose-500/25 group-hover/node:bg-rose-300 dark:group-hover/node:bg-rose-400 scale-y-60',
-    iconActive: 'bg-rose-600 dark:bg-rose-500 text-white shadow-lg shadow-rose-600/20',
-    iconIdle: 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400 ring-1 ring-inset ring-rose-600/15 dark:ring-rose-400/25',
-    labelActive: 'text-rose-950 dark:text-rose-50',
-    chevronOpen: 'text-rose-600 dark:text-rose-400',
-  },
-  gray: {
-    borderActive: 'border-slate-400/50 shadow-md shadow-slate-400/15',
-    borderIdle: 'border-slate-300/80 dark:border-slate-500/40 hover:border-slate-400 dark:hover:border-slate-400/60 shadow-sm',
-    accentActive: 'bg-slate-400 scale-y-100',
-    accentIdle: 'bg-slate-300/70 dark:bg-slate-500/40 group-hover/node:bg-slate-400/80 dark:group-hover/node:bg-slate-400/50 scale-y-60',
-    iconActive: 'bg-slate-500 dark:bg-slate-400 text-white shadow-lg shadow-slate-500/25',
-    iconIdle: 'bg-slate-200/80 dark:bg-slate-600/50 text-slate-500 dark:text-slate-400 ring-1 ring-inset ring-slate-400/30 dark:ring-slate-400/25',
-    labelActive: 'text-slate-600 dark:text-slate-200',
-    chevronOpen: 'text-slate-500 dark:text-slate-400',
-  },
-  neutral: {
-    borderActive: 'border-slate-500/35 shadow-md shadow-slate-500/10',
-    borderIdle: 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-sm',
-    accentActive: 'bg-slate-500 scale-y-100',
-    accentIdle: 'bg-slate-200 dark:bg-slate-700 group-hover/node:bg-slate-300 dark:group-hover/node:bg-slate-600 scale-y-60',
-    iconActive: 'bg-slate-600 dark:bg-slate-500 text-white shadow-lg shadow-slate-600/20',
-    iconIdle: 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ring-1 ring-inset ring-slate-600/10 dark:ring-slate-400/20',
-    labelActive: 'text-slate-950 dark:text-slate-50',
-    chevronOpen: 'text-slate-600 dark:text-slate-400',
-  }
-}
-
 const getOltHealth = (olt, snmpStatuses, oltHealthById) => {
   const derived = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
-  if (derived?.state && OLT_HEALTH[derived.state]) return OLT_HEALTH[derived.state]
+  if (derived?.state && HEALTH_STYLES[derived.state]) return HEALTH_STYLES[derived.state]
   const st = snmpStatuses?.[olt.id]
-  if (st?.status === 'unreachable') return OLT_HEALTH.gray
-  if (!st || st.status === 'pending') return OLT_HEALTH.neutral
-  return OLT_HEALTH.green
+  if (st?.status === 'unreachable') return HEALTH_STYLES.gray
+  if (!st || st.status === 'pending') return HEALTH_STYLES.neutral
+  return HEALTH_STYLES.green
 }
 
 const getSnmpBadge = (olt, snmpStatuses, t) => {
@@ -226,7 +172,7 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, reso
   return (
     <div className={`
       w-full transition-all duration-300 bg-white dark:bg-slate-900
-      rounded-[14px] border relative
+      rounded-xl border relative
       ${isSelected ? health.borderActive : health.borderIdle}
     `}>
       <div
@@ -237,7 +183,7 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, reso
           isSelected ? health.accentActive : health.accentIdle
         }`} />
 
-        <div className={`flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-[10px] transition-all duration-300 ${
+        <div className={`flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-300 ${
           isSelected ? health.iconActive : health.iconIdle
         }`}>
           <Server className="w-5 h-5" />
@@ -685,12 +631,12 @@ export const SettingsPanel = ({
              {/* We use the exact same card structure for creating */}
              <div className={`
                 w-full bg-white dark:bg-slate-900
-                rounded-[14px] border border-slate-200 dark:border-slate-700 shadow-sm
+                rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm
              `}>
                 {/* Header Preview */}
                 <div className="relative flex items-center gap-2.5 px-3 py-2.5 select-none border-b border-transparent">
                     <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-emerald-500 transition-all duration-300" />
-                    <div className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-[10px] bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/15 dark:ring-emerald-400/25">
+                    <div className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/15 dark:ring-emerald-400/25">
                        <Plus className="w-5 h-5" />
                     </div>
                     <div className="flex-1 min-w-0 flex flex-col justify-center">
@@ -830,7 +776,7 @@ export const SettingsPanel = ({
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                                   {t('ONU discovery')}
                                 </label>
-                                <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                                <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                                   <input
                                     className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                     value={form.discovery_interval}
@@ -839,7 +785,7 @@ export const SettingsPanel = ({
                                   />
                                    <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
                                    {/* Disabled run button for create mode */}
-                                  <button disabled className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
+                                  <button disabled className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
                                     <span>{t('Run')}</span>
                                   </button>
                                 </div>
@@ -850,7 +796,7 @@ export const SettingsPanel = ({
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                                   {t('Status collection')}
                                 </label>
-                                <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                                <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                                   <input
                                     className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                     value={form.polling_interval}
@@ -858,7 +804,7 @@ export const SettingsPanel = ({
                                     placeholder="5m"
                                   />
                                    <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
-                                  <button disabled className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
+                                  <button disabled className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
                                     <span>{t('Run')}</span>
                                   </button>
                                 </div>
@@ -869,7 +815,7 @@ export const SettingsPanel = ({
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                                   {t('Power collection')}
                                 </label>
-                                <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                                <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                                   <input
                                     className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                     value={form.power_interval}
@@ -877,7 +823,7 @@ export const SettingsPanel = ({
                                     placeholder="1d"
                                   />
                                    <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
-                                  <button disabled className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
+                                  <button disabled className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
                                     <span>{t('Run')}</span>
                                   </button>
                                 </div>
@@ -920,7 +866,7 @@ export const SettingsPanel = ({
                       <button
                         type="button"
                         onClick={() => setShowAddForm(false)}
-                        className="h-7 px-3 rounded-[6px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
+                        className="h-7 px-3 rounded-sm border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
                       >
                         {t('Cancel')}
                       </button>
@@ -928,7 +874,7 @@ export const SettingsPanel = ({
                         type="button"
                         onClick={handleCreate}
                         disabled={createBusy}
-                        className="h-7 px-3.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                        className="h-7 px-3.5 rounded-sm bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
                       >
                         {createBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                         {t('Save')}
@@ -1104,7 +1050,7 @@ export const SettingsPanel = ({
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                               {t('ONU discovery')}
                             </label>
-                            <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                            <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
                                 className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={editForm.discovery_interval}
@@ -1116,7 +1062,7 @@ export const SettingsPanel = ({
                                 type="button"
                                 onClick={() => handleDiscovery(olt.id)}
                                 disabled={discoveryBusy}
-                                className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
                               >
                                 {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
                               </button>
@@ -1128,7 +1074,7 @@ export const SettingsPanel = ({
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                               {t('Status collection')}
                             </label>
-                            <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                            <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
                                 className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={editForm.polling_interval}
@@ -1140,7 +1086,7 @@ export const SettingsPanel = ({
                                 type="button"
                                 onClick={() => onRunPolling?.(olt.id)}
                                 disabled={pollingBusy}
-                                className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
                               >
                                 {pollingBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
                               </button>
@@ -1152,7 +1098,7 @@ export const SettingsPanel = ({
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                               {t('Power collection')}
                             </label>
-                            <div className="flex items-center p-0.5 rounded-[9px] bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                            <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
                                 className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={editForm.power_interval}
@@ -1164,7 +1110,7 @@ export const SettingsPanel = ({
                                 type="button"
                                 onClick={() => onRefreshPower?.(olt.id)}
                                 disabled={powerBusy}
-                                className="h-7 px-3 rounded-[7px] text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
                               >
                                 {powerBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
                               </button>
@@ -1225,7 +1171,7 @@ export const SettingsPanel = ({
                               // Only disable if not dirty to prevent accidental clears? User asked for always present. 
                               // Usually cancel resets to original state. If not dirty, it does nothing essentially.
                               disabled={!dirty}
-                              className="h-7 px-3 rounded-[6px] border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="h-7 px-3 rounded-sm border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {t('Cancel')}
                             </button>
@@ -1233,7 +1179,7 @@ export const SettingsPanel = ({
                               type="button"
                               onClick={handleUpdate}
                               disabled={localUpdateBusy || !dirty}
-                              className="h-7 px-3.5 rounded-[6px] bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all whitespace-nowrap"
+                              className="h-7 px-3.5 rounded-sm bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all whitespace-nowrap"
                             >
                               {localUpdateBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                               {t('Save')}

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X, Check, Minus, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getOnuStats } from '../utils/stats'
+import { HEALTH_STYLES, resolveHealthStyle } from '../utils/healthStyles'
 
 const pad2 = (value) => String(value).padStart(2, '0')
 const asCount = (value) => {
@@ -56,7 +57,7 @@ const renderHighlightedText = (value, term) => {
     parts.push(
       <mark
         key={`match-${key++}`}
-        className="px-[1px] rounded-[3px] bg-emerald-100 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300"
+        className="px-[1px] rounded-sm bg-emerald-100 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300"
       >
         {source.slice(matchIndex, matchEnd)}
       </mark>
@@ -69,71 +70,12 @@ const renderHighlightedText = (value, term) => {
 
 const NODE_CARD_STYLE = {
   // Keep all hierarchy levels visually coherent.
-  pon: 'w-[180px] h-[56px] rounded-[12px]',
-  olt: 'w-[180px] h-[56px] rounded-[12px]',
-  slot: 'w-[180px] h-[56px] rounded-[12px]'
+  pon: 'w-[180px] h-[56px] rounded-xl',
+  olt: 'w-[180px] h-[56px] rounded-xl',
+  slot: 'w-[180px] h-[56px] rounded-xl'
 }
 
-const NODE_HEALTH_STYLE = {
-  green: {
-    borderActive: 'border-emerald-500/35 shadow-md shadow-emerald-500/10',
-    borderIdle: 'border-emerald-300 dark:border-emerald-500/25 hover:border-emerald-400 dark:hover:border-emerald-500/40 shadow-sm',
-    accentActive: 'bg-emerald-500 scale-y-100',
-    accentIdle: 'bg-emerald-200/60 dark:bg-emerald-500/25 group-hover/node:bg-emerald-300 dark:group-hover/node:bg-emerald-400 scale-y-60',
-    iconActive: 'bg-emerald-600 dark:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20',
-    iconIdle: 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 ring-1 ring-inset ring-emerald-600/15 dark:ring-emerald-400/25',
-    labelActive: 'text-emerald-950 dark:text-emerald-50',
-    chevronOpen: 'text-emerald-600 dark:text-emerald-400'
-  },
-  yellow: {
-    borderActive: 'border-yellow-500/40 shadow-md shadow-yellow-500/10',
-    borderIdle: 'border-yellow-300 dark:border-yellow-500/20 hover:border-yellow-400 dark:hover:border-yellow-500/40 shadow-sm',
-    accentActive: 'bg-yellow-500 scale-y-100',
-    accentIdle: 'bg-yellow-200/60 dark:bg-yellow-500/20 group-hover/node:bg-yellow-300 dark:group-hover/node:bg-yellow-400 scale-y-60',
-    iconActive: 'bg-yellow-500 text-white shadow-lg shadow-yellow-500/30',
-    iconIdle: 'bg-yellow-100 dark:bg-yellow-500/15 text-yellow-800 dark:text-yellow-400 ring-1 ring-inset ring-yellow-600/20 dark:ring-yellow-400/20',
-    labelActive: 'text-yellow-950 dark:text-yellow-50',
-    chevronOpen: 'text-yellow-600 dark:text-yellow-400'
-  },
-  red: {
-    borderActive: 'border-rose-500/35 shadow-md shadow-rose-500/10',
-    borderIdle: 'border-rose-300 dark:border-rose-500/25 hover:border-rose-400 dark:hover:border-rose-500/40 shadow-sm',
-    accentActive: 'bg-rose-500 scale-y-100',
-    accentIdle: 'bg-rose-200/60 dark:bg-rose-500/25 group-hover/node:bg-rose-300 dark:group-hover/node:bg-rose-400 scale-y-60',
-    iconActive: 'bg-rose-600 dark:bg-rose-500 text-white shadow-lg shadow-rose-600/20',
-    iconIdle: 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400 ring-1 ring-inset ring-rose-600/15 dark:ring-rose-400/25',
-    labelActive: 'text-rose-950 dark:text-rose-50',
-    chevronOpen: 'text-rose-600 dark:text-rose-400'
-  },
-  gray: {
-    borderActive: 'border-slate-400/50 shadow-md shadow-slate-400/15',
-    borderIdle: 'border-slate-300/80 dark:border-slate-500/40 hover:border-slate-400 dark:hover:border-slate-400/60 shadow-sm',
-    accentActive: 'bg-slate-400 scale-y-100',
-    accentIdle: 'bg-slate-300/70 dark:bg-slate-500/40 group-hover/node:bg-slate-400/80 dark:group-hover/node:bg-slate-400/50 scale-y-60',
-    iconActive: 'bg-slate-500 dark:bg-slate-400 text-white shadow-lg shadow-slate-500/25',
-    iconIdle: 'bg-slate-200/80 dark:bg-slate-600/50 text-slate-500 dark:text-slate-400 ring-1 ring-inset ring-slate-400/30 dark:ring-slate-400/25',
-    labelActive: 'text-slate-600 dark:text-slate-200',
-    chevronOpen: 'text-slate-500 dark:text-slate-400'
-  },
-  neutral: {
-    borderActive: 'border-slate-500/35 shadow-md shadow-slate-500/10',
-    borderIdle: 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-sm',
-    accentActive: 'bg-slate-500 scale-y-100',
-    accentIdle: 'bg-slate-200 dark:bg-slate-700 group-hover/node:bg-slate-300 dark:group-hover/node:bg-slate-600 scale-y-60',
-    iconActive: 'bg-slate-600 dark:bg-slate-500 text-white shadow-lg shadow-slate-600/20',
-    iconIdle: 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ring-1 ring-inset ring-slate-600/10 dark:ring-slate-400/20',
-    labelActive: 'text-slate-950 dark:text-slate-50',
-    chevronOpen: 'text-slate-600 dark:text-slate-400'
-  }
-}
-
-const resolveNodeHealthStyle = (healthState) => {
-  if (healthState === 'gray') return NODE_HEALTH_STYLE.gray
-  if (healthState === 'red') return NODE_HEALTH_STYLE.red
-  if (healthState === 'yellow') return NODE_HEALTH_STYLE.yellow
-  if (healthState === 'neutral') return NODE_HEALTH_STYLE.neutral
-  return NODE_HEALTH_STYLE.green
-}
+const resolveNodeHealthStyle = resolveHealthStyle
 
 const ALARM_REASON_STAT_KEY = {
   linkLoss: 'linkLoss',
@@ -238,7 +180,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
 
         <div
           className={`
-            flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-[10px] transition-all duration-300
+            flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg transition-all duration-300
             ${isVisualActive
               ? healthStyle.iconActive
               : healthStyle.iconIdle}
@@ -653,7 +595,7 @@ export const NetworkTopology = ({
             value={searchTerm}
             onFocus={() => setSearchFocused(true)}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-9 w-full bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl pl-9 pr-8 text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl pl-9 pr-8 text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
           />
 
           {searchTerm && (
@@ -706,7 +648,7 @@ export const NetworkTopology = ({
             className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all ${
               selectedOltIds.length < olts.length
                 ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                : 'bg-[#F4F7FA] dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 text-slate-400 hover:text-emerald-600'
+                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 text-slate-400 hover:text-emerald-600'
             }`}
           >
             <Filter className="w-3.5 h-3.5" />
@@ -794,7 +736,7 @@ export const NetworkTopology = ({
           <button
             title={t('Collapse')}
             onClick={collapseAllNodes}
-            className="h-9 px-3 flex items-center justify-center gap-1.5 bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl text-slate-500 shadow-sm hover:text-emerald-600 transition-all"
+            className="h-9 px-3 flex items-center justify-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl text-slate-500 shadow-sm hover:text-emerald-600 transition-all"
           >
             <svg className="w-4 h-4 shrink-0" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
             <span className="text-[10px] font-black uppercase tracking-wider hidden md:block">{t('Collapse')}</span>
@@ -810,7 +752,7 @@ export const NetworkTopology = ({
               className={`h-9 px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all ${
                 alarmEnabled
                   ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
-                  : 'bg-[#F4F7FA] dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 text-slate-500 hover:text-rose-600'
+                  : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 text-slate-500 hover:text-rose-600'
               }`}
             >
               <Bell className="w-3.5 h-3.5" />
@@ -891,7 +833,7 @@ export const NetworkTopology = ({
                       onBlur={() => {
                         setAlarmMinCountInput(String(clampAlarmMinCount(alarmMinCountInput)))
                       }}
-                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-800 bg-[#F8FAFB] dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
+                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
                     />
                     <div className="h-9 w-8 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col">
                       <button
