@@ -137,6 +137,7 @@ class PONNestedSerializer(serializers.ModelSerializer):
             'pon_number',
             'pon_key',
             'name',
+            'description',
             'onus',
             'onu_count',
             'online_count',
@@ -628,6 +629,7 @@ class OLTPONSerializer(serializers.ModelSerializer):
             'pon_key',
             'pon_index',
             'name',
+            'description',
             'rack_id',
             'shelf_id',
             'port_id',
@@ -635,7 +637,11 @@ class OLTPONSerializer(serializers.ModelSerializer):
             'last_discovered_at',
             'created_at',
         ]
-        read_only_fields = ['id', 'last_discovered_at', 'created_at']
+        read_only_fields = [
+            'id', 'olt', 'olt_name', 'slot', 'slot_id', 'slot_key',
+            'pon_id', 'pon_key', 'pon_index', 'rack_id', 'shelf_id',
+            'port_id', 'is_active', 'last_discovered_at', 'created_at',
+        ]
 
 
 class ONUSerializer(serializers.ModelSerializer):

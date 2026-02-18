@@ -58,9 +58,11 @@ class TopologyService:
             for pon in slot.pons.filter(is_active=True):
                 pon_key = pon.pon_key or f"{slot_key}/{pon.pon_id}"
                 slots[slot_key]['pons'][pon_key] = {
+                    'id': pon.id,
                     'pon_id': pon.pon_id,
                     'pon_key': pon.pon_key,
                     'pon_name': pon.name or '',
+                    'description': pon.description,
                     'pon_index': pon.pon_index,
                     'rack_id': pon.rack_id,
                     'shelf_id': pon.shelf_id,
@@ -90,9 +92,11 @@ class TopologyService:
             pon_key = onu.pon_ref.pon_key if onu.pon_ref else f"{slot_key}/{onu.pon_id}"
             if pon_key not in slots[slot_key]['pons']:
                 slots[slot_key]['pons'][pon_key] = {
+                    'id': onu.pon_ref.id if onu.pon_ref else None,
                     'pon_id': onu.pon_id,
                     'pon_key': onu.pon_ref.pon_key if onu.pon_ref else '',
                     'pon_name': onu.pon_ref.name if onu.pon_ref else '',
+                    'description': onu.pon_ref.description if onu.pon_ref else '',
                     'pon_index': onu.pon_ref.pon_index if onu.pon_ref else None,
                     'rack_id': onu.pon_ref.rack_id if onu.pon_ref else None,
                     'shelf_id': onu.pon_ref.shelf_id if onu.pon_ref else None,

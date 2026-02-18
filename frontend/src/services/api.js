@@ -59,4 +59,7 @@ api.interceptors.response.use(
   }
 )
 
+export const updatePonDescription = (ponId, description) =>
+  api.patch(`/pons/${ponId}/`, { description })
+
 export default api

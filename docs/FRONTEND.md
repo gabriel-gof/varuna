@@ -49,6 +49,8 @@ The UI remains topology-first. No dashboard page is required for current product
   - `power_interval_seconds`
 - Frontend runs due discovery/polling actions based on configured OLT intervals to keep data current while UI is open.
 - Power panel auto-refresh uses `power_interval_seconds` of the selected OLT.
+- Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
+- In Power tab, rows without power readings show only a hyphen (`—`); for offline statuses the hyphen is red in both `Potência` and `Leitura`, and for online rows it keeps the default neutral style.
 
 ## Settings Panel Design
 - OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
@@ -96,6 +98,17 @@ The UI remains topology-first. No dashboard page is required for current product
 - Removed stale settings action call to undefined `runSnmpChecks` in component scope.
 - Removed unused frontend assets and unused `motion` dependency.
 - Preserved existing UI design and interaction model.
+
+## Mobile PON Panel
+- The PON detail panel uses responsive CSS (`hidden lg:flex` / `lg:hidden`) to render separate desktop and mobile layouts at the `lg` (1024px) breakpoint.
+- Desktop (>=1024px): unchanged table layout with `minWidth: 520px` for both Status and Power tabs.
+- Mobile (<1024px): card-based layout with compact header (back arrow + breadcrumb + PON name).
+  - Cards use a 2-column layout: left column (ID, name, serial stacked), right column (contextual data right-aligned).
+  - Status cards right column: status badge + offline-since timestamp.
+  - Power cards right column: ONU RX / OLT RX with color coding + reading timestamp (no status dot).
+  - Search highlight is preserved on mobile cards (green border + box-shadow).
+- The `onSave` handler for PON description editing is shared between desktop and mobile headers.
+- Sort dropdown uses `w-[130px] lg:w-[156px]` for narrower mobile fit.
 
 ## Frontend Invariants
 - Do not change visual identity without explicit product request.

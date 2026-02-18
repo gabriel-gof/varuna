@@ -495,11 +495,12 @@ class OLTSlotViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['olt', 'slot_id', 'rack_id', 'shelf_id', 'is_active']
 
 
-class OLTPONViewSet(viewsets.ReadOnlyModelViewSet):
+class OLTPONViewSet(viewsets.ModelViewSet):
     """
-    ViewSet for PONs (read-only)
+    ViewSet for PONs (read + partial update)
     """
 
+    http_method_names = ['get', 'head', 'options', 'patch']
     queryset = OLTPON.objects.filter(olt__is_active=True, is_active=True).select_related('olt', 'slot')
     serializer_class = OLTPONSerializer
     filterset_fields = ['olt', 'slot', 'pon_id', 'pon_key', 'is_active']

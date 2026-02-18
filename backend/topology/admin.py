@@ -36,7 +36,7 @@ class OLTSlotAdmin(admin.ModelAdmin):
 
 @admin.register(OLTPON)
 class OLTPONAdmin(admin.ModelAdmin):
-    list_display = ('olt', 'slot', 'pon_id', 'pon_key', 'pon_index', 'is_active', 'last_discovered_at')
+    list_display = ('olt', 'slot', 'pon_id', 'pon_key', 'pon_index', 'description', 'is_active', 'last_discovered_at')
     list_filter = ('olt', 'slot', 'is_active')
 
 

@@ -11,14 +11,16 @@ import {
   X,
   RotateCw,
   Check,
-  ArrowDownUp
+  ArrowDownUp,
+  ArrowLeft
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
 import { NetworkTopology } from './components/NetworkTopology'
 import { SettingsPanel } from './components/SettingsPanel'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import api from './services/api'
+import api, { updatePonDescription } from './services/api'
+import { InlineEditableText } from './components/InlineEditableText'
 import { classifyOnu } from './utils/stats'
 import { deriveOltHealthState, getPowerIntervalSeconds } from './utils/oltHealth'
 import { getPowerColor, powerColorClass } from './utils/powerThresholds'
@@ -79,6 +81,7 @@ const formatPowerValue = (value) => {
 }
 
 const asNumericPower = (value) => {
+  if (value === null || value === undefined || value === '') return null
   const numeric = Number(value)
   return Number.isFinite(numeric) ? numeric : null
 }
@@ -123,10 +126,12 @@ const mapTopologyToSlots = (olt, topology) => {
       const ponId = `${olt.id}-${slot.slot_id}-${pon.pon_id}`
       return {
         id: ponId,
+        db_id: pon.id,
         pon_number: pon.pon_id,
         pon_id: pon.pon_id,
         pon_key: pon.pon_key,
         name: pon.pon_name,
+        description: pon.description || '',
         onus: asList(pon?.onus).map((onu) => ({
           id: onu.id,
           onu_number: onu.onu_number ?? onu.onu_id,
@@ -841,12 +846,16 @@ const App = () => {
 
   const powerRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
+      const classification = classifyOnu(onu)
       const { onuRx, oltRx } = getOnuPowerSnapshot(onu)
+      const parsedOnuRx = asNumericPower(onuRx)
+      const parsedOltRx = asNumericPower(oltRx)
       return {
         onu,
+        statusKey: classification.status,
         onuNumber: Number(onu?.onu_number ?? onu?.onu_id ?? 0),
-        onuRx: asNumericPower(onuRx),
-        oltRx: asNumericPower(oltRx),
+        onuRx: parsedOnuRx,
+        oltRx: parsedOltRx,
       }
     })
 
@@ -1132,9 +1141,36 @@ const App = () => {
                 : 'w-0 opacity-0 pointer-events-none border-l-0'}
             `}
           >
-            {selectedPonId && (
+            {selectedPonId && (() => {
+              const handleDescriptionSave = async (newValue) => {
+                const pon = selectedPonData?.pon
+                const dbId = pon?.db_id ?? pon?.id
+                if (!dbId || typeof dbId !== 'number') return
+                setOlts((prev) =>
+                  prev.map((olt) => ({
+                    ...olt,
+                    slots: asList(olt?.slots).map((slot) => ({
+                      ...slot,
+                      pons: asList(slot?.pons).map((p) =>
+                        (p.db_id ?? p.id) === dbId ? { ...p, description: newValue } : p
+                      ),
+                    })),
+                  }))
+                )
+                try {
+                  await updatePonDescription(dbId, newValue)
+                } catch (_err) {
+                  await fetchOlts()
+                }
+              }
+              const handleClosePanel = () => {
+                setSelectedSearchMatch(null)
+                setSelectedPonId(null)
+              }
+              return (
               <div className="h-full min-h-0 flex flex-col">
-                <div className="pl-6 lg:pl-8 pr-3 lg:pr-4 h-20 border-b border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center">
+                {/* Desktop header */}
+                <div className="hidden lg:flex pl-8 pr-4 h-20 border-b border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 items-center">
                   <div className="w-full flex items-center justify-between gap-3">
                     <div className="min-w-0 flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
                       {selectedPonPath.map((part, idx) => (
@@ -1145,17 +1181,51 @@ const App = () => {
                           </span>
                         </React.Fragment>
                       ))}
+                      <span className="text-slate-300/60 dark:text-slate-700/60 font-normal">–</span>
+                      <InlineEditableText
+                        value={selectedPonData?.pon?.description || ''}
+                        placeholder={t('addDescription')}
+                        onSave={handleDescriptionSave}
+                      />
                     </div>
                     <button
-                      onClick={() => {
-                        setSelectedSearchMatch(null)
-                        setSelectedPonId(null)
-                      }}
+                      onClick={handleClosePanel}
                       className="h-9 w-9 self-center flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
                       aria-label={t('Close')}
                     >
                       <X className="w-[18px] h-[18px]" />
                     </button>
+                  </div>
+                </div>
+                {/* Mobile header */}
+                <div className="flex lg:hidden flex-col px-4 py-3 border-b border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 gap-1">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleClosePanel}
+                      className="h-8 w-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 -ml-1"
+                      aria-label={t('Close')}
+                    >
+                      <ArrowLeft className="w-[18px] h-[18px]" />
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
+                        {selectedPonPath.map((part, idx) => (
+                          <React.Fragment key={`m-${part}-${idx}`}>
+                            {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 shrink-0" strokeWidth={2.5} />}
+                            <span className={`${idx === selectedPonPath.length - 1 ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'} ${idx === 0 ? 'truncate' : 'whitespace-nowrap'}`}>
+                              {part}
+                            </span>
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="pl-9">
+                    <InlineEditableText
+                      value={selectedPonData?.pon?.description || ''}
+                      placeholder={t('addDescription')}
+                      onSave={handleDescriptionSave}
+                    />
                   </div>
                 </div>
 
@@ -1188,7 +1258,7 @@ const App = () => {
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger asChild>
                           <button
-                            className="relative h-9 w-[156px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all"
+                            className="relative h-9 w-[130px] lg:w-[156px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all"
                             aria-label={t('Sort by')}
                             title={t('Sort by')}
                           >
@@ -1256,7 +1326,9 @@ const App = () => {
                   </div>
 
                   {activeTab === 'status' ? (
-                    <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                    <>
+                    {/* Desktop status table */}
+                    <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
@@ -1353,8 +1425,64 @@ const App = () => {
                         </table>
                       </div>
                     </div>
+                    {/* Mobile status cards */}
+                    <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                      <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-2">
+                        {statusRows.map(({ onu, statusKey }) => {
+                          const statusLabel = statusKey === 'online'
+                            ? t('Online')
+                            : statusKey === 'dying_gasp'
+                              ? t('Dying Gasp')
+                              : statusKey === 'link_loss'
+                                ? t('Link Loss')
+                                : statusKey === 'unknown'
+                                  ? t('Unknown')
+                                  : t('Offline')
+                          const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                          const serialValue = onu.serial_number || onu.serial || '—'
+                          const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                          const offlineSince = statusKey === 'online' ? '—' : formatOfflineSince(onu.offline_since, i18n.language)
+                          const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
+                          const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
+                            (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
+                            (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
+                            (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                          ))
+                          return (
+                            <div
+                              key={onu.id}
+                              data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
+                              className={`rounded-lg border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
+                            >
+                              <div className="min-w-0 flex-1 flex flex-col">
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
+                                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
+                              </div>
+                              <div className="shrink-0 flex flex-col items-end gap-0.5">
+                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}>
+                                  <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
+                                  {statusLabel}
+                                </span>
+                                <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{offlineSince}</span>
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {statusRows.length === 0 && (
+                          <div className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                            {t('No ONU data available')}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    </>
+
                   ) : (
-                    <div className="flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                    <>
+                    {/* Desktop power table */}
+                    <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
@@ -1385,15 +1513,19 @@ const App = () => {
                             <col style={{ width: '24%' }} />
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
-                            {powerRows.map(({ onu }) => {
+                            {powerRows.map(({ onu, statusKey }) => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const { onuRx, oltRx, readAt } = getOnuPowerSnapshot(onu)
-                              const hasOnuRx = onuRx !== null && onuRx !== undefined && onuRx !== ''
-                              const hasOltRx = oltRx !== null && oltRx !== undefined && oltRx !== ''
-                              const onuRxColor = powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
-                              const oltRxColor = powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
+                              const parsedOnuRx = asNumericPower(onuRx)
+                              const parsedOltRx = asNumericPower(oltRx)
+                              const hasOnuRx = parsedOnuRx !== null
+                              const hasOltRx = parsedOltRx !== null
+                              const onuRxColor = powerColorClass(getPowerColor(parsedOnuRx, 'onu_rx', selectedPonData?.olt?.id))
+                              const oltRxColor = powerColorClass(getPowerColor(parsedOltRx, 'olt_rx', selectedPonData?.olt?.id))
+                              const isOfflineStatus = statusKey !== 'online'
+                              const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
                               const readingAt = formatReadingAt(readAt, i18n.language)
                               const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
                               const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
@@ -1424,21 +1556,21 @@ const App = () => {
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
                                     {!hasOnuRx && !hasOltRx ? (
-                                      <span className="inline-block text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">—</span>
+                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
                                     ) : (
                                       <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('ONU')}</span>
-                                          <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
+                                          <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(parsedOnuRx) : '—'}</span>
                                         </span>
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('OLT')}</span>
-                                          <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                          <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(parsedOltRx) : '—'}</span>
                                         </span>
                                       </div>
                                     )}
                                   </td>
-                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-center">
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${!hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>
                                     {readingAt}
                                   </td>
                                 </tr>
@@ -1455,10 +1587,74 @@ const App = () => {
                         </table>
                       </div>
                     </div>
+                    {/* Mobile power cards */}
+                    <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                      <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-2">
+                        {powerRows.map(({ onu, statusKey }) => {
+                          const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                          const serialValue = onu.serial_number || onu.serial || '—'
+                          const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                          const { onuRx, oltRx, readAt } = getOnuPowerSnapshot(onu)
+                          const parsedOnuRx = asNumericPower(onuRx)
+                          const parsedOltRx = asNumericPower(oltRx)
+                          const hasOnuRx = parsedOnuRx !== null
+                          const hasOltRx = parsedOltRx !== null
+                          const onuRxColor = powerColorClass(getPowerColor(parsedOnuRx, 'onu_rx', selectedPonData?.olt?.id))
+                          const oltRxColor = powerColorClass(getPowerColor(parsedOltRx, 'olt_rx', selectedPonData?.olt?.id))
+                          const isOfflineStatus = statusKey !== 'online'
+                          const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
+                          const readingAt = formatReadingAt(readAt, i18n.language)
+                          const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
+                          const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
+                            (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
+                            (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
+                            (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                          ))
+                          return (
+                            <div
+                              key={`power-${onu.id}`}
+                              data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
+                              className={`rounded-lg border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
+                            >
+                              <div className="min-w-0 flex-1 flex flex-col">
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
+                                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
+                              </div>
+                              <div className="shrink-0 flex flex-col items-end gap-0.5">
+                                {(hasOnuRx || hasOltRx) ? (
+                                  <>
+                                    <span className="inline-flex items-center text-[11px] font-bold tabular-nums whitespace-nowrap">
+                                      <span className="w-8 text-right font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
+                                      <span className={`ml-1 font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(parsedOnuRx) : '—'}</span>
+                                    </span>
+                                    <span className="inline-flex items-center text-[11px] font-bold tabular-nums whitespace-nowrap">
+                                      <span className="w-8 text-right font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
+                                      <span className={`ml-1 font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(parsedOltRx) : '—'}</span>
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span className={`text-[11px] font-semibold tabular-nums ${isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
+                                )}
+                                <span className={`text-[10px] font-semibold tabular-nums ${!hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {powerRows.length === 0 && (
+                          <div className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
+                            {t('No ONU data available')}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    </>
                   )}
                 </div>
               </div>
-            )}
+              )
+            })()}
           </aside>
         )}
       </main>

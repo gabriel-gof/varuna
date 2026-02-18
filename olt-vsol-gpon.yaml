@@ -1,0 +1,621 @@
+zabbix_export:
+  version: '6.0'
+  date: '2024-02-22T15:25:14Z'
+  groups:
+    - uuid: 7df96b18c230490a9a0a9e2307226338
+      name: Templates
+  templates:
+    - uuid: fa664cb5405943759507ae2835e56ff7
+      template: 'Template Gerenciatec OLT VSOL GPON'
+      name: 'Template Gerenciatec OLT VSOL GPON'
+      groups:
+        - name: Templates
+      items:
+        - uuid: c7f0393fe11b439bb32bc0fccd332097
+          name: 'ONUs PON 1'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.1
+          key: gOnuNumberAll1
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 5d47f0d3bae2495c814ee561828d04c1
+          name: 'ONUs PON 2'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.2
+          key: gOnuNumberAll2
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 30d79fbb70494c7498f023d3561fb059
+          name: 'ONUs PON 3'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.3
+          key: gOnuNumberAll3
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 4d1b34c44e2e48e19f6a9f06566c77c2
+          name: 'ONUs PON 4'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.4
+          key: gOnuNumberAll4
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 6690344be0aa4daf9f21b1a46b822ec1
+          name: 'ONUs PON 5'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.5
+          key: gOnuNumberAll5
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 1c23996453874a1f814b40797ea8fd16
+          name: 'ONUs PON 6'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.6
+          key: gOnuNumberAll6
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 5f9d17f9493d43b5888ecde15d5f2db6
+          name: 'ONUs PON 7'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.7
+          key: gOnuNumberAll7
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: bdd23c9b3c8541faba19e6f4492326e2
+          name: 'ONUs PON 8'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.2.8
+          key: gOnuNumberAll8
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 1d1cb53efb0c47668a61cf5ce009cd12
+          name: 'ONUs Offline PON 1'
+          type: CALCULATED
+          key: gOnuNumberOffline1
+          params: 'last(//gOnuNumberAll1) - last(//gOnuNumberOnline1)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 1bd9ea55882e4b73b5231b39068f0c97
+          name: 'ONUs Offline PON 2'
+          type: CALCULATED
+          key: gOnuNumberOffline2
+          params: 'last(//gOnuNumberAll2) - last(//gOnuNumberOnline2)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 1f854be54d544e5e9bfc7baf9a73c473
+          name: 'ONUs Offline PON 3'
+          type: CALCULATED
+          key: gOnuNumberOffline3
+          params: 'last(//gOnuNumberAll3) - last(//gOnuNumberOnline3)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: c011612ab611435ba5ae0cbed9f3a588
+          name: 'ONUs Offline PON 4'
+          type: CALCULATED
+          key: gOnuNumberOffline4
+          params: 'last(//gOnuNumberAll4) - last(//gOnuNumberOnline4)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: b1bafff7532e4f78aa828f01be854caf
+          name: 'ONUs Offline PON 5'
+          type: CALCULATED
+          key: gOnuNumberOffline5
+          params: 'last(//gOnuNumberAll5) - last(//gOnuNumberOnline5)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: f258e6d51082460a8c7e1cd1a21faff8
+          name: 'ONUs Offline PON 6'
+          type: CALCULATED
+          key: gOnuNumberOffline6
+          params: 'last(//gOnuNumberAll6) - last(//gOnuNumberOnline6)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: a29a0040d52f4b878fd47605966e560f
+          name: 'ONUs Offline PON 7'
+          type: CALCULATED
+          key: gOnuNumberOffline7
+          params: 'last(//gOnuNumberAll7) - last(//gOnuNumberOnline7)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 076d003dc1924a58914f9dbd40d172d0
+          name: 'ONUs Offline PON 8'
+          type: CALCULATED
+          key: gOnuNumberOffline8
+          params: 'last(//gOnuNumberAll8) - last(//gOnuNumberOnline8)'
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: c62eaac98c054c8aa1603d6d3e9a5c3a
+          name: 'ONUs Online PON 1'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.1
+          key: gOnuNumberOnline1
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: da7e44dcc17e492e9e7e04ada26044db
+          name: 'ONUs Online PON 2'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.2
+          key: gOnuNumberOnline2
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 2bff99146d254352b6d5187fb8d28deb
+          name: 'ONUs Online PON 3'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.3
+          key: gOnuNumberOnline3
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 7dc27beb06214526812d47503dea1e5b
+          name: 'ONUs Online PON 4'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.4
+          key: gOnuNumberOnline4
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: c95cfa20133a4a34ad1a2ac15f8185e4
+          name: 'ONUs Online PON 5'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.5
+          key: gOnuNumberOnline5
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 5bc7591d71614f0582cec570b6e61b21
+          name: 'ONUs Online PON 6'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.6
+          key: gOnuNumberOnline6
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: e786f77f385246539f3bac069bb19247
+          name: 'ONUs Online PON 7'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.7
+          key: gOnuNumberOnline7
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 8f433404ed3d4fb3ab92f08c035d5888
+          name: 'ONUs Online PON 8'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.6.1.1.18.1.3.8
+          key: gOnuNumberOnline8
+          tags:
+            - tag: Application
+              value: Atividade
+        - uuid: 84f536bf793d4dd0926fa9918cad13f9
+          name: Uptime
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.2.1.1.3.0
+          key: sysUpTimeInstance
+          delay: 5m
+          units: uptime
+          preprocessing:
+            - type: MULTIPLIER
+              parameters:
+                - '0.01'
+          tags:
+            - tag: Application
+              value: Sistema
+          triggers:
+            - uuid: fdb83e79aee14457adbac63a24729736
+              expression: 'change(/Template Gerenciatec OLT VSOL GPON/sysUpTimeInstance)<0'
+              name: '{HOST.NAME}: Foi reiniciada'
+              priority: INFO
+              manual_close: 'YES'
+        - uuid: c8ee3c0d9eaa41969903c0ed0d80474b
+          name: 'CPU Usage'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.5.10.12.3.0
+          key: vsSystemBaseInfoCPU
+          delay: 5m
+          value_type: FLOAT
+          units: '%'
+          tags:
+            - tag: Application
+              value: Sistema
+          triggers:
+            - uuid: 7a0ec52c8e8b4862a8de4f9cc8685257
+              expression: 'min(/Template Gerenciatec OLT VSOL GPON/vsSystemBaseInfoCPU,5m)>{$HIGH_CPU_USAGE_THRESHOLD}'
+              name: '{HOST.NAME}: Alto uso de CPU'
+              event_name: '{HOST.NAME}: Alto uso de CPU (>{$HIGH_CPU_USAGE_THRESHOLD}%)'
+              opdata: 'Uso de CPU: {ITEM.LASTVALUE1}'
+              priority: AVERAGE
+        - uuid: 04cd3e5453b746c19181ebf5717ca37a
+          name: 'Memory Usage'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.5.10.12.4.0
+          key: vsSystemMemory
+          delay: 5m
+          units: '%'
+          tags:
+            - tag: Application
+              value: Sistema
+          triggers:
+            - uuid: 1a2b6ab0b5a84cc694a21e28fdd153ef
+              expression: 'min(/Template Gerenciatec OLT VSOL GPON/vsSystemMemory,5m)>{$HIGH_MEM_USAGE_THRESHOLD}'
+              name: '{HOST.NAME}: Alto uso de memória'
+              event_name: '{HOST.NAME}: Alto uso de memória (> {$HIGH_MEM_USAGE_THRESHOLD}%)'
+              opdata: 'Uso de memória: {ITEM.LASTVALUE1}'
+              priority: AVERAGE
+        - uuid: 1434256c085c49f7914db3fc58a0a8ed
+          name: Temperature
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.37950.1.1.5.10.12.5.9.0
+          key: vsTemperatureEntry
+          delay: 5m
+          units: C°
+          tags:
+            - tag: Application
+              value: Sistema
+          triggers:
+            - uuid: 1115314db51c46bd990f37a3d8f9f287
+              expression: 'min(/Template Gerenciatec OLT VSOL GPON/vsTemperatureEntry,5m)>{$HIGH_TEMPERATURE_THRESHOLD}'
+              name: '{HOST.NAME}: Temperatura alta'
+              event_name: '{HOST.NAME}: Temperatura alta (> {$HIGH_TEMPERATURE_THRESHOLD}Cº)'
+              opdata: 'Temperatura: {ITEM.LASTVALUE1}'
+              priority: HIGH
+      discovery_rules:
+        - uuid: e332f13384a84a3aa0c41a9b6d57ef0a
+          name: 'Network Interfaces Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#IFOPERSTATUS},1.3.6.1.2.1.2.2.1.8,{#IFADMINSTATUS},1.3.6.1.2.1.2.2.1.7,{#IFALIAS},1.3.6.1.2.1.31.1.1.1.18,{#IFNAME},1.3.6.1.2.1.31.1.1.1.1,{#IFDESCR},1.3.6.1.2.1.2.2.1.2,{#IFTYPE},1.3.6.1.2.1.2.2.1.3]'
+          key: net.if.discovery
+          delay: 24h
+          filter:
+            evaltype: FORMULA
+            formula: '(A and B) or C'
+            conditions:
+              - macro: '{#IFNAME}'
+                value: (^GE\d+\/\d+$)
+                formulaid: A
+              - macro: '{#IFOPERSTATUS}'
+                value: '1'
+                formulaid: B
+              - macro: '{#IFNAME}'
+                value: (^GPON\d+\/\d+$)
+                formulaid: C
+          item_prototypes:
+            - uuid: cd229020c10e4ac6a9b932e360a64e49
+              name: 'Interface {#IFNAME}({#IFALIAS}): Bits received'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.6.{#SNMPINDEX}'
+              key: 'net.if.in[ifHCInOctets.{#SNMPINDEX}]'
+              history: 7d
+              trends: 120d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+            - uuid: a2e611a1a49f45a496ed70045ee1285d
+              name: 'Interface {#IFNAME}({#IFALIAS}): Bits sent'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.10.{#SNMPINDEX}'
+              key: 'net.if.out[ifHCOutOctets.{#SNMPINDEX}]'
+              history: 7d
+              trends: 120d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+            - uuid: b7a90b9bf80940bcaa1fd4d27d918b67
+              name: 'Interface {#IFNAME}({#IFALIAS}): Operational status'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}'
+              key: 'net.if.status[ifOperStatus.{#SNMPINDEX}]'
+              history: 7d
+              trends: 120d
+              trigger_prototypes:
+                - uuid: 1b54103fb1a842c7a94dec71c5285054
+                  expression: 'last(/Template Gerenciatec OLT VSOL GPON/net.if.status[ifOperStatus.{#SNMPINDEX}])<>1'
+                  name: 'Interface {#IFNAME}({#IFALIAS}): Link down'
+                  priority: AVERAGE
+        - uuid: 97538681bb32409689a9db27c69279db
+          name: 'ONUs PON 1'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.1,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.1,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.1]'
+          key: vs.onu.pon1
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: fbfbb63acea548b3804dd90d162122bd
+              name: 'Potencia PON 1 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.1.{#IDONU}'
+              key: 'sv.pon.1.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: 90d
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: af006932ee304c7897150c8af46f5f63
+              name: 'Status PON 1 ID: {#IDONU} - {#DESCRIPTION}'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.1.{#IDONU}'
+              key: 'sv.stats.pon.1.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              tags:
+                - tag: Application
+                  value: Atividade
+        - uuid: 898ddcb78de74fc492c3504509b4e05d
+          name: 'ONUs PON 2'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.2,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.2,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.2]'
+          key: vs.onu.pon2
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: c717a4faf44e4f7fbe8ffc8205cc6b79
+              name: 'Potencia PON 2 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.2.{#IDONU}'
+              key: 'sv.pon.2.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: f0c7c007a56e4cc8982c3417a1273bbc
+              name: 'Status PON 2 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.2.{#IDONU}'
+              key: 'sv.stats.pon.2.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              tags:
+                - tag: Application
+                  value: Atividade
+        - uuid: 0f0cace8fba940529cea2af040b65f73
+          name: 'ONUs PON 3'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.3,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.3,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.3]'
+          key: vs.onu.pon3
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: e9ed4096f8f7456793fe8973eb20d6ee
+              name: 'Potencia PON 3 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.3.{#IDONU}'
+              key: 'sv.pon.3.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: a850e598ae81494facae33a19036d046
+              name: 'Status PON 3 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.3.{#IDONU}'
+              key: 'sv.stats.pon.3.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              tags:
+                - tag: Application
+                  value: Atividade
+        - uuid: 955b8e1760984609bf7b14f3d6b02ef6
+          name: 'ONUs PON 4'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.4,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.4,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.4]'
+          key: vs.onu.pon4
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: 4305862a2bc14fadadf28e717328bc4a
+              name: 'Potencia PON 4 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.4.{#IDONU}'
+              key: 'sv.pon.4.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: e39cafb07d35404589f76eeca9abc648
+              name: 'Status PON 4 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.4.{#IDONU}'
+              key: 'sv.stats.pon.4.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              tags:
+                - tag: Application
+                  value: Atividade
+        - uuid: c0655201c0784973a63d1e17be8dde46
+          name: 'ONUs PON 5'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.5,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.5,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.5]'
+          key: vs.onu.pon5
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: c6c19dee0fa54636b8e81fb6c912b8b5
+              name: 'Potencia PON 5 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.5.{#IDONU}'
+              key: 'sv.pon.5.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: b6eca443fe3b48bf8c2e6956a9ac6d99
+              name: 'Status PON 5 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.5.{#IDONU}'
+              key: 'sv.stats.pon.5.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              tags:
+                - tag: Application
+                  value: Atividade
+        - uuid: e0b879a5d21a43d1bf590d9d1cc6e929
+          name: 'ONUs PON 6'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.6,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.6,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.6]'
+          key: vs.onu.pon6
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: a462c081edb043db8666f1d9ce71bbdc
+              name: 'Potencia PON 6 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.6.{#IDONU}'
+              key: 'sv.pon.6.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: aebc3d3876e249a7b127ed03e52ffc12
+              name: 'Status PON 6 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.6.{#IDONU}'
+              key: 'sv.stats.pon.6.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              tags:
+                - tag: Application
+                  value: Atividade
+        - uuid: 58735cb41a07451cbc915a51c6390fc3
+          name: 'ONUs PON 7'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.7,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.7,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.7]'
+          key: vs.onu.pon7
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: 5a6900d749be43ee98445ae70ad80908
+              name: 'Potencia PON 7 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.7.{#IDONU}'
+              key: 'sv.pon.7.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: dbebb9a161894e95935efd73912829a6
+              name: 'Status PON 7 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.7.{#IDONU}'
+              key: 'sv.stats.pon.7.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              tags:
+                - tag: Application
+                  value: Atividade
+        - uuid: 9d7e4bc0670f401489e74ca9377bda16
+          name: 'ONUs PON 8'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#DESCRIPTION},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24.8,{#MODEL},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.17.8,{#IDONU},.1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2.8]'
+          key: vs.onu.pon8
+          delay: 24h
+          lifetime: 7d
+          item_prototypes:
+            - uuid: 52dc1ef2d6c647259cc1462d555cff61
+              name: 'Potencia PON 8 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.8.{#IDONU}'
+              key: 'sv.pon.8.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              preprocessing:
+                - type: RTRIM
+                  parameters:
+                    - (dBm)
+              tags:
+                - tag: Application
+                  value: Potencia
+            - uuid: f46d2edee6614422a5dc82d240e71312
+              name: 'Status PON 8 ID: {#IDONU} - {#DESCRIPTION} '
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.8.{#IDONU}'
+              key: 'sv.stats.pon.8.tx[{#DESCRIPTION}]'
+              delay: 5m
+              history: 7d
+              trends: '0'
+              value_type: FLOAT
+              tags:
+                - tag: Application
+                  value: Atividade
+      macros:
+        - macro: '{$HIGH_CPU_USAGE_THRESHOLD}'
+          value: '90'
+        - macro: '{$HIGH_MEM_USAGE_THRESHOLD}'
+          value: '90'
+        - macro: '{$HIGH_TEMPERATURE_THRESHOLD}'
+          value: '65'

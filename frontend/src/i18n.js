@@ -180,7 +180,10 @@ const resources = {
       Execute: 'Execute',
       'Execute now': 'Execute now',
       'Power refresh executed successfully': 'Power refresh executed successfully',
-      Run: 'Run'
+      Run: 'Run',
+      addDescription: 'Add a description...',
+      descriptionUpdated: 'Description updated',
+      descriptionUpdateFailed: 'Failed to update description'
     }
   },
   pt: {
@@ -361,7 +364,10 @@ const resources = {
       Execute: 'Executar',
       'Execute now': 'EXECUTAR AGORA',
       'Power refresh executed successfully': 'Potência atualizada com sucesso',
-      Run: 'RODAR'
+      Run: 'RODAR',
+      addDescription: 'Adicionar uma descrição...',
+      descriptionUpdated: 'Descrição atualizada',
+      descriptionUpdateFailed: 'Falha ao atualizar descrição'
     }
   }
 }

@@ -146,6 +146,7 @@ class OLTPON(models.Model):
     port_id = models.IntegerField(null=True, blank=True, verbose_name='Port ID')
     pon_key = models.CharField(max_length=120, verbose_name='Chave do PON')
     name = models.CharField(max_length=200, blank=True, verbose_name='Nome')
+    description = models.TextField(blank=True, default='', verbose_name='Descrição')
 
     is_active = models.BooleanField(default=True, verbose_name='Ativo')
     last_discovered_at = models.DateTimeField(auto_now=True, verbose_name='Última Descoberta')
