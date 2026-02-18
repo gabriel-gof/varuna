@@ -59,7 +59,7 @@ export const InlineEditableText = ({ value, placeholder, onSave }) => {
           onBlur={commit}
           onKeyDown={handleKeyDown}
           disabled={saving}
-          className="h-7 flex-1 min-w-0 bg-white dark:bg-slate-800 border border-emerald-400/60 dark:border-emerald-500/40 rounded-md px-2 text-[13px] font-bold tracking-wide text-slate-700 dark:text-slate-200 placeholder:text-slate-400/50 placeholder:font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+          className="h-7 flex-1 min-w-0 bg-white dark:bg-slate-800 border border-emerald-400/60 dark:border-emerald-500/40 rounded-md px-2 text-[12px] font-semibold text-slate-700 dark:text-slate-200 placeholder:text-slate-400/50 placeholder:font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
           placeholder={placeholder}
         />
         {saving && (
@@ -76,9 +76,9 @@ export const InlineEditableText = ({ value, placeholder, onSave }) => {
       className="group/desc flex items-center gap-1.5 min-w-0 max-w-full rounded-md px-1 -mx-1 py-0.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60"
     >
       <span
-        className={`text-[13px] font-bold tracking-wide truncate leading-none ${
+        className={`text-[12px] font-semibold truncate leading-none ${
           value
-            ? 'text-slate-500 dark:text-slate-400'
+            ? 'text-slate-400 dark:text-slate-500'
             : 'text-slate-400/50 dark:text-slate-500/50'
         }`}
       >

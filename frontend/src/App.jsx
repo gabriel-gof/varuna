@@ -11,8 +11,7 @@ import {
   X,
   RotateCw,
   Check,
-  ArrowDownUp,
-  ArrowLeft
+  ArrowDownUp
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
@@ -1200,13 +1199,6 @@ const App = () => {
                 {/* Mobile header */}
                 <div className="flex lg:hidden flex-col px-4 py-3 border-b border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 gap-1">
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleClosePanel}
-                      className="h-8 w-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-95 shrink-0 -ml-1"
-                      aria-label={t('Close')}
-                    >
-                      <ArrowLeft className="w-[18px] h-[18px]" />
-                    </button>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
                         {selectedPonPath.map((part, idx) => (
@@ -1224,6 +1216,13 @@ const App = () => {
                         onSave={handleDescriptionSave}
                       />
                     </div>
+                    <button
+                      onClick={handleClosePanel}
+                      className="h-8 w-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-95 shrink-0"
+                      aria-label={t('Close')}
+                    >
+                      <X className="w-[18px] h-[18px]" />
+                    </button>
                   </div>
                 </div>
 
@@ -1450,11 +1449,11 @@ const App = () => {
                             <div
                               key={onu.id}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-1.5 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                             >
-                              <div className="min-w-0 flex-1 flex flex-col">
-                                <span className="text-[12px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">{onuNumber}</span>
+                              <div className="min-w-0 flex-1 flex flex-col gap-px">
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
                                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
                               </div>
@@ -1612,24 +1611,24 @@ const App = () => {
                             <div
                               key={`power-${onu.id}`}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-1.5 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                             >
-                              <div className="min-w-0 flex-1 flex flex-col">
-                                <span className="text-[12px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">{onuNumber}</span>
+                              <div className="min-w-0 flex-1 flex flex-col gap-px">
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
                                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 {(hasOnuRx || hasOltRx) ? (
                                   <>
-                                    <span className="inline-flex items-center text-[11px] font-bold tabular-nums whitespace-nowrap">
-                                      <span className="w-8 text-right font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                                      <span className={`ml-1 font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(parsedOnuRx) : '—'}</span>
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
+                                      <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
+                                      <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(parsedOnuRx) : '—'}</span>
                                     </span>
-                                    <span className="inline-flex items-center text-[11px] font-bold tabular-nums whitespace-nowrap">
-                                      <span className="w-8 text-right font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                      <span className={`ml-1 font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(parsedOltRx) : '—'}</span>
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
+                                      <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
+                                      <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(parsedOltRx) : '—'}</span>
                                     </span>
                                     <span className={`text-[10px] font-semibold tabular-nums ${!hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
                                   </>

@@ -51,6 +51,8 @@ The UI remains topology-first. No dashboard page is required for current product
 - Power panel auto-refresh uses `power_interval_seconds` of the selected OLT.
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
 - In Power tab, rows without power readings show only a hyphen (`—`); for offline statuses the hyphen is red in both `Potência` and `Leitura`, and for online rows it keeps the default neutral style.
+- In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
+- Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
 
 ## Settings Panel Design
 - OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
