@@ -196,37 +196,24 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy,
           }`}>
             {olt.name || '\u2014'}
           </p>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">{olt.ip_address || '\u2014'}:{olt.snmp_port || '161'}</span>
-            <span className="w-[3px] h-[3px] rounded-full bg-slate-300 dark:bg-slate-600" />
-            <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">{String(resolvedVendor || 'Unknown').toUpperCase()}</span>
-            <span className="w-[3px] h-[3px] rounded-full bg-slate-300 dark:bg-slate-600" />
-            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{olt.model_display || olt.vendor_profile_name || '\u2014'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-black text-slate-700 dark:text-slate-300 tabular-nums">{total} <span className="text-[9px] uppercase font-bold text-slate-400 dark:text-slate-500">ONUs</span></span>
+            <span className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
+            <div className="flex items-center gap-1">
+              <span className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">{online}</span>
+              <span className="text-[9px] font-bold text-slate-300 dark:text-slate-600">/</span>
+              <span className="text-[11px] font-black text-rose-500 dark:text-rose-400 tabular-nums">{offline}</span>
+            </div>
           </div>
         </div>
 
-        {/* Header stats */}
-        <div className="flex flex-col items-end mr-2 text-right">
-           {hasOnus ? (
-             <div className="flex items-center gap-2 leading-none">
-                <span className="text-[11px] font-black text-slate-700 dark:text-slate-300 tabular-nums">{total} <span className="text-[9px] uppercase font-bold text-slate-400 dark:text-slate-500">ONUs</span></span>
-                <span className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
-                <div className="flex items-center gap-1">
-                  <span className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">{online}</span>
-                  <span className="text-[9px] font-bold text-slate-300 dark:text-slate-600">/</span>
-                  <span className="text-[11px] font-black text-rose-500 dark:text-rose-400 tabular-nums">{offline}</span>
-                </div>
-             </div>
-           ) : (
-             <span className="text-[9px] font-bold text-slate-300 dark:text-slate-600 uppercase tracking-wider">{t('No ONUs')}</span>
-           )}
-        </div>
+        <div className="mr-2" />
 
         {isSelected && onDeleteClick && (
           <button
             onClick={(e) => { e.stopPropagation(); onDeleteClick() }}
             disabled={deleteBusy}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all disabled:opacity-50 active:scale-95"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-rose-400 dark:text-rose-400 hover:text-rose-600 dark:hover:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all disabled:opacity-50 active:scale-95"
             title={t('Remove OLT')}
           >
             {deleteBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
@@ -721,7 +708,7 @@ export const SettingsPanel = ({
                             key={tab}
                             type="button"
                             onClick={() => setCreateCardTab(tab)}
-                            className={`px-4 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
+                            className={`min-w-[96px] px-4 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all text-center ${
                               createCardTab === tab
                                 ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-emerald-500/10'
                                 : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-700/30'
@@ -976,7 +963,7 @@ export const SettingsPanel = ({
                             key={tab}
                             type="button"
                             onClick={() => setEditCardTab(tab)}
-                            className={`px-4 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
+                            className={`min-w-[96px] px-4 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all text-center ${
                               editCardTab === tab
                                 ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-emerald-500/10'
                                 : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-700/30'

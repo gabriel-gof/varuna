@@ -8,7 +8,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Backend API remains on port `8000` and is proxied via `/api`.
 
 ## Structure
-- `frontend/src/App.jsx`: app shell, topology/settings tabs, polling refresh, SNMP checks.
+- `frontend/src/App.jsx`: app shell, topology/settings tabs, polling refresh, SNMP checks. Nav bar has Topology and Settings buttons grouped on the left; user menu on the right.
 - `frontend/src/components/NetworkTopology.jsx`: topology tree and alarm/search/filter interactions.
 - `frontend/src/components/SettingsPanel.jsx`: OLT CRUD/configuration UX.
 - `frontend/src/services/api.js`: Axios API client.
@@ -90,7 +90,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - `parseDuration()` converts input string → seconds; `formatDuration()` converts seconds → human-readable string.
   - Form state stores human-readable strings; save handlers convert back to `discovery_interval_minutes` / `polling_interval_seconds` / `power_interval_seconds` for the API.
 - Dirty detection compares `editForm` values against current OLT data with special duration-aware comparison.
-- Card header shows total ONU count with online (green) / offline (red) breakdown.
+- Card header shows OLT name with total ONU count and online (green) / offline (red) breakdown as subtitle. IP:port, vendor, and model are not shown in the header — they live in the Device tab form fields.
 - `onRunDiscovery` prop triggers `POST /olts/:id/run_discovery/` from App.jsx.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 

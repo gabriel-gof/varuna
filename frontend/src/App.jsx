@@ -1099,9 +1099,6 @@ const App = () => {
             <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
             {activeNav === 'topology' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
-        </div>
-
-        <div className="flex items-center gap-1 h-full ml-auto mr-6">
           <button
             onClick={() => setActiveNav('settings')}
             className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
@@ -1112,7 +1109,7 @@ const App = () => {
           </button>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-3">
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all group outline-none">
