@@ -23,9 +23,16 @@ export const getPowerIntervalSeconds = (olt) => toPositiveSeconds(olt?.power_int
 
 export const isStatusStale = (olt, nowMs = Date.now()) => {
   const lastPollMs = parseTimestampMs(olt?.last_poll_at)
-  if (!lastPollMs) return true
   const staleAfterMs = getPollingIntervalSeconds(olt) * 1000
-  return nowMs - lastPollMs > staleAfterMs
+  const graceMs = Math.max(90_000, Math.round(staleAfterMs * 0.5))
+
+  if (!lastPollMs) {
+    const lastDiscoveryMs = parseTimestampMs(olt?.last_discovery_at)
+    if (!lastDiscoveryMs) return false
+    return nowMs - lastDiscoveryMs > staleAfterMs + graceMs
+  }
+
+  return nowMs - lastPollMs > staleAfterMs + graceMs
 }
 
 const getPonHealthState = (pon) => {

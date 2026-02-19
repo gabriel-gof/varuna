@@ -5,6 +5,7 @@ import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, clearOltThresh
 import { HEALTH_STYLES } from '../utils/healthStyles'
 
 const MAX_OLT_NAME = 12
+const SELECTED_OLT_STORAGE_KEY = 'varuna.settings.selectedOltId'
 
 const timeAgo = (dateStr, t) => {
   if (!dateStr) return '-'
@@ -163,7 +164,7 @@ const getSnmpBadge = (olt, snmpStatuses, t) => {
 
 /* ─── OLT Card header ─── */
 
-const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, resolvedVendor, t, children }) => {
+const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy, resolvedVendor, t, children }) => {
   const total = Number(olt.onu_count || 0)
   const online = Number(olt.online_count || 0)
   const offline = Number(olt.offline_count || 0)
@@ -221,6 +222,17 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, reso
            )}
         </div>
 
+        {isSelected && onDeleteClick && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDeleteClick() }}
+            disabled={deleteBusy}
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all disabled:opacity-50 active:scale-95"
+            title={t('Remove OLT')}
+          >
+            {deleteBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+          </button>
+        )}
+
         <div className={`transition-transform duration-300 ${
           isSelected ? `rotate-180 ${health.chevronOpen}` : 'text-slate-300 group-hover/node:text-slate-400'
         }`}>
@@ -229,8 +241,8 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDelete, deleteBusy, reso
       </div>
 
       {isSelected && children && (
-        <div className="border-t border-slate-100 dark:border-slate-800/50">
-          <div className="px-3 pb-3 animate-in slide-in-from-top-1 duration-200 cursor-default">
+        <div className="border-t border-slate-100 dark:border-slate-700/40">
+          <div className="px-4 pb-4 animate-in slide-in-from-top-1 duration-200 cursor-default">
             {children}
           </div>
         </div>
@@ -366,7 +378,15 @@ export const SettingsPanel = ({
 }) => {
   const { t } = useTranslation()
   const [showAddForm, setShowAddForm] = useState(false)
-  const [selectedOltId, setSelectedOltId] = useState(null)
+  const [selectedOltId, setSelectedOltId] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return null
+      const saved = window.localStorage.getItem(SELECTED_OLT_STORAGE_KEY)
+      return saved ? String(saved) : null
+    } catch (_err) {
+      return null
+    }
+  })
   const [form, setForm] = useState(() => buildInitialForm(vendorProfiles))
   const [editForm, setEditForm] = useState(null)
   const [localError, setLocalError] = useState('')
@@ -404,14 +424,40 @@ export const SettingsPanel = ({
     setThresholdForm(getOltThresholds(selectedOltId))
   }, [selectedOltId])
 
-  // Clear selection when OLTs disappear
+  // Auto-select first OLT on initial load or when selected OLT disappears
+  const hasAutoSelectedRef = useRef(false)
   useEffect(() => {
-    if (!olts.length) { setSelectedOltId(null); return }
+    if (!olts.length) {
+      setSelectedOltId(null)
+      hasAutoSelectedRef.current = false
+      return
+    }
+
     if (selectedOltId) {
       const exists = olts.some((item) => String(item.id) === String(selectedOltId))
       if (exists) return
+      // Selected OLT was removed — fall through to auto-select
+    } else if (hasAutoSelectedRef.current) {
+      // User manually deselected — don't override
+      return
     }
+
+    hasAutoSelectedRef.current = true
+    setSelectedOltId(String(olts[0].id))
   }, [olts, selectedOltId])
+
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return
+      if (selectedOltId) {
+        window.localStorage.setItem(SELECTED_OLT_STORAGE_KEY, String(selectedOltId))
+      } else {
+        window.localStorage.removeItem(SELECTED_OLT_STORAGE_KEY)
+      }
+    } catch (_err) {
+      // noop
+    }
+  }, [selectedOltId])
 
   // Sync edit form when selection changes
   useEffect(() => {
@@ -606,8 +652,8 @@ export const SettingsPanel = ({
 
         {/* Header row */}
         <div className="w-full flex items-center justify-between">
-          <p className="text-[11px] font-medium text-slate-300 dark:text-slate-600 uppercase tracking-widest select-none">
-            {t('Add an OLT to start')}
+          <p className="text-[11px] font-black text-slate-300 dark:text-slate-600 uppercase tracking-widest select-none">
+            {t('Add OLT')}
           </p>
           <button
             type="button"
@@ -664,8 +710,8 @@ export const SettingsPanel = ({
                 </div>
 
                 {/* Body Content - Exact Same Tabs */}
-                <div className="border-t border-slate-100 dark:border-slate-800/50">
-                  <div className="px-3 pb-3 pt-3 space-y-4">
+                <div className="border-t border-slate-100 dark:border-slate-700/40">
+                  <div className="px-4 pb-4 pt-3 space-y-4">
                     
                     {/* Tab Navigation */}
                     <div className="flex justify-center mb-5">
@@ -675,7 +721,7 @@ export const SettingsPanel = ({
                             key={tab}
                             type="button"
                             onClick={() => setCreateCardTab(tab)}
-                            className={`w-24 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
+                            className={`px-4 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
                               createCardTab === tab
                                 ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-emerald-500/10'
                                 : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-700/30'
@@ -687,14 +733,14 @@ export const SettingsPanel = ({
                       </div>
                     </div>
 
-                    <div className="h-[170px] w-full overflow-y-auto custom-scrollbar relative">
+                    <div className="min-h-[170px] w-full overflow-y-auto custom-scrollbar relative">
                     
                     {/* TAB: General (Create) */}
                     {createCardTab === 'device' && (
                         <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-200 px-2 pt-2 pb-1">
-                            <div className="grid grid-cols-12 gap-x-4 gap-y-4 w-full max-w-xl">
+                            <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-4 w-full max-w-xl">
                                {/* Row 1 */}
-                               <div className="col-span-4 flex flex-col gap-1.5">
+                               <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('OLT name')}</FieldLabel>
                                   <FieldInput
                                     className="text-center"
@@ -705,7 +751,7 @@ export const SettingsPanel = ({
                                     placeholder="OLT-01"
                                   />
                                </div>
-                               <div className="col-span-4 flex flex-col gap-1.5">
+                               <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('Vendor')}</FieldLabel>
                                   <FieldSelect
                                     className="text-center"
@@ -718,7 +764,7 @@ export const SettingsPanel = ({
                                     ))}
                                   </FieldSelect>
                                </div>
-                               <div className="col-span-4 flex flex-col gap-1.5">
+                               <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('Model')}</FieldLabel>
                                   <FieldSelect
                                     className="text-center"
@@ -733,7 +779,7 @@ export const SettingsPanel = ({
                                </div>
 
                                {/* Row 2 */}
-                               <div className="col-span-4 flex flex-col gap-1.5">
+                               <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('IP')}</FieldLabel>
                                   <FieldInput
                                     className="text-center"
@@ -742,7 +788,7 @@ export const SettingsPanel = ({
                                     placeholder="10.0.0.1"
                                   />
                                </div>
-                               <div className="col-span-4 flex flex-col gap-1.5">
+                               <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('SNMP community')}</FieldLabel>
                                   <FieldInput
                                     className="text-center"
@@ -751,7 +797,7 @@ export const SettingsPanel = ({
                                     placeholder="public"
                                   />
                                </div>
-                               <div className="col-span-4 flex flex-col gap-1.5">
+                               <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('Port')}</FieldLabel>
                                   <FieldInput
                                     className="text-center"
@@ -770,7 +816,7 @@ export const SettingsPanel = ({
                     {/* TAB: Intervals (Create) */}
                     {createCardTab === 'intervals' && (
                         <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-300 px-2 pt-4 pb-2">
-                            <div className="grid grid-cols-3 gap-6">
+                            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                               {/* Item 1 */}
                               <div className="group flex flex-col items-center gap-2.5">
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
@@ -862,11 +908,11 @@ export const SettingsPanel = ({
                     </div>
 
                     {/* Footer Actions */}
-                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/50 mt-4">
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/40 mt-4">
                       <button
                         type="button"
                         onClick={() => setShowAddForm(false)}
-                        className="h-7 px-3 rounded-sm border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap"
+                        className="h-7 px-3 rounded-lg border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all active:scale-95 whitespace-nowrap"
                       >
                         {t('Cancel')}
                       </button>
@@ -874,7 +920,7 @@ export const SettingsPanel = ({
                         type="button"
                         onClick={handleCreate}
                         disabled={createBusy}
-                        className="h-7 px-3.5 rounded-sm bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                        className="h-7 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95 whitespace-nowrap"
                       >
                         {createBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                         {t('Save')}
@@ -908,31 +954,19 @@ export const SettingsPanel = ({
             const snmpBadge = getSnmpBadge(olt, snmpStatus, t)
 
             return (
-              <div key={olt.id} className="relative group/olt-row">
-                {/* Delete button floating outside - simplified and consistent */}
-                {isSelected && (
-                   <div className="absolute -right-8 top-3 animate-in fade-in zoom-in duration-200 z-10">
-                      <button 
-                        onClick={() => handleDelete(olt.id)}
-                        disabled={deleteBusy}
-                        className="w-6 h-6 rounded-full bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-400 dark:text-slate-500 hover:text-rose-500 hover:border-rose-200 dark:hover:border-rose-900 transition-all disabled:opacity-50"
-                        title={t('Remove OLT')}
-                      >
-                         {deleteBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                      </button>
-                   </div>
-                )}
-
+              <div key={olt.id}>
                 <OltCard
                   olt={olt}
                   isSelected={isSelected}
                   health={health}
                   onSelect={setSelectedOltId}
+                  onDeleteClick={() => handleDelete(olt.id)}
+                  deleteBusy={deleteBusy}
                   resolvedVendor={resolvedVendor}
                   t={t}
                 >
                 {isSelected && editForm && (
-                  <div className="pt-3 space-y-4 border-t border-slate-100 dark:border-slate-800/50">
+                  <div className="pt-3 space-y-4">
 
                     {/* ── Tab bar (Segmented Toggle) ── */}
                     <div className="flex justify-center mb-5">
@@ -942,7 +976,7 @@ export const SettingsPanel = ({
                             key={tab}
                             type="button"
                             onClick={() => setEditCardTab(tab)}
-                            className={`w-24 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
+                            className={`px-4 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${
                               editCardTab === tab
                                 ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-emerald-500/10'
                                 : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-700/30'
@@ -955,15 +989,15 @@ export const SettingsPanel = ({
                     </div>
 
                     {/* ── Fixed height content area ── */}
-                    <div className="h-[170px] w-full overflow-y-auto custom-scrollbar relative">
+                    <div className="min-h-[170px] w-full overflow-y-auto custom-scrollbar relative">
 
                     {/* ── TAB: Device + Connection ── */}
                     {editCardTab === 'device' && (
                       <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-200 px-2 pt-2 pb-1">
-                        <div className="grid grid-cols-12 gap-x-4 gap-y-4 w-full max-w-xl">
+                        <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-4 w-full max-w-xl">
                            
                            {/* Row 1 */}
-                           <div className="col-span-4 flex flex-col gap-1.5">
+                           <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('OLT name')}</FieldLabel>
                               <FieldInput
                                 className="text-center"
@@ -974,7 +1008,7 @@ export const SettingsPanel = ({
                               />
                            </div>
 
-                           <div className="col-span-4 flex flex-col gap-1.5">
+                           <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('Vendor')}</FieldLabel>
                               <FieldSelect
                                 className="text-center"
@@ -988,7 +1022,7 @@ export const SettingsPanel = ({
                               </FieldSelect>
                            </div>
 
-                           <div className="col-span-4 flex flex-col gap-1.5">
+                           <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('Model')}</FieldLabel>
                               <FieldSelect
                                 className="text-center"
@@ -1003,7 +1037,7 @@ export const SettingsPanel = ({
                            </div>
 
                            {/* Row 2 */}
-                           <div className="col-span-4 flex flex-col gap-1.5">
+                           <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('IP')}</FieldLabel>
                               <FieldInput
                                 className="text-center"
@@ -1013,7 +1047,7 @@ export const SettingsPanel = ({
                               />
                            </div>
 
-                           <div className="col-span-4 flex flex-col gap-1.5">
+                           <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('SNMP community')}</FieldLabel>
                               <FieldInput
                                 className="text-center"
@@ -1023,7 +1057,7 @@ export const SettingsPanel = ({
                               />
                            </div>
 
-                           <div className="col-span-4 flex flex-col gap-1.5">
+                           <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('Port')}</FieldLabel>
                               <FieldInput
                                 className="text-center px-1"
@@ -1044,7 +1078,7 @@ export const SettingsPanel = ({
                     {editCardTab === 'intervals' && (
                       <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-300 px-2 pt-4 pb-2">
                         
-                        <div className="grid grid-cols-3 gap-6">
+                        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                           {/* Item 1: Discovery */}
                           <div className="group flex flex-col items-center gap-2.5">
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
@@ -1153,7 +1187,7 @@ export const SettingsPanel = ({
                     </div>{/* End fixed height */}
 
                     {/* ── Action bar ── */}
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800/30">
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700/30">
                       {/* Left: info */}
                       <div className="flex items-center gap-1.5">
                         <Clock className="w-3 h-3 text-slate-300 dark:text-slate-600" />
@@ -1171,7 +1205,7 @@ export const SettingsPanel = ({
                               // Only disable if not dirty to prevent accidental clears? User asked for always present. 
                               // Usually cancel resets to original state. If not dirty, it does nothing essentially.
                               disabled={!dirty}
-                              className="h-7 px-3 rounded-sm border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="h-7 px-3 rounded-lg border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all active:scale-95 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {t('Cancel')}
                             </button>
@@ -1179,7 +1213,7 @@ export const SettingsPanel = ({
                               type="button"
                               onClick={handleUpdate}
                               disabled={localUpdateBusy || !dirty}
-                              className="h-7 px-3.5 rounded-sm bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all whitespace-nowrap"
+                              className="h-7 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all active:scale-95 whitespace-nowrap"
                             >
                               {localUpdateBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                               {t('Save')}

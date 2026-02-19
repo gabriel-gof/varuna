@@ -238,6 +238,7 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'power_interval_seconds',
             'last_discovery_at',
             'last_poll_at',
+            'last_power_at',
             'slots',
             'slot_count',
             'pon_count',
@@ -250,6 +251,7 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'id',
             'last_discovery_at',
             'last_poll_at',
+            'last_power_at',
             'snmp_reachable',
             'last_snmp_check_at',
             'slot_count',
@@ -334,6 +336,8 @@ class OLTSerializer(serializers.ModelSerializer):
             'power_interval_seconds',
             'last_poll_at',
             'next_poll_at',
+            'last_power_at',
+            'next_power_at',
             'is_active',
             'created_at',
             'updated_at',
@@ -350,6 +354,8 @@ class OLTSerializer(serializers.ModelSerializer):
             'discovery_healthy',
             'last_poll_at',
             'next_poll_at',
+            'last_power_at',
+            'next_power_at',
             'snmp_reachable',
             'last_snmp_check_at',
             'last_snmp_error',
@@ -513,6 +519,8 @@ class OLTSerializer(serializers.ModelSerializer):
         olt.next_discovery_at = None
         olt.discovery_healthy = True
         olt.next_poll_at = None
+        olt.last_power_at = None
+        olt.next_power_at = None
         return {
             'snmp_reachable',
             'last_snmp_check_at',
@@ -521,6 +529,8 @@ class OLTSerializer(serializers.ModelSerializer):
             'next_discovery_at',
             'discovery_healthy',
             'next_poll_at',
+            'last_power_at',
+            'next_power_at',
         }
 
     def create(self, validated_data):
@@ -548,6 +558,7 @@ class OLTSerializer(serializers.ModelSerializer):
         tracked_interval_fields = {
             'discovery_interval_minutes',
             'polling_interval_seconds',
+            'power_interval_seconds',
         }
         connectivity_changed = any(
             field in validated_data and validated_data[field] != getattr(instance, field)
@@ -574,6 +585,11 @@ class OLTSerializer(serializers.ModelSerializer):
                     seconds=olt.polling_interval_seconds
                 )
                 extra_update_fields.add('next_poll_at')
+            if 'power_interval_seconds' in validated_data and olt.last_power_at:
+                olt.next_power_at = olt.last_power_at + timedelta(
+                    seconds=olt.power_interval_seconds
+                )
+                extra_update_fields.add('next_power_at')
 
         if extra_update_fields:
             olt.updated_at = timezone.now()

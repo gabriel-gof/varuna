@@ -79,6 +79,8 @@ class OLT(models.Model):
     )
     last_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Último Polling')
     next_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Próximo Polling')
+    last_power_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Coleta de Potência')
+    next_power_at = models.DateTimeField(null=True, blank=True, verbose_name='Próxima Coleta de Potência')
 
     snmp_reachable = models.BooleanField(null=True, blank=True, verbose_name='SNMP Acessível')
     last_snmp_check_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Verificação SNMP')

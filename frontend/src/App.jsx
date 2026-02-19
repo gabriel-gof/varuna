@@ -21,7 +21,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api, { updatePonDescription } from './services/api'
 import { InlineEditableText } from './components/InlineEditableText'
 import { classifyOnu } from './utils/stats'
-import { deriveOltHealthState, getPowerIntervalSeconds } from './utils/oltHealth'
+import { deriveOltHealthState } from './utils/oltHealth'
 import { getPowerColor, powerColorClass } from './utils/powerThresholds'
 
 const normalizeList = (data) => {
@@ -66,11 +66,13 @@ const clampPonPanelWidth = (value) => {
 
 const normalizeMatchValue = (value) => String(value || '').trim().toLowerCase()
 const ALARM_REASON_PRIORITY = ['linkLoss', 'dyingGasp', 'unknown']
-const ALARM_REASON_TO_STATUS_SORT = {
+const ALARM_REASON_TO_STATUS_KEY = {
   linkLoss: 'link_loss',
   dyingGasp: 'dying_gasp',
   unknown: 'unknown'
 }
+const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
+const SEARCH_MATCH_STORAGE_KEY = 'varuna.searchMatch'
 
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
@@ -215,8 +217,23 @@ const SegmentedControl = ({ options, value, onChange, compact = false }) => (
 
 const App = () => {
   const { t, i18n } = useTranslation()
-  const [selectedPonId, setSelectedPonId] = useState(null)
-  const [selectedSearchMatch, setSelectedSearchMatch] = useState(null)
+  const [selectedPonId, setSelectedPonId] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return null
+      const saved = window.localStorage.getItem(SELECTED_PON_STORAGE_KEY)
+      return saved ? String(saved) : null
+    } catch (_err) {
+      return null
+    }
+  })
+  const [selectedSearchMatch, setSelectedSearchMatch] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(SEARCH_MATCH_STORAGE_KEY)
+      return saved ? JSON.parse(saved) : null
+    } catch (_err) {
+      return null
+    }
+  })
   const [isDarkMode, setIsDarkMode] = useState(false)
   const [activeTab, setActiveTab] = useState('status')
   const [statusSortMode, setStatusSortMode] = useState('onu_id')
@@ -233,6 +250,30 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem('varuna_active_tab', activeNav)
   }, [activeNav])
+
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return
+      if (selectedPonId) {
+        window.localStorage.setItem(SELECTED_PON_STORAGE_KEY, String(selectedPonId))
+      } else {
+        window.localStorage.removeItem(SELECTED_PON_STORAGE_KEY)
+      }
+    } catch (_err) {
+      // noop
+    }
+  }, [selectedPonId])
+  useEffect(() => {
+    try {
+      if (selectedSearchMatch) {
+        window.localStorage.setItem(SEARCH_MATCH_STORAGE_KEY, JSON.stringify(selectedSearchMatch))
+      } else {
+        window.localStorage.removeItem(SEARCH_MATCH_STORAGE_KEY)
+      }
+    } catch (_err) {
+      // noop
+    }
+  }, [selectedSearchMatch])
   const [isResizingPonPanel, setIsResizingPonPanel] = useState(false)
   const [ponPanelWidth, setPonPanelWidth] = useState(() => {
     try {
@@ -254,14 +295,21 @@ const App = () => {
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isRefreshingPonPower, setIsRefreshingPonPower] = useState(false)
+  const [isPowerCooldown, setIsPowerCooldown] = useState(false)
+  const powerCooldownTimerRef = useRef(null)
+  useEffect(() => () => clearTimeout(powerCooldownTimerRef.current), [])
   const [healthTick, setHealthTick] = useState(() => Date.now())
   const [snmpStatus, setSnmpStatus] = useState({}) // { [oltId]: { status: 'pending'|'reachable'|'unreachable', sysDescr } }
-  const snmpCheckRef = useRef(null)
+  const snmpInFlightRef = useRef(false)
+  const oltsRef = useRef([])
+  const selectedPonMissingCyclesRef = useRef(0)
   const maintenanceLocksRef = useRef({
     polling: new Set(),
-    discovery: new Set()
+    discovery: new Set(),
+    power: new Set()
   })
   const selectedPonDataRef = useRef(null)
+  const wasAlarmEnabledRef = useRef(false)
   const mainLayoutRef = useRef(null)
   const resizePointerIdRef = useRef(null)
   const previousBodyCursorRef = useRef('')
@@ -277,7 +325,8 @@ const App = () => {
   }, [isDarkMode])
 
   const fetchOlts = useCallback(async () => {
-    setLoading(true)
+    const isInitialLoad = !oltsRef.current.length
+    if (isInitialLoad) setLoading(true)
     setError(null)
     try {
       const res = await api.get('/olts/', { params: { include_topology: 'true' } })
@@ -298,10 +347,12 @@ const App = () => {
         )
         setOlts(enriched)
       } catch (fallbackErr) {
-        setError(getApiErrorMessage(err, getApiErrorMessage(fallbackErr, 'Failed to load OLT data')))
+        if (isInitialLoad) {
+          setError(getApiErrorMessage(err, getApiErrorMessage(fallbackErr, 'Failed to load OLT data')))
+        }
       }
     } finally {
-      setLoading(false)
+      if (isInitialLoad) setLoading(false)
     }
   }, [])
 
@@ -326,28 +377,81 @@ const App = () => {
 
   // ─── SNMP connectivity checks (shared across Settings + Topology) ───
   const runSnmpChecks = useCallback(async (oltList) => {
-    if (!oltList?.length) return
-    setSnmpStatus((prev) => {
-      const next = { ...prev }
-      oltList.forEach((olt) => { next[olt.id] = { status: 'pending' } })
-      return next
-    })
-    const promises = oltList.map(async (olt) => {
-      try {
-        const res = await api.post(`/olts/${olt.id}/snmp_check/`)
-        return { id: olt.id, status: res.data?.reachable ? 'reachable' : 'unreachable', sysDescr: res.data?.sys_descr || '' }
-      } catch {
-        return { id: olt.id, status: 'unreachable', sysDescr: '' }
-      }
-    })
-    const results = await Promise.allSettled(promises)
-    setSnmpStatus((prev) => {
-      const next = { ...prev }
-      results.forEach((r) => {
-        if (r.status === 'fulfilled') next[r.value.id] = r.value
+    const targets = Array.isArray(oltList) ? oltList.filter((olt) => olt?.id) : []
+    if (!targets.length || snmpInFlightRef.current) return
+
+    snmpInFlightRef.current = true
+    try {
+      setSnmpStatus((prev) => {
+        const next = { ...prev }
+        targets.forEach((olt) => {
+          if (!next[olt.id]) {
+            next[olt.id] = {
+              status: 'pending',
+              sysDescr: '',
+              failureStreak: 0,
+            }
+          }
+        })
+        return next
       })
-      return next
-    })
+
+      const results = await Promise.allSettled(
+        targets.map(async (olt) => {
+          try {
+            const res = await api.post(`/olts/${olt.id}/snmp_check/`)
+            return {
+              id: olt.id,
+              reachable: Boolean(res.data?.reachable),
+              sysDescr: res.data?.sys_descr || '',
+            }
+          } catch {
+            return {
+              id: olt.id,
+              reachable: false,
+              sysDescr: '',
+            }
+          }
+        })
+      )
+
+      setSnmpStatus((prev) => {
+        const next = { ...prev }
+        const activeIds = new Set(targets.map((olt) => String(olt.id)))
+
+        Object.keys(next).forEach((id) => {
+          if (!activeIds.has(String(id))) delete next[id]
+        })
+
+        results.forEach((result) => {
+          if (result.status !== 'fulfilled') return
+          const { id, reachable, sysDescr } = result.value
+          const prevEntry = next[id] || {}
+
+          if (reachable) {
+            next[id] = {
+              status: 'reachable',
+              sysDescr,
+              failureStreak: 0,
+              checkedAt: Date.now(),
+            }
+            return
+          }
+
+          const failureStreak = Number(prevEntry.failureStreak || 0) + 1
+          next[id] = {
+            status: failureStreak >= 2 ? 'unreachable' : (prevEntry.status || 'pending'),
+            sysDescr: prevEntry.sysDescr || '',
+            failureStreak,
+            checkedAt: Date.now(),
+          }
+        })
+
+        return next
+      })
+    } finally {
+      snmpInFlightRef.current = false
+    }
   }, [])
 
   useEffect(() => {
@@ -356,6 +460,10 @@ const App = () => {
     const interval = setInterval(fetchOlts, 30000)
     return () => clearInterval(interval)
   }, [fetchOlts, fetchVendorProfiles])
+
+  useEffect(() => {
+    oltsRef.current = olts
+  }, [olts])
 
   useEffect(() => {
     const timer = setInterval(() => setHealthTick(Date.now()), 30_000)
@@ -369,6 +477,7 @@ const App = () => {
     const requests = []
     const pollLocks = maintenanceLocksRef.current.polling
     const discoveryLocks = maintenanceLocksRef.current.discovery
+    const powerLocks = maintenanceLocksRef.current.power
 
     oltList.forEach((olt) => {
       const oltId = olt?.id
@@ -401,6 +510,22 @@ const App = () => {
           )
         }
       }
+
+      const onuCount = Number(olt?.onu_count ?? 0)
+      if (onuCount > 0) {
+        const powerIntervalMs = toPositiveInt(olt.power_interval_seconds, 300) * 1000
+        const lastPowerMs = parseTimestampMs(olt.last_power_at)
+        const powerDue = !lastPowerMs || nowMs - lastPowerMs >= powerIntervalMs
+
+        if (powerDue && !powerLocks.has(oltId)) {
+          powerLocks.add(oltId)
+          requests.push(
+            api.post(`/olts/${oltId}/refresh_power/`)
+              .catch(() => null)
+              .finally(() => powerLocks.delete(oltId))
+          )
+        }
+      }
     })
 
     if (!requests.length) return
@@ -413,13 +538,22 @@ const App = () => {
     runDueMaintenance(olts)
   }, [olts, runDueMaintenance])
 
-  // Run SNMP checks when OLTs change, repeat every 60s
+  const oltIdsSignature = useMemo(
+    () => [...olts.map((olt) => String(olt?.id)).filter(Boolean)].sort().join(','),
+    [olts]
+  )
+
+  // Run SNMP checks when the OLT set changes.
   useEffect(() => {
     if (!olts?.length) return
     runSnmpChecks(olts)
-    snmpCheckRef.current = setInterval(() => runSnmpChecks(olts), 60_000)
-    return () => clearInterval(snmpCheckRef.current)
-  }, [olts, runSnmpChecks])
+  }, [oltIdsSignature, runSnmpChecks])
+
+  // Keep checks periodic without recreating timers on every topology refresh payload.
+  useEffect(() => {
+    const timer = setInterval(() => runSnmpChecks(oltsRef.current), 180_000)
+    return () => clearInterval(timer)
+  }, [runSnmpChecks])
 
   const runSettingsAction = async (key, request, successMessage = '') => {
     setSettingsActionError(null)
@@ -519,99 +653,65 @@ const App = () => {
     )
   }
 
-  const selectedPonData = useMemo(() => {
+  const rawSelectedPonData = useMemo(() => {
     if (!selectedPonId) return null
     return findPonById(olts, selectedPonId)
   }, [olts, selectedPonId])
 
+  const selectedPonData = useMemo(() => {
+    if (rawSelectedPonData) return rawSelectedPonData
+    if (!selectedPonId) return null
+    const cached = selectedPonDataRef.current
+    if (!cached) return null
+    return String(cached?.pon?.id) === String(selectedPonId) ? cached : null
+  }, [rawSelectedPonData, selectedPonId])
+
   useEffect(() => {
-    selectedPonDataRef.current = selectedPonData
-  }, [selectedPonData])
-
-  const mergePowerResultsIntoOlts = (currentOlts, rows) => {
-    if (!Array.isArray(rows) || rows.length === 0) return currentOlts
-
-    const powerByOnuId = new Map(
-      rows
-        .filter((row) => row && row.onu_id !== undefined && row.onu_id !== null)
-        .map((row) => [String(row.onu_id), row])
-    )
-
-    if (!powerByOnuId.size) return currentOlts
-
-    return currentOlts.map((olt) => ({
-      ...olt,
-      slots: asList(olt?.slots).map((slot) => ({
-        ...slot,
-        pons: asList(slot?.pons).map((pon) => ({
-          ...pon,
-          onus: asList(pon?.onus).map((onu) => {
-            const patch = powerByOnuId.get(String(onu?.id))
-            if (!patch) return onu
-            return {
-              ...onu,
-              onu_rx_power: patch.onu_rx_power ?? null,
-              olt_rx_power: patch.olt_rx_power ?? null,
-              power_read_at: patch.power_read_at ?? null,
-            }
-          }),
-        })),
-      })),
-    }))
-  }
+    if (rawSelectedPonData) {
+      selectedPonDataRef.current = rawSelectedPonData
+      return
+    }
+    if (!selectedPonId) {
+      selectedPonDataRef.current = null
+    }
+  }, [rawSelectedPonData, selectedPonId])
 
   const handleRefreshPonPower = useCallback(async () => {
-    const currentPonData = selectedPonDataRef.current
-    if (!currentPonData?.olt || !currentPonData?.slot || !currentPonData?.pon) return
-
-    const slotId = currentPonData.slot?.slot_number ?? currentPonData.slot?.slot_id
-    const ponId = currentPonData.pon?.pon_number ?? currentPonData.pon?.pon_id
-    if (slotId === undefined || ponId === undefined) return
+    if (isPowerCooldown || isRefreshingPonPower) return
 
     setIsRefreshingPonPower(true)
     try {
-      const response = await api.post('/onu/batch-power/', {
-        olt_id: currentPonData.olt.id,
-        slot_id: slotId,
-        pon_id: ponId,
-        refresh: true,
-      })
-      const rows = Array.isArray(response?.data?.results)
-        ? response.data.results
-        : normalizeList(response?.data)
-      setOlts((prev) => mergePowerResultsIntoOlts(prev, rows))
+      await api.post('/olts/refresh_power/')
+      await fetchOlts()
       setError(null)
     } catch (err) {
       setError(getApiErrorMessage(err, 'Failed to refresh power data'))
     } finally {
       setIsRefreshingPonPower(false)
+      setIsPowerCooldown(true)
+      clearTimeout(powerCooldownTimerRef.current)
+      powerCooldownTimerRef.current = setTimeout(() => setIsPowerCooldown(false), 10000)
     }
-  }, [])
+  }, [fetchOlts, isPowerCooldown, isRefreshingPonPower])
 
   useEffect(() => {
-    if (activeNav !== 'topology' || activeTab !== 'power') return
-    if (!selectedPonData?.olt || !selectedPonId) return
+    if (!selectedPonId) {
+      selectedPonMissingCyclesRef.current = 0
+      return
+    }
+    if (rawSelectedPonData) {
+      selectedPonMissingCyclesRef.current = 0
+      return
+    }
+    if (!olts.length || loading || error) return
 
-    const intervalSeconds = getPowerIntervalSeconds(selectedPonData.olt)
-    const timer = setInterval(() => {
-      handleRefreshPonPower()
-    }, intervalSeconds * 1000)
-
-    return () => clearInterval(timer)
-  }, [
-    activeNav,
-    activeTab,
-    selectedPonId,
-    selectedPonData?.olt?.id,
-    selectedPonData?.olt?.power_interval_seconds,
-    handleRefreshPonPower
-  ])
-
-  useEffect(() => {
-    if (selectedPonId && !selectedPonData) {
+    selectedPonMissingCyclesRef.current += 1
+    if (selectedPonMissingCyclesRef.current >= 3) {
+      selectedPonMissingCyclesRef.current = 0
+      setSelectedSearchMatch(null)
       setSelectedPonId(null)
     }
-  }, [selectedPonId, selectedPonData])
+  }, [selectedPonId, rawSelectedPonData, loading, error, olts.length])
 
   const selectedSlotNumber = selectedPonData?.slot?.slot_number ?? selectedPonData?.slot?.slot_id
   const selectedPonNumber = selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id
@@ -628,6 +728,15 @@ const App = () => {
       return acc
     }, {})
   }, [olts, snmpStatus, healthTick])
+
+  const lastCollectionAt = useMemo(() => {
+    let latest = null
+    for (const olt of olts) {
+      const ms = parseTimestampMs(olt.last_poll_at)
+      if (ms && (!latest || ms > latest)) latest = ms
+    }
+    return latest ? new Date(latest) : null
+  }, [olts])
 
   const updatePonPanelWidthByClientX = (clientX) => {
     const container = mainLayoutRef.current
@@ -750,7 +859,6 @@ const App = () => {
     if (requestedMode === 'online') return hasAny('online') ? 'online' : (hasAny('offline') ? 'offline' : 'onu_id')
 
     if (requestedMode === 'link_loss' || requestedMode === 'dying_gasp' || requestedMode === 'unknown') {
-      if (hasAny(requestedMode)) return requestedMode
       if (hasAny('offline')) return 'offline'
       if (hasAny('online')) return 'online'
       return 'onu_id'
@@ -776,7 +884,7 @@ const App = () => {
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
   const currentSortLabel = activeSortOptions.find((option) => option.id === currentSortMode)?.label || activeSortOptions[0]?.label || t('ONU ID')
-  const isSidebarRefreshBusy = activeTab === 'power' ? isRefreshingPonPower : isRefreshing
+  const isSidebarRefreshBusy = activeTab === 'power' ? (isRefreshingPonPower || isPowerCooldown) : isRefreshing
   const setCurrentSortMode = (mode) => {
     if (activeTab === 'power') {
       setPowerSortMode(mode)
@@ -786,20 +894,13 @@ const App = () => {
   }
 
   useEffect(() => {
-    if (!alarmSortConfig.enabled) return
+    const wasEnabled = wasAlarmEnabledRef.current
+    wasAlarmEnabledRef.current = alarmSortConfig.enabled
+    if (!alarmSortConfig.enabled || wasEnabled) return
 
-    const activeReasons = ALARM_REASON_PRIORITY.filter((reason) => alarmSortConfig.reasons.includes(reason))
-    let desiredStatusMode = 'offline'
-
-    if (activeReasons.length === 1) {
-      desiredStatusMode = ALARM_REASON_TO_STATUS_SORT[activeReasons[0]]
-    } else if (activeReasons.length === 0) {
-      desiredStatusMode = 'onu_id'
-    }
-
-    const nextMode = resolveStatusSortMode(desiredStatusMode)
+    const nextMode = resolveStatusSortMode('offline')
     setStatusSortMode((prev) => (prev === nextMode ? prev : nextMode))
-  }, [alarmSortConfig.enabled, alarmSortConfig.reasons, availableStatusCounts])
+  }, [alarmSortConfig.enabled, availableStatusCounts])
 
   const statusRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
@@ -818,12 +919,21 @@ const App = () => {
       return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
     }
 
-    const baseOrder = ['online', 'link_loss', 'dying_gasp', 'unknown', 'offline']
-    let orderedStatuses = baseOrder
+    const offlineStatuses = ['link_loss', 'dying_gasp', 'unknown', 'offline']
+    let orderedStatuses = ['online', ...offlineStatuses]
+
     if (statusSortMode === 'offline') {
-      orderedStatuses = ['link_loss', 'dying_gasp', 'unknown', 'offline', 'online']
-    } else if (statusSortMode !== 'online') {
-      orderedStatuses = [statusSortMode, ...baseOrder.filter((status) => status !== statusSortMode)]
+      const selectedOfflineStatuses = alarmSortConfig.enabled
+        ? ALARM_REASON_PRIORITY
+            .filter((reason) => alarmSortConfig.reasons.includes(reason))
+            .map((reason) => ALARM_REASON_TO_STATUS_KEY[reason])
+            .filter((status, index, list) => Boolean(status) && list.indexOf(status) === index && offlineStatuses.includes(status))
+        : []
+      orderedStatuses = [
+        ...selectedOfflineStatuses,
+        ...offlineStatuses.filter((status) => !selectedOfflineStatuses.includes(status)),
+        'online',
+      ]
     }
     const priorities = orderedStatuses.reduce((acc, status, index) => {
       acc[status] = index
@@ -841,12 +951,12 @@ const App = () => {
 
       return a.onuNumber - b.onuNumber
     })
-  }, [selectedOnus, statusSortMode])
+  }, [selectedOnus, statusSortMode, alarmSortConfig.enabled, alarmSortConfig.reasons])
 
   const powerRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
       const classification = classifyOnu(onu)
-      const { onuRx, oltRx } = getOnuPowerSnapshot(onu)
+      const { onuRx, oltRx, readAt } = getOnuPowerSnapshot(onu)
       const parsedOnuRx = asNumericPower(onuRx)
       const parsedOltRx = asNumericPower(oltRx)
       return {
@@ -855,6 +965,7 @@ const App = () => {
         onuNumber: Number(onu?.onu_number ?? onu?.onu_id ?? 0),
         onuRx: parsedOnuRx,
         oltRx: parsedOltRx,
+        readAt
       }
     })
 
@@ -891,10 +1002,16 @@ const App = () => {
     if (!selectedSearchMatch) return
     if (!selectedPonId || String(selectedSearchMatch.ponId) !== String(selectedPonId)) return
 
-    const row = document.querySelector('[data-onu-highlight="true"]')
-    if (row) {
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const scrollToHighlight = () => {
+      const row = document.querySelector('[data-onu-highlight="true"]')
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
     }
+    const frame = requestAnimationFrame(() => {
+      setTimeout(scrollToHighlight, 80)
+    })
+    return () => cancelAnimationFrame(frame)
   }, [selectedSearchMatch, selectedPonId, selectedOnus, activeTab])
 
   const selectedPonStats = useMemo(() => {
@@ -906,7 +1023,17 @@ const App = () => {
     }, { online: 0, offline: 0 })
   }, [selectedOnus])
 
+  const isSelectedOltGray = useMemo(() => {
+    const oltId = selectedPonData?.olt?.id
+    if (!oltId) return false
+    const health = oltHealthById?.[String(oltId)]
+    return health?.state === 'gray'
+  }, [selectedPonData, oltHealthById])
+
+  const GRAY_STATUS_STYLE = 'bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200 dark:bg-slate-700/50 dark:text-slate-400 dark:ring-slate-500/40'
+
   const statusStyle = (statusKey) => {
+    if (isSelectedOltGray) return GRAY_STATUS_STYLE
     if (statusKey === 'online') {
       return 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/30'
     }
@@ -926,6 +1053,7 @@ const App = () => {
   }
 
   const statusDot = (statusKey) => {
+    if (isSelectedOltGray) return 'bg-slate-400 dark:bg-slate-500'
     if (statusKey === 'online') return 'bg-emerald-500'
     if (statusKey === 'dying_gasp') return 'bg-blue-500'
     if (statusKey === 'link_loss') return 'bg-rose-500'
@@ -934,9 +1062,27 @@ const App = () => {
     return 'bg-slate-400'
   }
 
+  const handleAlarmModeChange = useCallback((config) => {
+    const reasons = Array.isArray(config?.reasons)
+      ? config.reasons.filter((reason) => ALARM_REASON_PRIORITY.includes(reason))
+      : ALARM_REASON_PRIORITY
+    const nextEnabled = Boolean(config?.enabled)
+    const nextReasons = reasons.length ? reasons : ALARM_REASON_PRIORITY
+
+    setAlarmSortConfig((prev) => {
+      const sameEnabled = prev.enabled === nextEnabled
+      const sameReasons = prev.reasons.length === nextReasons.length && prev.reasons.every((reason, index) => reason === nextReasons[index])
+      if (sameEnabled && sameReasons) return prev
+      return {
+        enabled: nextEnabled,
+        reasons: nextReasons
+      }
+    })
+  }, [])
+
   return (
     <div className="h-screen bg-white dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
-      <nav className="h-16 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 flex items-center px-6 sticky top-0 z-[100] transition-colors shadow-sm">
+      <nav className="h-16 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-700/50 flex items-center px-6 sticky top-0 z-[100] transition-colors shadow-sm">
         <div className="flex items-center gap-3 mr-4 sm:mr-10">
           <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20">
             <VarunaIcon className="w-6 h-6 text-white" />
@@ -978,11 +1124,11 @@ const App = () => {
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
-                className="w-[252px] bg-white dark:bg-slate-900 rounded-2xl p-2.5 shadow-2xl border border-slate-100 dark:border-slate-800 z-[200] animate-in fade-in zoom-in-95 duration-200"
+                className="w-[252px] bg-white dark:bg-slate-900 rounded-2xl p-2.5 shadow-2xl border border-slate-100 dark:border-slate-700/50 z-[200] animate-in fade-in zoom-in-95 duration-200"
                 sideOffset={8}
                 align="end"
               >
-                <div className="px-2 py-2 mb-1.5 border-b border-slate-100 dark:border-slate-800">
+                <div className="px-2 py-2 mb-1.5 border-b border-slate-100 dark:border-slate-700/50">
                   <div className="flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
                       <User className="w-[17px] h-[17px]" />
@@ -1050,7 +1196,7 @@ const App = () => {
           className={`
             min-w-0 overflow-y-auto custom-scrollbar ${isResizingPonPanel ? '' : 'transition-[width] duration-150'}
             ${isPonPanelOpen
-              ? 'hidden lg:block lg:w-[calc(100%-var(--pon-panel-width))] border-r border-slate-100 dark:border-slate-800'
+              ? 'hidden lg:block lg:w-[calc(100%-var(--pon-panel-width))] border-r border-slate-100 dark:border-slate-700/50'
               : 'flex-1'}
           `}
         >
@@ -1062,23 +1208,22 @@ const App = () => {
               snmpStatus={snmpStatus}
               oltHealthById={oltHealthById}
               selectedPonId={selectedPonId}
-              onAlarmModeChange={(config) => {
-                const reasons = Array.isArray(config?.reasons)
-                  ? config.reasons.filter((reason) => ALARM_REASON_PRIORITY.includes(reason))
-                  : ALARM_REASON_PRIORITY
-                setAlarmSortConfig({
-                  enabled: Boolean(config?.enabled),
-                  reasons: reasons.length ? reasons : ALARM_REASON_PRIORITY
-                })
-              }}
+              selectedSearchMatch={selectedSearchMatch}
+              onAlarmModeChange={handleAlarmModeChange}
               onSearchMatchSelect={setSelectedSearchMatch}
               onPonSelect={(id, options = {}) => {
+                const nextId = id !== null && id !== undefined ? String(id) : null
+                if (!options?.force) {
+                  setSelectedSearchMatch(null)
+                }
                 if (options?.force) {
-                  setSelectedPonId(id)
+                  setSelectedPonId(nextId)
                   return
                 }
-                setSelectedSearchMatch(null)
-                setSelectedPonId((prev) => (prev === id ? null : id))
+                setSelectedPonId((prev) => {
+                  const prevId = prev !== null && prev !== undefined ? String(prev) : null
+                  return prevId === nextId ? null : nextId
+                })
               }}
             />
           ) : (
@@ -1136,7 +1281,7 @@ const App = () => {
             className={`
               h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width] duration-150'}
               ${isPonPanelOpen
-                ? 'w-full lg:w-[var(--pon-panel-width)] opacity-100 border-l border-slate-100 dark:border-slate-800'
+                ? 'w-full lg:w-[var(--pon-panel-width)] opacity-100 border-l border-slate-100 dark:border-slate-700/50'
                 : 'w-0 opacity-0 pointer-events-none border-l-0'}
             `}
           >
@@ -1169,7 +1314,7 @@ const App = () => {
               return (
               <div className="h-full min-h-0 flex flex-col">
                 {/* Desktop header */}
-                <div className="hidden lg:flex pl-8 pr-4 h-20 border-b border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 items-center">
+                <div className="hidden lg:flex pl-8 pr-4 h-20 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 items-center">
                   <div className="w-full flex items-center justify-between gap-3">
                     <div className="min-w-0 flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
                       {selectedPonPath.map((part, idx) => (
@@ -1197,8 +1342,8 @@ const App = () => {
                   </div>
                 </div>
                 {/* Mobile header */}
-                <div className="flex lg:hidden flex-col px-4 py-3 border-b border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 gap-1">
-                  <div className="flex items-center gap-2">
+                <div className="flex lg:hidden flex-col px-4 py-3 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 gap-1">
+                  <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
                         {selectedPonPath.map((part, idx) => (
@@ -1218,7 +1363,7 @@ const App = () => {
                     </div>
                     <button
                       onClick={handleClosePanel}
-                      className="h-8 w-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-95 shrink-0"
+                      className="mt-1 h-8 w-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors active:scale-95 shrink-0"
                       aria-label={t('Close')}
                     >
                       <X className="w-[18px] h-[18px]" />
@@ -1240,7 +1385,7 @@ const App = () => {
                             type="button"
                             onClick={() => setActiveTab(tab.id)}
                             className={`
-                              h-7 min-w-[72px] lg:min-w-[88px] px-3 rounded-md text-[10px] font-black uppercase tracking-[0.06em] transition-all
+                              h-7 min-w-[72px] lg:min-w-[88px] px-3 rounded-md text-[10px] font-black uppercase tracking-[0.06em] transition-all active:scale-95
                               ${isActive
                                 ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                                 : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/60'}
@@ -1255,7 +1400,7 @@ const App = () => {
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger asChild>
                           <button
-                            className="relative h-9 w-[130px] lg:w-[156px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all"
+                            className="relative h-9 w-[130px] lg:w-[156px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
                             aria-label={t('Sort by')}
                             title={t('Sort by')}
                           >
@@ -1268,7 +1413,7 @@ const App = () => {
                         </DropdownMenu.Trigger>
                         <DropdownMenu.Portal>
                           <DropdownMenu.Content
-                            className="w-[156px] bg-white dark:bg-slate-900 rounded-xl p-1 shadow-xl border border-slate-200 dark:border-slate-800 z-[220] animate-in fade-in zoom-in-95 duration-150"
+                            className="w-[156px] bg-white dark:bg-slate-900 rounded-xl p-1 shadow-xl border border-slate-200 dark:border-slate-700/50 z-[220] animate-in fade-in zoom-in-95 duration-150"
                             sideOffset={8}
                             align="end"
                           >
@@ -1317,7 +1462,7 @@ const App = () => {
                         aria-label={t('Refresh')}
                         title={t('Refresh')}
                       >
-                        <RotateCw className={`w-4 h-4 ${isSidebarRefreshBusy ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+                        <RotateCw className={`w-4 h-4 ${(activeTab === 'power' ? isRefreshingPonPower : isRefreshing) ? 'animate-spin' : ''}`} strokeWidth={2.5} />
                       </button>
                     </div>
                   </div>
@@ -1325,7 +1470,7 @@ const App = () => {
                   {activeTab === 'status' ? (
                     <>
                     {/* Desktop status table */}
-                    <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                    <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
@@ -1338,7 +1483,7 @@ const App = () => {
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Desconexão')}</th>
@@ -1423,7 +1568,7 @@ const App = () => {
                       </div>
                     </div>
                     {/* Mobile status cards */}
-                    <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                    <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
                         {statusRows.map(({ onu, statusKey }) => {
                           const statusLabel = statusKey === 'online'
@@ -1449,10 +1594,10 @@ const App = () => {
                             <div
                               key={onu.id}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                             >
-                              <div className="min-w-0 flex-1 flex flex-col gap-px">
+                              <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
                                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
@@ -1477,9 +1622,14 @@ const App = () => {
                     </>
 
                   ) : (
-                    <>
+                    <div className="relative flex flex-col w-full max-h-full min-h-0">
+                    {isRefreshingPonPower && (
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
+                        <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
+                      </div>
+                    )}
                     {/* Desktop power table */}
-                    <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                    <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
@@ -1492,7 +1642,7 @@ const App = () => {
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Client')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Power')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
@@ -1510,17 +1660,15 @@ const App = () => {
                             <col style={{ width: '24%' }} />
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
-                            {powerRows.map(({ onu, statusKey }) => {
+                            {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
-                              const { onuRx, oltRx, readAt } = getOnuPowerSnapshot(onu)
-                              const parsedOnuRx = asNumericPower(onuRx)
-                              const parsedOltRx = asNumericPower(oltRx)
-                              const hasOnuRx = parsedOnuRx !== null
-                              const hasOltRx = parsedOltRx !== null
-                              const onuRxColor = powerColorClass(getPowerColor(parsedOnuRx, 'onu_rx', selectedPonData?.olt?.id))
-                              const oltRxColor = powerColorClass(getPowerColor(parsedOltRx, 'olt_rx', selectedPonData?.olt?.id))
+                              const hasOnuRx = onuRx !== null
+                              const hasOltRx = oltRx !== null
+                              const grayPower = 'text-slate-500 dark:text-slate-400'
+                              const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
+                              const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
                               const isOfflineStatus = statusKey !== 'online'
                               const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
                               const readingAt = formatReadingAt(readAt, i18n.language)
@@ -1553,21 +1701,21 @@ const App = () => {
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
                                     {!hasOnuRx && !hasOltRx ? (
-                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
+                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
                                     ) : (
                                       <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('ONU')}</span>
-                                          <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(parsedOnuRx) : '—'}</span>
+                                          <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                         </span>
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('OLT')}</span>
-                                          <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(parsedOltRx) : '—'}</span>
+                                          <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
                                         </span>
                                       </div>
                                     )}
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${!hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>
                                     {readingAt}
                                   </td>
                                 </tr>
@@ -1585,19 +1733,17 @@ const App = () => {
                       </div>
                     </div>
                     {/* Mobile power cards */}
-                    <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                    <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
-                        {powerRows.map(({ onu, statusKey }) => {
+                        {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                           const serialValue = onu.serial_number || onu.serial || '—'
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
-                          const { onuRx, oltRx, readAt } = getOnuPowerSnapshot(onu)
-                          const parsedOnuRx = asNumericPower(onuRx)
-                          const parsedOltRx = asNumericPower(oltRx)
-                          const hasOnuRx = parsedOnuRx !== null
-                          const hasOltRx = parsedOltRx !== null
-                          const onuRxColor = powerColorClass(getPowerColor(parsedOnuRx, 'onu_rx', selectedPonData?.olt?.id))
-                          const oltRxColor = powerColorClass(getPowerColor(parsedOltRx, 'olt_rx', selectedPonData?.olt?.id))
+                          const hasOnuRx = onuRx !== null
+                          const hasOltRx = oltRx !== null
+                          const grayPower = 'text-slate-500 dark:text-slate-400'
+                          const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
+                          const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
                           const isOfflineStatus = statusKey !== 'online'
                           const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
                           const readingAt = formatReadingAt(readAt, i18n.language)
@@ -1611,10 +1757,10 @@ const App = () => {
                             <div
                               key={`power-${onu.id}`}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
                             >
-                              <div className="min-w-0 flex-1 flex flex-col gap-px">
+                              <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
                                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
@@ -1624,16 +1770,16 @@ const App = () => {
                                   <>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                                      <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(parsedOnuRx) : '—'}</span>
+                                      <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                     </span>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                      <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(parsedOltRx) : '—'}</span>
+                                      <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
                                     </span>
-                                    <span className={`text-[10px] font-semibold tabular-nums ${!hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
+                                    <span className={`text-[10px] font-semibold tabular-nums ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
                                   </>
                                 ) : (
-                                  <span className={`text-[11px] font-semibold tabular-nums ${isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
+                                  <span className={`text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
                                 )}
                               </div>
                             </div>
@@ -1646,7 +1792,7 @@ const App = () => {
                         )}
                       </div>
                     </div>
-                    </>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1655,6 +1801,10 @@ const App = () => {
           </aside>
         )}
       </main>
+      <footer className="shrink-0 flex items-center justify-between px-4 py-1.5 text-[11px] font-medium text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-700/50 bg-white dark:bg-slate-900 transition-colors">
+        <span>{t('Version')} {__APP_VERSION__}</span>
+        <span>{lastCollectionAt ? `${t('Last update')}: ${formatReadingAt(lastCollectionAt, i18n.language)}` : ''}</span>
+      </footer>
     </div>
   )
 }

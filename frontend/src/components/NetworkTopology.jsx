@@ -24,6 +24,32 @@ const scoreSearchMatch = (rawValue, term) => {
   return Math.max(200 - index, 1)
 }
 
+const SEARCH_STATUS_WEIGHT = {
+  online: 3,
+  offline: 2,
+  unknown: 1
+}
+
+const getSearchStatusWeight = (status) => SEARCH_STATUS_WEIGHT[normalizeSearch(status)] || 0
+
+const toEpochMillis = (value) => {
+  if (!value) return 0
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const shouldReplaceSearchSuggestion = (current, candidate) => {
+  if (!current) return true
+  if (candidate.score !== current.score) return candidate.score > current.score
+
+  const candidateStatusWeight = getSearchStatusWeight(candidate.status)
+  const currentStatusWeight = getSearchStatusWeight(current.status)
+  if (candidateStatusWeight !== currentStatusWeight) return candidateStatusWeight > currentStatusWeight
+
+  if (candidate.powerReadAtMs !== current.powerReadAtMs) return candidate.powerReadAtMs > current.powerReadAtMs
+  return candidate.key < current.key
+}
+
 const renderHighlightedText = (value, term) => {
   const source = String(value || '')
   const normalizedTerm = normalizeSearch(term)
@@ -218,7 +244,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       </div>
 
       {isOpen && children && (
-        <div className="relative mt-2.5 ml-4 pl-8 border-l-[1.5px] border-slate-100 dark:border-slate-800 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
+        <div className="relative mt-2.5 ml-4 pl-8 border-l-[1.5px] border-slate-100 dark:border-slate-700/50 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
           {children}
         </div>
       )}
@@ -238,6 +264,7 @@ export const NetworkTopology = ({
   loading,
   error,
   selectedPonId,
+  selectedSearchMatch,
   onPonSelect,
   onSearchMatchSelect,
   onAlarmModeChange,
@@ -245,9 +272,14 @@ export const NetworkTopology = ({
   oltHealthById = {}
 }) => {
   const { t } = useTranslation()
-  const [searchTerm, setSearchTerm] = useState('')
+  const [searchTerm, setSearchTerm] = useState(() => selectedSearchMatch?.searchTerm || '')
   const [searchFocused, setSearchFocused] = useState(false)
-  const [openNodes, setOpenNodes] = useState({})
+  const [openNodes, setOpenNodes] = useState(() => {
+    if (!selectedSearchMatch?.oltId) return {}
+    const initial = { [`olt-${selectedSearchMatch.oltId}`]: true }
+    if (selectedSearchMatch.slotId) initial[`slot-${selectedSearchMatch.slotId}`] = true
+    return initial
+  })
   const [oltFilterOpen, setOltFilterOpen] = useState(false)
   const [selectedOltIds, setSelectedOltIds] = useState([])
   const [alarmMenuOpen, setAlarmMenuOpen] = useState(false)
@@ -268,6 +300,7 @@ export const NetworkTopology = ({
     const allIds = olts.map((olt) => String(olt.id))
     setSelectedOltIds((prev) => {
       if (!oltFilterInitializedRef.current) {
+        if (!allIds.length) return prev
         oltFilterInitializedRef.current = true
         return allIds
       }
@@ -380,7 +413,7 @@ export const NetworkTopology = ({
   const searchSuggestions = useMemo(() => {
     if (!normalizedSearchTerm) return []
 
-    const suggestions = []
+    const dedupedSuggestions = new Map()
     olts.forEach((olt) => {
       asList(olt?.slots).forEach((slot) => {
         asList(slot?.pons).forEach((pon) => {
@@ -396,8 +429,11 @@ export const NetworkTopology = ({
 
             const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
             const ponNumber = pon.pon_number ?? pon.pon_id ?? pon.id
-            suggestions.push({
-              key: `${olt.id}-${slot.id}-${pon.id}-${onu?.id || serial || clientName}`,
+            const key = `${olt.id}-${slot.id}-${pon.id}-${onu?.id || serial || clientName}`
+            const normalizedSerial = normalizeSearch(serial)
+            const dedupeKey = normalizedSerial || `path:${key}`
+            const suggestion = {
+              key,
               clientName: clientName || `ONU ${onuId}`,
               serial: serial || '-',
               oltId: olt.id,
@@ -407,16 +443,24 @@ export const NetworkTopology = ({
               ponId: pon.id,
               ponNumber,
               onuId,
+              status: onu?.status,
+              powerReadAt: onu?.power_read_at,
+              powerReadAtMs: toEpochMillis(onu?.power_read_at),
               matchType: serialScore > loginScore ? 'serial' : 'login',
               score: bestScore + (serialScore > loginScore ? 10 : 0),
-            })
+            }
+
+            const current = dedupedSuggestions.get(dedupeKey)
+            if (shouldReplaceSearchSuggestion(current, suggestion)) {
+              dedupedSuggestions.set(dedupeKey, suggestion)
+            }
           })
         })
       })
     })
 
-    return suggestions
-      .sort((a, b) => b.score - a.score || a.clientName.localeCompare(b.clientName))
+    return Array.from(dedupedSuggestions.values())
+      .sort((a, b) => b.score - a.score || a.clientName.localeCompare(b.clientName) || a.serial.localeCompare(b.serial))
       .slice(0, 7)
   }, [olts, normalizedSearchTerm])
 
@@ -434,6 +478,9 @@ export const NetworkTopology = ({
       onuId: suggestion.onuId,
       serial: suggestion.serial,
       clientName: suggestion.clientName,
+      oltId: suggestion.oltId,
+      slotId: suggestion.slotId,
+      searchTerm: suggestion.matchType === 'serial' ? suggestion.serial : suggestion.clientName,
     })
     onPonSelect(suggestion.ponId, { force: true })
   }
@@ -586,59 +633,8 @@ export const NetworkTopology = ({
 
   return (
     <div className="flex flex-col w-full h-full pt-8">
-      <div className="flex items-center gap-2 mb-8 px-10">
-        <div ref={searchContainerRef} className="relative w-full max-w-[268px]">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300" />
-          <input
-            type="text"
-            placeholder={t('Search')}
-            value={searchTerm}
-            onFocus={() => setSearchFocused(true)}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl pl-9 pr-8 text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
-          />
-
-          {searchTerm && (
-            <button
-              type="button"
-              onClick={() => {
-                setSearchTerm('')
-                setSearchFocused(false)
-                onSearchMatchSelect?.(null)
-              }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-              aria-label={t('Clear')}
-              title={t('Clear')}
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-
-          {searchFocused && normalizedSearchTerm && (
-            <div className="absolute left-0 top-11 z-30 w-full p-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
-              {searchSuggestions.length === 0 && (
-                <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('No clients found')}</p>
-              )}
-              {searchSuggestions.map((suggestion) => (
-                <button
-                  key={suggestion.key}
-                  type="button"
-                  onClick={() => handleSearchSuggestionSelect(suggestion)}
-                  className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                >
-                  <p className="text-[11px] font-black tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
-                    {renderHighlightedText(suggestion.clientName, normalizedSearchTerm)}
-                  </p>
-                  <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis">
-                    {renderHighlightedText(suggestion.serial, normalizedSearchTerm)}
-                  </p>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div ref={oltFilterContainerRef} className="relative order-first">
+      <div className="flex items-center gap-1.5 lg:gap-2 mb-8 px-4 lg:px-10">
+        <div ref={oltFilterContainerRef} className="relative shrink-0">
           <button
             title={t('Filter OLTs')}
             onClick={() => {
@@ -648,14 +644,14 @@ export const NetworkTopology = ({
             className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all ${
               selectedOltIds.length < olts.length
                 ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 text-slate-400 hover:text-emerald-600'
+                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-400 hover:text-emerald-600'
             }`}
           >
             <Filter className="w-3.5 h-3.5" />
           </button>
 
           {oltFilterOpen && (
-            <div className="absolute left-0 top-11 z-30 w-[272px] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
+            <div className="absolute left-0 top-11 z-30 w-[272px] p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-[11px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">{t('Filter OLTs')}</p>
                 <button
@@ -732,14 +728,65 @@ export const NetworkTopology = ({
           )}
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div ref={searchContainerRef} className="relative flex-1 min-w-0 max-w-[260px] lg:max-w-[268px]">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300" />
+          <input
+            type="text"
+            placeholder={t('Search')}
+            value={searchTerm}
+            onFocus={() => setSearchFocused(true)}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl pl-9 pr-8 text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+          />
+
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchTerm('')
+                setSearchFocused(false)
+                onSearchMatchSelect?.(null)
+              }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              aria-label={t('Clear')}
+              title={t('Clear')}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {searchFocused && normalizedSearchTerm && (
+            <div className="absolute left-0 top-11 z-30 w-full p-2 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl">
+              {searchSuggestions.length === 0 && (
+                <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('No clients found')}</p>
+              )}
+              {searchSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion.key}
+                  type="button"
+                  onClick={() => handleSearchSuggestionSelect(suggestion)}
+                  className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <p className="text-[11px] font-black tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
+                    {renderHighlightedText(suggestion.clientName, normalizedSearchTerm)}
+                  </p>
+                  <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis">
+                    {renderHighlightedText(suggestion.serial, normalizedSearchTerm)}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="ml-auto flex items-center gap-1.5 lg:gap-2">
           <button
             title={t('Collapse')}
             onClick={collapseAllNodes}
-            className="h-9 px-3 flex items-center justify-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-xl text-slate-500 shadow-sm hover:text-emerald-600 transition-all"
+            className="h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-500 shadow-sm hover:text-emerald-600 transition-all shrink-0"
           >
             <svg className="w-4 h-4 shrink-0" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
-            <span className="text-[10px] font-black uppercase tracking-wider hidden md:block">{t('Collapse')}</span>
+            <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Collapse')}</span>
           </button>
 
           <div ref={alarmMenuContainerRef} className="relative">
@@ -749,18 +796,18 @@ export const NetworkTopology = ({
                 setAlarmMenuOpen((prev) => !prev)
                 setOltFilterOpen(false)
               }}
-              className={`h-9 px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all ${
+              className={`h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all shrink-0 ${
                 alarmEnabled
                   ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
-                  : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 text-slate-500 hover:text-rose-600'
+                  : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 hover:text-rose-600'
               }`}
             >
               <Bell className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-black uppercase tracking-wider hidden md:block">{t('Alarm')}</span>
+              <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Alarm')}</span>
             </button>
 
             {alarmMenuOpen && (
-              <div className="absolute right-0 top-11 z-30 w-[272px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl">
+              <div className="absolute right-0 top-11 z-30 w-[272px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl">
               <div className="flex items-center justify-between mb-3.5">
                 <p className="text-[12px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">{t('Alarm settings')}</p>
                 <button
@@ -792,7 +839,7 @@ export const NetworkTopology = ({
                         w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-colors
                         ${isSelected
                           ? 'bg-slate-50/80 border-slate-200 dark:bg-slate-800 dark:border-slate-700'
-                          : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300 dark:bg-slate-900/40 dark:border-slate-800 dark:hover:bg-slate-800 dark:hover:border-slate-700'}
+                          : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300 dark:bg-slate-900/40 dark:border-slate-700/50 dark:hover:bg-slate-800 dark:hover:border-slate-700'}
                       `}
                     >
                       <span className="h-4 w-4 shrink-0 flex items-center justify-center">
@@ -833,7 +880,7 @@ export const NetworkTopology = ({
                       onBlur={() => {
                         setAlarmMinCountInput(String(clampAlarmMinCount(alarmMinCountInput)))
                       }}
-                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
+                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
                     />
                     <div className="h-9 w-8 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col">
                       <button
@@ -907,7 +954,7 @@ export const NetworkTopology = ({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-start gap-12 p-10 pt-0 pb-40 animate-in fade-in duration-500">
+      <div className="flex flex-wrap items-start gap-12 px-4 lg:px-10 pb-40 animate-in fade-in duration-500">
         {loading && (
               <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">Loading live data...</div>
         )}

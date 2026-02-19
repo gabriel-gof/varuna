@@ -1,4 +1,5 @@
 import logging
+from datetime import timedelta
 from io import StringIO
 
 from django.core.management import call_command
@@ -188,6 +189,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                 polling_enabled=False,
                 next_discovery_at=None,
                 next_poll_at=None,
+                next_power_at=None,
             )
             ONULog.objects.filter(onu__olt=olt, offline_until__isnull=True).update(offline_until=now)
             ONU.objects.filter(olt=olt, is_active=True).update(
@@ -257,6 +259,40 @@ class OLTViewSet(viewsets.ModelViewSet):
                 power_map.update(cache_service.get_many_onu_power(olt.id, onu_ids))
         return power_map
 
+    def _mark_power_collection_schedule(self, olt: OLT, collected_at=None):
+        now = collected_at or timezone.now()
+        next_at = now + timedelta(seconds=olt.power_interval_seconds or 0)
+        OLT.objects.filter(id=olt.id).update(last_power_at=now, next_power_at=next_at)
+        olt.last_power_at = now
+        olt.next_power_at = next_at
+
+    def _collect_power_for_olt(self, olt: OLT, *, force_refresh=True, include_results=True):
+        onus = list(
+            ONU.objects.filter(olt=olt, is_active=True)
+            .select_related('olt', 'olt__vendor_profile')
+            .order_by('slot_id', 'pon_id', 'onu_id')
+        )
+        result_map = power_service.refresh_for_onus(onus, force_refresh=force_refresh)
+        results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
+        collected_count = sum(
+            1
+            for row in results
+            if row.get('onu_rx_power') is not None or row.get('olt_rx_power') is not None
+        )
+        self._mark_power_collection_schedule(olt)
+
+        payload = {
+            'status': 'completed',
+            'olt_id': olt.id,
+            'count': len(results),
+            'collected_count': collected_count,
+            'last_power_at': olt.last_power_at,
+            'next_power_at': olt.next_power_at,
+        }
+        if include_results:
+            payload['results'] = results
+        return payload
+
     @action(detail=True, methods=['get'])
     def topology(self, request, pk=None):
         """
@@ -282,18 +318,72 @@ class OLTViewSet(viewsets.ModelViewSet):
         if validation_error is not None:
             return validation_error
 
-        onus = list(
-            ONU.objects.filter(olt=olt, is_active=True)
-            .select_related('olt', 'olt__vendor_profile')
-            .order_by('slot_id', 'pon_id', 'onu_id')
+        payload = self._collect_power_for_olt(olt, force_refresh=True, include_results=True)
+        return Response(payload)
+
+    @action(detail=False, methods=['post'], url_path='refresh_power')
+    def refresh_power_all(self, request):
+        """
+        Triggers power refresh for every active OLT and stores a fresh batch snapshot.
+        """
+        force_refresh = _is_true(request.data.get('force_refresh', True))
+        olts = list(
+            OLT.objects.filter(is_active=True, vendor_profile__is_active=True)
+            .select_related('vendor_profile')
+            .order_by('id')
         )
-        result_map = power_service.refresh_for_onus(onus, force_refresh=True)
-        results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
+
+        results = []
+        total_onu_count = 0
+        total_collected_count = 0
+        completed_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for olt in olts:
+            validation_error = self._validate_vendor_action(
+                olt,
+                capability_field='supports_power_monitoring',
+                required_template_paths=[('power', 'onu_rx_oid'), ('power', 'olt_rx_oid')],
+                action_name='power refresh',
+            )
+            if validation_error is not None:
+                skipped_count += 1
+                payload = dict(validation_error.data)
+                payload['status'] = 'skipped'
+                results.append(payload)
+                continue
+
+            try:
+                payload = self._collect_power_for_olt(
+                    olt,
+                    force_refresh=force_refresh,
+                    include_results=False,
+                )
+                completed_count += 1
+                total_onu_count += payload['count']
+                total_collected_count += payload['collected_count']
+                results.append(payload)
+            except Exception as exc:
+                error_count += 1
+                logger.exception("Power refresh failed for OLT %s", olt.id)
+                results.append(
+                    {
+                        'status': 'error',
+                        'olt_id': olt.id,
+                        'detail': str(exc),
+                    }
+                )
+
         return Response(
             {
                 'status': 'completed',
-                'olt_id': olt.id,
-                'count': len(results),
+                'olt_count': len(olts),
+                'completed_count': completed_count,
+                'skipped_count': skipped_count,
+                'error_count': error_count,
+                'total_onu_count': total_onu_count,
+                'total_collected_count': total_collected_count,
                 'results': results,
             }
         )

@@ -59,6 +59,8 @@ docker compose -f docker-compose.dev.yml up -d --build
 - `POST /api/olts/{id}/run_discovery/`
 - `POST /api/olts/{id}/run_polling/`
 - `POST /api/olts/{id}/snmp_check/`
+- `POST /api/olts/{id}/refresh_power/`
+- `POST /api/olts/refresh_power/`
 - `GET /api/onu/`
 - `GET /api/onu/{id}/power/`
 - `POST /api/onu/batch-power/`

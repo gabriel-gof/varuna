@@ -436,6 +436,123 @@ class SettingsApiContractTests(TestCase):
             ['power.olt_rx_oid', 'power.onu_rx_oid'],
         )
 
+    @patch('topology.api.views.power_service.refresh_for_onus')
+    def test_refresh_power_updates_power_schedule_fields(self, mock_refresh):
+        templates = dict(self.vendor.oid_templates or {})
+        templates['power'] = {
+            'onu_rx_oid': '1.3.6.1.4.1.test.10',
+            'olt_rx_oid': '1.3.6.1.4.1.test.11',
+        }
+        power_vendor = build_vendor_profile(name='SETTINGS-POWER', oid_templates=templates)
+        olt = self._create_olt(
+            name='OLT-POWER-SCHEDULE',
+            vendor_profile=power_vendor,
+            power_interval_seconds=180,
+        )
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            name='client-power',
+            serial='SERIAL-POWER',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        mock_refresh.return_value = {
+            onu.id: {
+                'onu_id': onu.id,
+                'slot_id': onu.slot_id,
+                'pon_id': onu.pon_id,
+                'onu_number': onu.onu_id,
+                'onu_rx_power': -20.10,
+                'olt_rx_power': -22.00,
+                'power_read_at': timezone.now().isoformat(),
+            }
+        }
+
+        response = self.client.post(f'/api/olts/{olt.id}/refresh_power/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], 'completed')
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['collected_count'], 1)
+        self.assertTrue(response.data['last_power_at'])
+        self.assertTrue(response.data['next_power_at'])
+
+        olt.refresh_from_db()
+        self.assertIsNotNone(olt.last_power_at)
+        self.assertIsNotNone(olt.next_power_at)
+        self.assertEqual(
+            int((olt.next_power_at - olt.last_power_at).total_seconds()),
+            olt.power_interval_seconds,
+        )
+
+    @patch('topology.api.views.power_service.refresh_for_onus')
+    def test_refresh_power_all_runs_for_every_valid_olt(self, mock_refresh):
+        templates = dict(self.vendor.oid_templates or {})
+        templates['power'] = {
+            'onu_rx_oid': '1.3.6.1.4.1.test.20',
+            'olt_rx_oid': '1.3.6.1.4.1.test.21',
+        }
+        power_vendor = build_vendor_profile(name='SETTINGS-POWER-ALL', oid_templates=templates)
+        olt_a = self._create_olt(name='OLT-POWER-A', vendor_profile=power_vendor)
+        olt_b = self._create_olt(name='OLT-POWER-B', vendor_profile=power_vendor)
+
+        onu_a = ONU.objects.create(
+            olt=olt_a,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        onu_b = ONU.objects.create(
+            olt=olt_b,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='285278465.2',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        def _mock_refresh(onus, force_refresh=True):
+            return {
+                onu.id: {
+                    'onu_id': onu.id,
+                    'slot_id': onu.slot_id,
+                    'pon_id': onu.pon_id,
+                    'onu_number': onu.onu_id,
+                    'onu_rx_power': -18.50,
+                    'olt_rx_power': -21.20,
+                    'power_read_at': timezone.now().isoformat(),
+                }
+                for onu in onus
+            }
+
+        mock_refresh.side_effect = _mock_refresh
+
+        response = self.client.post('/api/olts/refresh_power/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], 'completed')
+        self.assertEqual(response.data['olt_count'], 2)
+        self.assertEqual(response.data['completed_count'], 2)
+        self.assertEqual(response.data['skipped_count'], 0)
+        self.assertEqual(response.data['error_count'], 0)
+        self.assertEqual(response.data['total_onu_count'], 2)
+        self.assertEqual(response.data['total_collected_count'], 2)
+
+        olt_a.refresh_from_db()
+        olt_b.refresh_from_db()
+        self.assertIsNotNone(olt_a.last_power_at)
+        self.assertIsNotNone(olt_b.last_power_at)
+        self.assertIsNotNone(olt_a.next_power_at)
+        self.assertIsNotNone(olt_b.next_power_at)
+
     def test_snmp_check_rejects_snmp_v3_until_credentials_exist(self):
         olt = self._create_olt(name='OLT-SNMP-V3', snmp_version='v3')
         response = self.client.post(f'/api/olts/{olt.id}/snmp_check/')

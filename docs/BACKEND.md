@@ -44,6 +44,8 @@ Parser supports:
 - `polling_interval_seconds`
 - `power_interval_seconds`
 - `discovery_interval_minutes`
+- `last_power_at`
+- `next_power_at`
 
 Updated from:
 - `snmp_check` API action,
@@ -97,6 +99,7 @@ Settings actions now validate vendor capability/template prerequisites before ru
 - `run_discovery`: requires `supports_onu_discovery` and discovery OIDs (`discovery.onu_name_oid`, `discovery.onu_serial_oid`).
 - `run_polling`: requires `supports_onu_status` and `status.onu_status_oid`.
 - `refresh_power`: requires `supports_power_monitoring` and power OIDs (`power.onu_rx_oid`, `power.olt_rx_oid`).
+- `refresh_power` (bulk/all OLTs) applies the same preflight per OLT and skips invalid OLTs with explicit status/details.
 
 If prerequisites are missing, API returns `400` with explicit `detail` and `missing_templates` (when applicable).
 
@@ -108,6 +111,8 @@ Main endpoints:
 - `POST /api/olts/{id}/run_discovery/`
 - `POST /api/olts/{id}/run_polling/`
 - `POST /api/olts/{id}/snmp_check/`
+- `POST /api/olts/{id}/refresh_power/`
+- `POST /api/olts/refresh_power/`
 - `GET /api/onu/`
 - `GET /api/onu/{id}/power/`
 - `POST /api/onu/batch-power/`
@@ -116,8 +121,15 @@ Main endpoints:
 - `discovery_interval_minutes`
 - `polling_interval_seconds`
 - `power_interval_seconds`
+- `last_power_at`
+- `next_power_at`
 
 These fields are used by the frontend for stale-data validation and interval-driven refresh behavior.
+
+Power refresh contract:
+- Power readings displayed in topology are read from Redis cache (no per-PON live SNMP read required in normal view flow).
+- `POST /api/olts/{id}/refresh_power/` refreshes one OLT cache snapshot and updates `last_power_at`/`next_power_at`.
+- `POST /api/olts/refresh_power/` executes a full batch refresh across active OLTs and updates schedule fields per OLT.
 
 ## Test Coverage
 Current tests validate:
