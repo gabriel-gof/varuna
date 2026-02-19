@@ -823,7 +823,7 @@ export const SettingsPanel = ({
                                   </button>
                                 </div>
                               </div>
-                              
+
                               {/* Item 2 */}
                               <div className="group flex flex-col items-center gap-2.5">
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
@@ -844,7 +844,7 @@ export const SettingsPanel = ({
                               </div>
 
                               {/* Item 3 */}
-                              <div className="group flex flex-col items-center gap-2.5">
+                              <div className="group flex flex-col items-center gap-2.5 col-span-2 lg:col-span-1">
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                                   {t('Power collection')}
                                 </label>
@@ -1115,7 +1115,7 @@ export const SettingsPanel = ({
                           </div>
 
                           {/* Item 3: Power */}
-                          <div className="group flex flex-col items-center gap-2.5">
+                          <div className="group flex flex-col items-center gap-2.5 col-span-2 lg:col-span-1">
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                               {t('Power collection')}
                             </label>
