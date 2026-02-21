@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2, RefreshCcw, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Clock } from 'lucide-react'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useTranslation } from 'react-i18next'
 import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, clearOltThresholds, hasOltOverride } from '../utils/powerThresholds'
 import { HEALTH_STYLES } from '../utils/healthStyles'
@@ -131,16 +132,66 @@ const FieldInput = React.forwardRef(({ className = '', ...props }, ref) => (
   />
 ))
 
-const FieldSelect = ({ className = '', children, ...props }) => (
-  <select
-    {...props}
-    className={`h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
-      text-[11px] font-semibold text-slate-800 dark:text-slate-200
-      focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all disabled:opacity-50 ${className}`}
-  >
-    {children}
-  </select>
-)
+const FieldSelect = ({ value, onChange, options = [], disabled, className = '' }) => {
+  const triggerRef = useRef(null)
+  const [triggerWidth, setTriggerWidth] = useState(0)
+
+  const selectedLabel = options.find((o) => String(o.value) === String(value))?.label || ''
+
+  return (
+    <DropdownMenu.Root onOpenChange={(open) => {
+      if (open && triggerRef.current) setTriggerWidth(triggerRef.current.offsetWidth)
+    }}>
+      <DropdownMenu.Trigger asChild disabled={disabled}>
+        <button
+          ref={triggerRef}
+          className={`group h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
+            text-[11px] font-semibold text-slate-800 dark:text-slate-200
+            focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all
+            disabled:opacity-50 disabled:cursor-not-allowed
+            flex items-center justify-center relative ${className}`}
+        >
+          <span className="truncate text-center flex-1">{selectedLabel}</span>
+          <ChevronDown className="w-3 h-3 shrink-0 ml-1 transition-transform duration-200 group-data-[state=open]:rotate-180" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          className="bg-white dark:bg-slate-900 rounded-xl p-1 shadow-xl border border-slate-200 dark:border-slate-700/50 z-[220] animate-in fade-in zoom-in-95 duration-150"
+          sideOffset={4}
+          style={triggerWidth ? { width: triggerWidth } : undefined}
+        >
+          {options.map((option) => (
+            <DropdownMenu.Item
+              key={option.value}
+              onSelect={() => onChange(String(option.value))}
+              className={`
+                relative flex items-center justify-center px-2 py-1.5 rounded-lg outline-none cursor-pointer transition-colors
+                ${String(value) === String(option.value)
+                  ? 'bg-slate-50 dark:bg-slate-800/60'
+                  : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'}
+              `}
+            >
+              <span className="absolute left-2 h-4 w-4 flex items-center justify-center">
+                {String(value) === String(option.value) && (
+                  <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                )}
+              </span>
+              <span
+                className={`
+                  text-[10px] font-black uppercase tracking-[0.04em] text-center
+                  ${String(value) === String(option.value) ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-200'}
+                `}
+              >
+                {option.label}
+              </span>
+            </DropdownMenu.Item>
+          ))}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  )
+}
 
 const SectionLabel = ({ children }) => (
   <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-300 dark:text-slate-600 select-none">{children}</span>
@@ -381,6 +432,7 @@ export const SettingsPanel = ({
   const [createCardTab, setCreateCardTab] = useState('device')
   const [editCardTab, setEditCardTab] = useState('device')
   const [thresholdForm, setThresholdForm] = useState(null)
+  const [originalThresholds, setOriginalThresholds] = useState(null)
   const [createThresholdForm, setCreateThresholdForm] = useState(DEFAULT_THRESHOLDS)
 
   const vendorOptions = useMemo(() => {
@@ -402,35 +454,32 @@ export const SettingsPanel = ({
   }, [olts, selectedOltId])
 
   // Dirty detection — Save only matters when something changed
-  const dirty = useMemo(() => isFormDirty(editForm, selectedOlt, vendorProfiles), [editForm, selectedOlt, vendorProfiles])
+  const formDirty = useMemo(() => isFormDirty(editForm, selectedOlt, vendorProfiles), [editForm, selectedOlt, vendorProfiles])
+
+  const thresholdDirty = useMemo(() => {
+    if (!thresholdForm || !originalThresholds) return false
+    return ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad'].some(
+      (k) => thresholdForm[k] !== originalThresholds[k]
+    )
+  }, [thresholdForm, originalThresholds])
+
+  const dirty = formDirty || thresholdDirty
 
   // Reset card tab + threshold form when selection changes
   useEffect(() => {
     setEditCardTab('device')
-    if (!selectedOltId) { setThresholdForm(null); return }
-    setThresholdForm(getOltThresholds(selectedOltId))
+    if (!selectedOltId) { setThresholdForm(null); setOriginalThresholds(null); return }
+    const loaded = getOltThresholds(selectedOltId)
+    setThresholdForm(loaded)
+    setOriginalThresholds(loaded)
   }, [selectedOltId])
 
-  // Auto-select first OLT on initial load or when selected OLT disappears
-  const hasAutoSelectedRef = useRef(false)
+  // Clear selection when the selected OLT disappears (e.g. deleted)
   useEffect(() => {
-    if (!olts.length) {
-      setSelectedOltId(null)
-      hasAutoSelectedRef.current = false
-      return
-    }
-
-    if (selectedOltId) {
-      const exists = olts.some((item) => String(item.id) === String(selectedOltId))
-      if (exists) return
-      // Selected OLT was removed — fall through to auto-select
-    } else if (hasAutoSelectedRef.current) {
-      // User manually deselected — don't override
-      return
-    }
-
-    hasAutoSelectedRef.current = true
-    setSelectedOltId(String(olts[0].id))
+    if (!selectedOltId) return
+    if (!olts.length) { setSelectedOltId(null); return }
+    const exists = olts.some((item) => String(item.id) === String(selectedOltId))
+    if (!exists) setSelectedOltId(null)
   }, [olts, selectedOltId])
 
   useEffect(() => {
@@ -504,6 +553,7 @@ export const SettingsPanel = ({
   }
 
   const handleVendorChange = (nextVendor) => {
+    if (nextVendor === form.vendor) return
     const nextModel = (vendorProfiles || []).find((item) => item.vendor === nextVendor)
     setForm((prev) => ({
       ...prev,
@@ -513,6 +563,7 @@ export const SettingsPanel = ({
   }
 
   const handleEditVendorChange = (nextVendor) => {
+    if (nextVendor === editForm?.vendor) return
     const nextModel = (vendorProfiles || []).find((item) => item.vendor === nextVendor)
     setEditForm((prev) => prev ? ({
       ...prev,
@@ -539,6 +590,7 @@ export const SettingsPanel = ({
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
       setLocalError(t('Required fields are missing'))
+      setTimeout(() => setLocalError(''), 5000)
       return
     }
 
@@ -570,11 +622,22 @@ export const SettingsPanel = ({
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
       setLocalError(t('Required fields are missing'))
+      setTimeout(() => setLocalError(''), 5000)
       return
     }
 
     setLocalError('')
     await onUpdateOlt?.(selectedOltId, payload)
+    // Persist thresholds to localStorage
+    if (thresholdForm && selectedOltId) {
+      const allValid = ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad'].every(
+        (k) => typeof thresholdForm[k] === 'number' && Number.isFinite(thresholdForm[k])
+      )
+      if (allValid) {
+        saveOltThresholds(selectedOltId, thresholdForm)
+        setOriginalThresholds({ ...thresholdForm })
+      }
+    }
   }
 
   const handleDelete = async (oltId) => {
@@ -591,19 +654,14 @@ export const SettingsPanel = ({
   const handleDiscard = () => {
     if (!selectedOlt) return
     setEditForm(buildEditForm(selectedOlt, vendorProfiles))
+    if (originalThresholds) setThresholdForm({ ...originalThresholds })
   }
 
   const setThresholdField = (key, rawValue) => {
     const numValue = rawValue === '' || rawValue === '-' ? rawValue : parseFloat(rawValue)
     setThresholdForm((prev) => {
       if (!prev) return prev
-      const next = { ...prev, [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue }
-      // Persist only when all values are valid numbers
-      const allValid = ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad'].every(
-        (k) => typeof next[k] === 'number' && Number.isFinite(next[k])
-      )
-      if (allValid && selectedOltId) saveOltThresholds(selectedOltId, next)
-      return next
+      return { ...prev, [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue }
     })
   }
 
@@ -623,20 +681,6 @@ export const SettingsPanel = ({
     <div className="w-full h-full overflow-y-auto custom-scrollbar">
       <div className="max-w-2xl mx-auto px-6 lg:px-10 py-8 space-y-6 animate-in fade-in duration-500">
 
-        {anyError && (
-          <div className="flex items-center gap-2.5 px-3.5 py-2 animate-in fade-in duration-500">
-            <AlertCircle className="w-3.5 h-3.5 text-rose-400 dark:text-rose-500 flex-shrink-0" />
-            <p className="text-[10px] font-bold text-rose-400 dark:text-rose-500 uppercase tracking-wider">{anyError}</p>
-          </div>
-        )}
-
-        {actionMessage && (
-          <div className="flex items-center gap-2.5 px-3.5 py-2 animate-in fade-in duration-500">
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-500 flex-shrink-0" />
-            <p className="text-[10px] font-bold text-emerald-400 dark:text-emerald-500 uppercase tracking-wider">{actionMessage}</p>
-          </div>
-        )}
-
         {/* Header row */}
         <div className="w-full flex items-center justify-between">
           <p className="text-[11px] font-black text-slate-300 dark:text-slate-600 uppercase tracking-widest select-none">
@@ -651,7 +695,7 @@ export const SettingsPanel = ({
                 setShowAddForm(true)
               }
             }}
-            className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 hover:shadow-emerald-600/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-all"
             title={t('Add OLT')}
           >
             <Plus className="w-5 h-5" />
@@ -741,28 +785,20 @@ export const SettingsPanel = ({
                                <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('Vendor')}</FieldLabel>
                                   <FieldSelect
-                                    className="text-center"
                                     value={form.vendor}
-                                    onChange={(e) => handleVendorChange(e.target.value)}
+                                    onChange={handleVendorChange}
+                                    options={vendorOptions.map((v) => ({ value: v, label: String(v).toUpperCase() }))}
                                     disabled={vendorLoading || !vendorOptions.length}
-                                  >
-                                    {vendorOptions.map((vendor) => (
-                                      <option key={vendor} value={vendor}>{String(vendor).toUpperCase()}</option>
-                                    ))}
-                                  </FieldSelect>
+                                  />
                                </div>
                                <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('Model')}</FieldLabel>
                                   <FieldSelect
-                                    className="text-center"
                                     value={form.vendor_profile}
-                                    onChange={(e) => setField('vendor_profile', e.target.value)}
+                                    onChange={(val) => setField('vendor_profile', val)}
+                                    options={modelOptions.map((item) => ({ value: String(item.id), label: item.model_name }))}
                                     disabled={vendorLoading || !modelOptions.length}
-                                  >
-                                    {modelOptions.map((item) => (
-                                      <option key={item.id} value={item.id}>{item.model_name}</option>
-                                    ))}
-                                  </FieldSelect>
+                                  />
                                </div>
 
                                {/* Row 2 */}
@@ -892,6 +928,21 @@ export const SettingsPanel = ({
                              </div>
                         </div>
                     )}
+                    {/* Overlay messages inside content area */}
+                    {(localError || actionError) && (
+                      <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
+                        <p className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{localError || actionError}</p>
+                      </div>
+                    )}
+
+                    {actionMessage && !(localError || actionError) && (
+                      <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                        <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{actionMessage}</p>
+                      </div>
+                    )}
+
                     </div>
 
                     {/* Footer Actions */}
@@ -933,9 +984,6 @@ export const SettingsPanel = ({
             const health = getOltHealth(olt, snmpStatus, oltHealthById)
             const vp = vendorProfiles?.find(p => String(p.id) === String(olt.vendor_profile))
             const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || 'Unknown'
-            const discoveryBusy = Boolean(actionBusy?.[`discovery:${olt.id}`])
-            const pollingBusy = Boolean(actionBusy?.[`polling:${olt.id}`])
-            const powerBusy = Boolean(actionBusy?.[`power:${olt.id}`])
             const deleteBusy = Boolean(actionBusy?.[`delete:${olt.id}`])
             const localUpdateBusy = Boolean(actionBusy?.[`update:${olt.id}`])
             const snmpBadge = getSnmpBadge(olt, snmpStatus, t)
@@ -976,7 +1024,7 @@ export const SettingsPanel = ({
                     </div>
 
                     {/* ── Fixed height content area ── */}
-                    <div className="min-h-[170px] w-full overflow-y-auto custom-scrollbar relative">
+                    <div className="min-h-[170px] w-full overflow-y-auto custom-scrollbar">
 
                     {/* ── TAB: Device + Connection ── */}
                     {editCardTab === 'device' && (
@@ -998,29 +1046,21 @@ export const SettingsPanel = ({
                            <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('Vendor')}</FieldLabel>
                               <FieldSelect
-                                className="text-center"
                                 value={editForm.vendor}
-                                onChange={(e) => handleEditVendorChange(e.target.value)}
+                                onChange={handleEditVendorChange}
+                                options={vendorOptions.map((v) => ({ value: v, label: String(v).toUpperCase() }))}
                                 disabled={vendorLoading || !vendorOptions.length}
-                              >
-                                {vendorOptions.map((vendor) => (
-                                  <option key={vendor} value={vendor}>{String(vendor).toUpperCase()}</option>
-                                ))}
-                              </FieldSelect>
+                              />
                            </div>
 
                            <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('Model')}</FieldLabel>
                               <FieldSelect
-                                className="text-center"
                                 value={editForm.vendor_profile}
-                                onChange={(e) => setEditField('vendor_profile', e.target.value)}
+                                onChange={(val) => setEditField('vendor_profile', val)}
+                                options={editModelOptions.map((item) => ({ value: String(item.id), label: item.model_name }))}
                                 disabled={vendorLoading || !editModelOptions.length}
-                              >
-                                {editModelOptions.map((item) => (
-                                  <option key={item.id} value={item.id}>{item.model_name}</option>
-                                ))}
-                              </FieldSelect>
+                              />
                            </div>
 
                            {/* Row 2 */}
@@ -1082,10 +1122,9 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => handleDiscovery(olt.id)}
-                                disabled={discoveryBusy}
-                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5"
                               >
-                                {discoveryBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
+                                <span>{t('Run')}</span>
                               </button>
                             </div>
                           </div>
@@ -1106,10 +1145,9 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => onRunPolling?.(olt.id)}
-                                disabled={pollingBusy}
-                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5"
                               >
-                                {pollingBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
+                                <span>{t('Run')}</span>
                               </button>
                             </div>
                           </div>
@@ -1130,10 +1168,9 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => onRefreshPower?.(olt.id)}
-                                disabled={powerBusy}
-                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5"
                               >
-                                {powerBusy ? <RefreshCcw className="w-3 h-3 animate-spin text-emerald-500" /> : <span>{t('Run')}</span>}
+                                <span>{t('Run')}</span>
                               </button>
                             </div>
                           </div>
@@ -1172,6 +1209,21 @@ export const SettingsPanel = ({
                       </div>
                     )}
                     </div>{/* End fixed height */}
+
+                    {/* Notification messages between content and action bar */}
+                    {(localError || actionError) && (
+                      <div className="flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
+                        <p className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{localError || actionError}</p>
+                      </div>
+                    )}
+
+                    {actionMessage && !(localError || actionError) && (
+                      <div className="flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                        <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{actionMessage}</p>
+                      </div>
+                    )}
 
                     {/* ── Action bar ── */}
                     <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700/30">
@@ -1226,6 +1278,7 @@ export const SettingsPanel = ({
         </div>
 
       </div>
+
     </div>
   )
 }

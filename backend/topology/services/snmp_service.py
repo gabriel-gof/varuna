@@ -101,7 +101,14 @@ class SNMPService:
         )
         return None
     
-    def get(self, olt: Any, oids: List[str]) -> Optional[Dict[str, Any]]:
+    def get(
+        self,
+        olt: Any,
+        oids: List[str],
+        *,
+        timeout: Optional[float] = None,
+        retries: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Executa SNMP GET para múltiplas OIDs
         Executes SNMP GET for multiple OIDs
@@ -111,6 +118,8 @@ class SNMPService:
         
         m = self.pysnmp_modules
         var_binds = [m['ObjectType'](m['ObjectIdentity'](oid)) for oid in oids]
+        timeout_value = self.timeout if timeout is None else float(timeout)
+        retries_value = self.retries if retries is None else int(retries)
 
         auth_data = self._build_auth_data(olt)
         if auth_data is None:
@@ -121,8 +130,8 @@ class SNMPService:
                 # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
                 transport = await m['UdpTransportTarget'].create(
                     (olt.ip_address, olt.snmp_port),
-                    timeout=self.timeout,
-                    retries=self.retries
+                    timeout=timeout_value,
+                    retries=retries_value
                 )
                 
                 errorIndication, errorStatus, errorIndex, varBinds = await m['getCmd'](

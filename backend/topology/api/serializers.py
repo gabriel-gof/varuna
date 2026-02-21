@@ -41,6 +41,8 @@ class ONUNestedSerializer(serializers.ModelSerializer):
     serial_number = serializers.CharField(source='serial', read_only=True)
     disconnect_reason = serializers.SerializerMethodField()
     offline_since = serializers.SerializerMethodField()
+    disconnect_window_start = serializers.SerializerMethodField()
+    disconnect_window_end = serializers.SerializerMethodField()
     onu_rx_power = serializers.SerializerMethodField()
     olt_rx_power = serializers.SerializerMethodField()
     power_read_at = serializers.SerializerMethodField()
@@ -56,6 +58,8 @@ class ONUNestedSerializer(serializers.ModelSerializer):
             'status',
             'disconnect_reason',
             'offline_since',
+            'disconnect_window_start',
+            'disconnect_window_end',
             'onu_rx_power',
             'olt_rx_power',
             'power_read_at',
@@ -92,6 +96,18 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         log = self._get_active_log(obj)
         if log and log.offline_since:
             return log.offline_since.isoformat()
+        return None
+
+    def get_disconnect_window_start(self, obj):
+        log = self._get_active_log(obj)
+        if log and log.disconnect_window_start:
+            return log.disconnect_window_start.isoformat()
+        return None
+
+    def get_disconnect_window_end(self, obj):
+        log = self._get_active_log(obj)
+        if log and log.disconnect_window_end:
+            return log.disconnect_window_end.isoformat()
         return None
 
     def _get_power(self, obj):
@@ -708,7 +724,15 @@ class ONULogSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ONULog
-        fields = ['id', 'onu', 'offline_since', 'offline_until', 'disconnect_reason']
+        fields = [
+            'id',
+            'onu',
+            'offline_since',
+            'offline_until',
+            'disconnect_window_start',
+            'disconnect_window_end',
+            'disconnect_reason',
+        ]
 
 
 class UserProfileSerializer(serializers.ModelSerializer):

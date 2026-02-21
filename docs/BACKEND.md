@@ -80,9 +80,20 @@ Default ZTE profile policy:
 - Delete inactive lost ONUs after `10080` minutes (7 days).
 
 ## Polling Rules
-- Missing status for one ONU: mark ONU `unknown`, do not create false offline event.
+- Status polling uses the same OLT-safe SNMP strategy as power collection:
+  - short SNMP GET transport (`timeout≈1.2s`, `retries=0`);
+  - chunk retry plus recursive chunk split fallback;
+  - per-OID retry when a chunk returns partial varbinds;
+  - paced PON batching with per-OLT call budget.
+- Missing status for one ONU in a partial snapshot: preserve last known ONU status/log state (do not force `unknown` on transient SNMP gaps).
 - Full SNMP status failure for OLT: mark OLT unreachable and stop status mutation.
 - Offline/online transitions create/close `ONULog` correctly.
+- Disconnection timestamp reliability contract:
+  - on a proven `online -> offline` transition, polling stores a disconnection window in `ONULog`:
+    - `disconnect_window_start` = previous trusted poll timestamp,
+    - `disconnect_window_end` = current poll timestamp (first observed offline);
+  - if previous poll trust is not available (no prior trusted snapshot), the window fields remain empty.
+- Polling command output now includes `failed_chunks` and `missing_preserved` counters for operational visibility.
 
 ## OLT Deletion Contract
 `DELETE /api/olts/{id}/` is a soft-deactivation flow:
@@ -102,6 +113,14 @@ Settings actions now validate vendor capability/template prerequisites before ru
 - `refresh_power` (bulk/all OLTs) applies the same preflight per OLT and skips invalid OLTs with explicit status/details.
 
 If prerequisites are missing, API returns `400` with explicit `detail` and `missing_templates` (when applicable).
+
+Background queue contract for OLT-scoped manual actions:
+- `POST /api/olts/{id}/run_discovery/`, `POST /api/olts/{id}/run_polling/`, and `POST /api/olts/{id}/refresh_power/` accept optional payload `{"background": true}`.
+- With `background=true`, API returns `202 Accepted` immediately with:
+  - `status=accepted` when queued.
+  - `status=already_running` when same OLT + same action kind is already in-flight.
+- Commands run in backend daemon threads and clear in-flight flags when finished (or on exception).
+- Without `background=true`, actions keep synchronous behavior and return completion payloads (`200` or `500`) as before.
 
 ## API Notes
 Main endpoints:
@@ -123,6 +142,9 @@ Main endpoints:
 - `power_interval_seconds`
 - `last_power_at`
 - `next_power_at`
+- per-ONU disconnection window fields:
+  - `disconnect_window_start`
+  - `disconnect_window_end`
 
 These fields are used by the frontend for stale-data validation and interval-driven refresh behavior.
 
@@ -130,6 +152,22 @@ Power refresh contract:
 - Power readings displayed in topology are read from Redis cache (no per-PON live SNMP read required in normal view flow).
 - `POST /api/olts/{id}/refresh_power/` refreshes one OLT cache snapshot and updates `last_power_at`/`next_power_at`.
 - `POST /api/olts/refresh_power/` executes a full batch refresh across active OLTs and updates schedule fields per OLT.
+- Power collection is status-driven:
+  - if usable status snapshot is missing (`last_poll_at` absent or ONUs only `unknown`), backend runs `poll_onu_status` before collecting power;
+  - only ONUs with `status=online` are queried for SNMP power;
+  - ONUs `offline`/`unknown` are intentionally skipped and returned with empty power values plus `skipped_reason`.
+- Power refresh responses expose collection accounting:
+  - single OLT: `count`, `attempted_count`, `skipped_not_online_count`, `skipped_offline_count`, `skipped_unknown_count`, `collected_count`;
+  - bulk all OLTs: `total_onu_count`, `total_attempted_count`, `total_skipped_not_online_count`, `total_skipped_offline_count`, `total_skipped_unknown_count`, `total_collected_count`.
+- Power SNMP collection is resilient for large OLT batches:
+  - power reads use short SNMP transport requests (`timeout≈1.2s`, `retries=0`) with application-level retry/fallback control to avoid long stalls;
+  - ONUs are collected in paced PON batches (ordered by slot/pon) to reduce burst load on large OLTs;
+  - chunk requests are retried on timeout/no-response;
+  - failed chunks are split recursively into smaller requests;
+  - missing varbinds from partial SNMP responses are retried per OID.
+  - per-OLT SNMP call budget is derived from OLT size (`estimated_calls * multiplier`) instead of a fixed low cap, so large OLTs (e.g. 4k ONUs) are still fully attempted.
+- Power cache TTL is interval-aware per OLT (`max(POWER_CACHE_TTL, power_interval_seconds * 2, 300)`), preventing early expiry during long full-OLT collections.
+  This reduces partial-power gaps where a full OLT run timed out while single-PON refresh succeeded.
 
 ## Test Coverage
 Current tests validate:

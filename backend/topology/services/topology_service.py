@@ -165,11 +165,17 @@ class TopologyService:
         status = status_payload.get('status', onu.status)
         disconnect_reason = status_payload.get('disconnect_reason')
         offline_since = status_payload.get('offline_since')
+        disconnect_window_start = status_payload.get('disconnect_window_start')
+        disconnect_window_end = status_payload.get('disconnect_window_end')
 
         if not disconnect_reason and active_log:
             disconnect_reason = active_log.disconnect_reason
         if not offline_since and active_log and active_log.offline_since:
             offline_since = active_log.offline_since.isoformat()
+        if not disconnect_window_start and active_log and active_log.disconnect_window_start:
+            disconnect_window_start = active_log.disconnect_window_start.isoformat()
+        if not disconnect_window_end and active_log and active_log.disconnect_window_end:
+            disconnect_window_end = active_log.disconnect_window_end.isoformat()
 
         return {
             'id': onu.id,
@@ -179,6 +185,8 @@ class TopologyService:
             'status': status,
             'disconnect_reason': disconnect_reason or '',
             'offline_since': offline_since or '',
+            'disconnect_window_start': disconnect_window_start or '',
+            'disconnect_window_end': disconnect_window_end or '',
             'onu_rx_power': power_payload.get('onu_rx_power'),
             'olt_rx_power': power_payload.get('olt_rx_power'),
             'power_read_at': power_payload.get('power_read_at'),

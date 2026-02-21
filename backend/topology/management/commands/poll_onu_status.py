@@ -1,6 +1,9 @@
 import logging
+import math
+import time
+from collections import defaultdict
 from datetime import timedelta
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -15,6 +18,23 @@ from topology.services.vendor_profile import map_status_code
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_snmp_index(value) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().strip(".")
+    if not normalized:
+        return None
+    return normalized
+
+
+def _iso_or_empty(value) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value).strip()
 
 
 def _extract_index(oid: str, base_oid: str) -> Optional[str]:
@@ -34,10 +54,84 @@ def _chunked(values: List[str], size: int) -> Iterator[List[str]]:
 class Command(BaseCommand):
     help = "Poll ONU status via SNMP and update status/logs."
 
+    def __init__(self):
+        super().__init__()
+        self.chunk_retry_attempts = 1
+        self.single_oid_retry_attempts = 1
+        self.retry_backoff_seconds = 0.12
+        self.snmp_timeout_seconds = 1.2
+        self.snmp_retries = 0
+        self.max_get_call_multiplier = 12
+        self.pause_between_pon_batches_seconds = 0.05
+
     def add_arguments(self, parser):
         parser.add_argument("--olt-id", type=int, help="Run polling for a specific OLT id")
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore polling_enabled for the selected OLT(s)")
+
+    def _snmp_get_with_attempts(
+        self,
+        olt: OLT,
+        oids: List[str],
+        *,
+        attempts: int,
+        call_budget: Dict[str, int],
+    ) -> Optional[Dict[str, str]]:
+        for attempt in range(attempts):
+            if call_budget.get("remaining", 0) <= 0:
+                return None
+            call_budget["remaining"] -= 1
+            response = snmp_service.get(
+                olt,
+                oids,
+                timeout=self.snmp_timeout_seconds,
+                retries=self.snmp_retries,
+            )
+            if response is not None:
+                return response
+            if attempt < attempts - 1:
+                time.sleep(self.retry_backoff_seconds * (attempt + 1))
+        return None
+
+    def _fetch_status_chunk_resilient(
+        self,
+        olt: OLT,
+        oids: List[str],
+        *,
+        call_budget: Dict[str, int],
+    ) -> Dict[str, str]:
+        if not oids:
+            return {}
+
+        response = self._snmp_get_with_attempts(
+            olt,
+            oids,
+            attempts=self.chunk_retry_attempts,
+            call_budget=call_budget,
+        )
+        if response is None:
+            if len(oids) == 1:
+                return {}
+            midpoint = len(oids) // 2
+            left = self._fetch_status_chunk_resilient(olt, oids[:midpoint], call_budget=call_budget)
+            right = self._fetch_status_chunk_resilient(olt, oids[midpoint:], call_budget=call_budget)
+            merged: Dict[str, str] = {}
+            merged.update(left)
+            merged.update(right)
+            return merged
+
+        if len(oids) > 1:
+            missing_oids = [oid for oid in oids if oid not in response]
+            for oid in missing_oids:
+                single = self._snmp_get_with_attempts(
+                    olt,
+                    [oid],
+                    attempts=self.single_oid_retry_attempts,
+                    call_budget=call_budget,
+                )
+                if isinstance(single, dict) and oid in single:
+                    response[oid] = single[oid]
+        return response
 
     def handle(self, *args, **options):
         force = bool(options.get("force", False))
@@ -69,31 +163,83 @@ class Command(BaseCommand):
         status_cfg = oid_templates.get("status", {})
         status_oid = status_cfg.get("onu_status_oid")
         status_map = status_cfg.get("status_map", {})
+        previous_poll_at = olt.last_poll_at
+        previous_snmp_reachable = bool(olt.snmp_reachable)
 
         if not status_oid:
             self.stdout.write(f"OLT {olt.id} missing status OID, skipping.")
             return
 
         onus = list(ONU.objects.filter(olt=olt, is_active=True))
-        status_oids = [f"{status_oid}.{onu.snmp_index}" for onu in onus if onu.snmp_index]
+        onu_index_map: Dict[int, str] = {}
+        for onu in onus:
+            normalized_index = _normalize_snmp_index(onu.snmp_index)
+            if normalized_index:
+                onu_index_map[onu.id] = normalized_index
+
+        status_oids = [f"{status_oid}.{index}" for index in onu_index_map.values()]
         if not status_oids:
             self.stdout.write(f"OLT {olt.id}: no active ONUs with SNMP index.")
             return
 
         statuses: Dict[str, str] = {}
         chunk_size = int(status_cfg.get("get_chunk_size", 20))
+        chunk_size = max(chunk_size, 1)
         failed_chunks = 0
+        estimated_calls = max(1, math.ceil(len(status_oids) / chunk_size))
+        call_budget = {
+            "remaining": max(
+                estimated_calls + 32,
+                estimated_calls * self.max_get_call_multiplier,
+            )
+        }
 
-        for chunk in _chunked(status_oids, max(chunk_size, 1)):
-            response = snmp_service.get(olt, chunk)
-            if not response:
-                failed_chunks += 1
-                continue
-            for oid, value in response.items():
-                index = _extract_index(oid, status_oid)
-                if not index:
+        pon_groups: Dict[Tuple[int, int], List[ONU]] = defaultdict(list)
+        for onu in onus:
+            pon_groups[(int(onu.slot_id or -1), int(onu.pon_id or -1))].append(onu)
+
+        ordered_pon_keys = sorted(pon_groups.keys(), key=lambda item: (item[0], item[1]))
+        logger.warning(
+            "Status polling OLT %s: paced PON batches (active_onus=%s, pons=%s, chunk_size=%s).",
+            olt.id,
+            len(onus),
+            len(ordered_pon_keys),
+            chunk_size,
+        )
+
+        budget_exhausted = False
+        for pon_index, pon_key in enumerate(ordered_pon_keys):
+            pon_onus = sorted(pon_groups[pon_key], key=lambda item: int(item.onu_id or 0))
+            pon_oids = [
+                f"{status_oid}.{onu_index_map[onu.id]}"
+                for onu in pon_onus
+                if onu.id in onu_index_map
+            ]
+            for chunk in _chunked(pon_oids, chunk_size):
+                if call_budget["remaining"] <= 0:
+                    budget_exhausted = True
+                    logger.warning(
+                        "Status polling OLT %s: call budget exhausted; keeping partial status snapshot.",
+                        olt.id,
+                    )
+                    break
+                response = self._fetch_status_chunk_resilient(olt, chunk, call_budget=call_budget)
+                if not response:
+                    failed_chunks += 1
                     continue
-                statuses[index] = "" if value is None else str(value).strip()
+                for oid, value in response.items():
+                    index = _extract_index(oid, status_oid)
+                    if not index:
+                        continue
+                    statuses[index] = "" if value is None else str(value).strip()
+
+            if budget_exhausted:
+                break
+            if (
+                self.pause_between_pon_batches_seconds > 0
+                and pon_index < len(ordered_pon_keys) - 1
+            ):
+                time.sleep(self.pause_between_pon_batches_seconds)
 
         now = timezone.now()
         ttl = getattr(settings, "STATUS_CACHE_TTL", 180)
@@ -110,6 +256,14 @@ class Command(BaseCommand):
 
         if not dry_run:
             mark_olt_reachable(olt)
+            if len(statuses) < len(status_oids):
+                logger.warning(
+                    "Status polling OLT %s: partial snapshot received (%s/%s indexes, failed_chunks=%s); preserving previous state for missing ONUs.",
+                    olt.id,
+                    len(statuses),
+                    len(status_oids),
+                    failed_chunks,
+                )
 
         open_logs_by_onu: Dict[int, ONULog] = {}
         open_logs = ONULog.objects.filter(
@@ -120,31 +274,58 @@ class Command(BaseCommand):
         for log in open_logs:
             open_logs_by_onu.setdefault(log.onu_id, log)
 
-        updated = online = offline = unknown = missing = 0
+        updated = online = offline = unknown = missing = missing_preserved = 0
         onus_to_update: List[ONU] = []
         logs_to_close: List[ONULog] = []
         logs_to_reason_update: List[ONULog] = []
         new_logs: List[ONULog] = []
 
         for onu in onus:
-            status_code = statuses.get(onu.snmp_index)
+            normalized_index = onu_index_map.get(onu.id)
+            status_code = statuses.get(normalized_index) if normalized_index else None
             if status_code is None:
                 missing += 1
                 if dry_run:
                     continue
-                if onu.status != ONU.STATUS_UNKNOWN:
-                    onu.status = ONU.STATUS_UNKNOWN
-                    onus_to_update.append(onu)
+                current_status = onu.status if onu.status in {
+                    ONU.STATUS_ONLINE,
+                    ONU.STATUS_OFFLINE,
+                    ONU.STATUS_UNKNOWN,
+                } else ONU.STATUS_UNKNOWN
+                open_log = open_logs_by_onu.get(onu.id)
+                disconnect_reason = ""
+                offline_since = ""
+                disconnect_window_start = ""
+                disconnect_window_end = ""
+                if current_status == ONU.STATUS_OFFLINE:
+                    disconnect_reason = (
+                        open_log.disconnect_reason
+                        if open_log and open_log.disconnect_reason
+                        else ONULog.REASON_UNKNOWN
+                    )
+                    if open_log and open_log.offline_since:
+                        offline_since = open_log.offline_since.isoformat()
+                    disconnect_window_start = _iso_or_empty(
+                        open_log.disconnect_window_start if open_log else None
+                    )
+                    disconnect_window_end = _iso_or_empty(
+                        open_log.disconnect_window_end if open_log else None
+                    )
+                elif current_status == ONU.STATUS_UNKNOWN:
+                    disconnect_reason = ONULog.REASON_UNKNOWN
                 cache_service.set_onu_status(
                     olt.id,
                     onu.id,
                     {
-                        "status": ONU.STATUS_UNKNOWN,
-                        "disconnect_reason": ONULog.REASON_UNKNOWN,
-                        "offline_since": "",
+                        "status": current_status,
+                        "disconnect_reason": disconnect_reason,
+                        "offline_since": offline_since,
+                        "disconnect_window_start": disconnect_window_start,
+                        "disconnect_window_end": disconnect_window_end,
                     },
                     ttl=ttl,
                 )
+                missing_preserved += 1
                 continue
 
             mapped = map_status_code(status_code, status_map)
@@ -172,10 +353,21 @@ class Command(BaseCommand):
                 active_log = None
             elif new_status == ONU.STATUS_OFFLINE:
                 if onu.status == ONU.STATUS_ONLINE or not open_log:
+                    window_start = None
+                    window_end = None
+                    if (
+                        onu.status == ONU.STATUS_ONLINE
+                        and previous_poll_at
+                        and previous_snmp_reachable
+                    ):
+                        window_start = previous_poll_at
+                        window_end = now
                     active_log = ONULog(
                         onu=onu,
                         offline_since=now,
                         disconnect_reason=reason or ONULog.REASON_UNKNOWN,
+                        disconnect_window_start=window_start,
+                        disconnect_window_end=window_end,
                     )
                     new_logs.append(active_log)
                     open_logs_by_onu[onu.id] = active_log
@@ -191,8 +383,12 @@ class Command(BaseCommand):
                 onus_to_update.append(onu)
 
             offline_since = ""
+            disconnect_window_start = ""
+            disconnect_window_end = ""
             if new_status == ONU.STATUS_OFFLINE and active_log:
                 offline_since = active_log.offline_since.isoformat()
+                disconnect_window_start = _iso_or_empty(active_log.disconnect_window_start)
+                disconnect_window_end = _iso_or_empty(active_log.disconnect_window_end)
 
             cache_service.set_onu_status(
                 olt.id,
@@ -201,6 +397,8 @@ class Command(BaseCommand):
                     "status": new_status,
                     "disconnect_reason": reason,
                     "offline_since": offline_since,
+                    "disconnect_window_start": disconnect_window_start,
+                    "disconnect_window_end": disconnect_window_end,
                 },
                 ttl=ttl,
             )
@@ -221,7 +419,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"OLT {olt.id}: polled {updated} ONUs "
-            f"(online={online}, offline={offline}, unknown={unknown}, missing={missing})."
+            f"(online={online}, offline={offline}, unknown={unknown}, missing={missing}, missing_preserved={missing_preserved}, failed_chunks={failed_chunks})."
         )
 
     def _mark_poll_result(self, olt: OLT, now):

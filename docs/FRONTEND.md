@@ -31,6 +31,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
 - Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads.
 - Topology search suggestions are deduplicated by serial (when present) so the same ONU is shown once even if backend topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
+- Client search applies at PON level: topology renders only PONs containing matching ONU(s), and when a suggestion is selected the tree is pinned to that exact OLT/slot/PON path.
+- Alarm filtering is bypassed while a search term is active, ensuring the searched client PON remains visible even if it fails current alarm thresholds.
+- Desktop table ONU highlight uses explicit per-side inset strokes so all four border edges keep equal thickness.
 - Alarm mode state propagation from topology to app shell uses a stable callback and no-op equality guard to avoid render loops (`Maximum update depth exceeded`) during topology view startup.
 
 ## Freshness and Coherence Rules
@@ -55,18 +58,27 @@ The UI remains topology-first. No dashboard page is required for current product
   - `polling_interval_seconds`
   - `power_interval_seconds`
 - Frontend runs due discovery/polling/power actions based on configured OLT intervals to keep data current while UI is open.
+- Interval-driven maintenance requests are queued in backend background mode (`{ background: true }`) so status/discovery/power scheduling stays non-blocking and avoids long-lived frontend request locks.
 - Due power collection is OLT-scoped (not per selected PON) and uses backend `last_power_at` plus each OLT `power_interval_seconds`.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
-- The power refresh button triggers a full-batch refresh (`POST /api/olts/refresh_power/`) and enforces a 10-second cooldown to prevent SNMP request bursts from rapid clicks.
+- PON sidebar refresh is tab-aware and collection-first:
+  - `Status`: triggers `POST /api/olts/:id/run_polling/` for the selected OLT.
+  - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`).
+  - After collection, both paths reload topology (`GET /api/olts/?include_topology=true`) to keep tree + panel in sync.
+- Status table disconnection column is interval-aware:
+  - displays a compact time window (`date hh:mm-hh:mm`) only when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
+  - displays `—` when the exact disconnection window is unknown.
+- PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
 - In Power tab, rows without power readings show only a hyphen (`—`); for offline statuses the hyphen is red in both `Potência` and `Leitura`, and for online rows it keeps the default neutral style.
-- Power refresh execution follows each OLT's configured `power_interval_seconds` while the UI is open; operators can still force an immediate full batch with the refresh button.
+- During topology reload, if an ONU temporarily arrives without power fields while `last_power_at` has not advanced, the UI keeps the last in-memory ONU power snapshot to avoid false `—` flicker from cache gaps.
 - In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
 - Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
 - In PON detail tables (`Status` and `Potência`), the second column label is `Name`/`Nome` because it represents ONU name (not customer account/login).
 - Alarm mode no longer injects hidden reason-specific sort modes into the PON table (`link_loss`/`dying_gasp`/`unknown`). Status sorting remains canonical (`Default`, `Offline`, `Online`) to keep dropdown label and row order coherent.
 - When alarm mode is enabled, PON status rows default to `Offline` ordering (inactive-first). If specific alarm reasons are selected, those reasons are prioritized only within the offline group; online rows stay last.
+- Alarm configuration (enabled, reasons, minCount) is persisted in `localStorage` (`varuna.alarmConfig`) per browser. Defaults: enabled=true, reasons=linkLoss only, minOnus=4. Users can change settings freely; preferences survive page reloads.
 
 ## Settings Panel Design
 - OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
@@ -75,6 +87,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Device tab uses a responsive grid (`grid-cols-2` on mobile, `grid-cols-3` on `lg+`):
   1. **Device row**: Name, Vendor, Model.
   2. **Connection row**: IP, SNMP Community, Port.
+- Vendor and Model selects use a custom Radix `DropdownMenu` (`FieldSelect` component) matching the sort dropdown pattern from the topology view — portaled content, check indicator for selected item, emerald accent, keyboard navigation. Native `<select>` elements are not used.
 - Intervals tab uses a responsive grid (`grid-cols-2` on mobile, `grid-cols-3` on `lg+`) with compound input+button fields for ONU discovery, Status collection, and Power collection.
 - Delete button is integrated inside the card header (visible when expanded), not floated outside the card boundary.
 - Thresholds tab configures power color-coding:
@@ -83,21 +96,29 @@ The UI remains topology-first. No dashboard page is required for current product
   - Color mapping: `green` (>= normal), `yellow` (between normal and critical), `red` (< critical).
   - Default thresholds: Normal = -25 dBm, Critical = -28 dBm.
   - Stored in `localStorage` with global defaults and per-OLT overrides.
-  - Auto-saves when all values are valid; `Reset to defaults` clears per-OLT overrides.
+  - Saved to `localStorage` on explicit Save button click (not auto-saved); `Reset to defaults` clears per-OLT overrides.
   - Color legend (dots + range text) updates live as thresholds change.
 - Action bar at card bottom keeps last-discovery timestamp (left) and Save/Cancel controls (right, shown only when form is dirty).
 - Interval inputs accept **Zabbix-style durations**: bare numbers (seconds), or suffixed values (`30s`, `5m`, `1h`, `4h`, `1d`).
   - `parseDuration()` converts input string → seconds; `formatDuration()` converts seconds → human-readable string.
   - Form state stores human-readable strings; save handlers convert back to `discovery_interval_minutes` / `polling_interval_seconds` / `power_interval_seconds` for the API.
-- Dirty detection compares `editForm` values against current OLT data with special duration-aware comparison.
+- Dirty detection compares `editForm` values against current OLT data with special duration-aware comparison, and also compares `thresholdForm` against its original snapshot to detect threshold changes. The Save button activates for any change — device fields, intervals, or thresholds.
+- Cancel/Discard resets both the device/interval form and the threshold form to their original values.
+- Vendor dropdown re-selection (same vendor) is guarded to prevent Radix `onSelect` from resetting `vendor_profile` and falsely marking the form dirty.
 - Card header shows OLT name with total ONU count and online (green) / offline (red) breakdown as subtitle. IP:port, vendor, and model are not shown in the header — they live in the Device tab form fields.
-- `onRunDiscovery` prop triggers `POST /olts/:id/run_discovery/` from App.jsx.
+- OLT cards start collapsed; selection is persisted in `localStorage` but no auto-select on initial load.
+- Error and success messages render in normal document flow between the tab content area and the action bar, with a translucent backdrop blur. They do not overlay tab content (e.g. threshold inputs). Auto-dismiss after 5 seconds.
+- Manual interval action buttons (`Run` for discovery/polling/power) are non-blocking:
+  - Request payload includes `{ background: true }`.
+  - UI shows immediate inline success acknowledgment (`queued` / `already running`) and does not wait for command completion.
+  - Run buttons do not show per-button loading animation for these long-running operations.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 
 ## Settings API Contract Expectations
 - OLT removal from Settings maps to backend soft-deactivation (not hard delete), so removed OLTs disappear from active UI while history is preserved server-side.
 - Save actions can return explicit `400` validation errors for invalid runtime configuration (unsupported SNMP version, invalid intervals/ports, missing required fields).
 - Manual action buttons (`Run` for discovery/polling/power) can return explicit `400` errors when the vendor profile lacks required capabilities or OID templates.
+- Manual action buttons (`run_discovery`, `run_polling`, `refresh_power`) are acknowledged immediately by backend `202` responses when queued in background mode.
 - Frontend should continue surfacing backend `detail` errors directly so operator misconfiguration is visible and actionable.
 
 ## Power Threshold Coloring

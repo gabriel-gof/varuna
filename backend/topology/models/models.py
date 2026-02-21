@@ -251,6 +251,18 @@ class ONULog(models.Model):
     
     offline_since = models.DateTimeField(verbose_name='Offline Desde')
     offline_until = models.DateTimeField(null=True, blank=True, verbose_name='Offline Até')
+    disconnect_window_start = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Janela de Desconexão (Início)',
+        help_text='Início conhecido da janela em que a ONU desconectou (última observação online).',
+    )
+    disconnect_window_end = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Janela de Desconexão (Fim)',
+        help_text='Fim conhecido da janela em que a ONU desconectou (primeira observação offline).',
+    )
     disconnect_reason = models.CharField(
         max_length=20,
         choices=REASON_CHOICES,

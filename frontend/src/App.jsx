@@ -94,17 +94,174 @@ const getOnuPowerSnapshot = (onu) => {
   return { onuRx, oltRx, readAt }
 }
 
-const formatOfflineSince = (value, language) => {
-  if (!value) return '—'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return value
-  return new Intl.DateTimeFormat(language === 'pt' ? 'pt-BR' : 'en-US', {
+const hasPowerSnapshot = (snapshot) => {
+  if (!snapshot) return false
+  return snapshot.onuRx !== null || snapshot.oltRx !== null || Boolean(snapshot.readAt)
+}
+
+const shouldCarryForwardPower = (previousOlt, nextOlt) => {
+  const previousPowerMs = parseTimestampMs(previousOlt?.last_power_at)
+  if (!previousPowerMs) return false
+
+  const nextPowerMs = parseTimestampMs(nextOlt?.last_power_at)
+  if (!nextPowerMs) return true
+  return nextPowerMs <= previousPowerMs
+}
+
+const buildOltPowerSnapshotMap = (olt) => {
+  const byOnuId = new Map()
+
+  asList(olt?.slots).forEach((slot) => {
+    asList(slot?.pons).forEach((pon) => {
+      asList(pon?.onus).forEach((onu) => {
+        if (!onu?.id) return
+        const snapshot = getOnuPowerSnapshot(onu)
+        if (!hasPowerSnapshot(snapshot)) return
+        byOnuId.set(String(onu.id), snapshot)
+      })
+    })
+  })
+
+  return byOnuId
+}
+
+const mergeOltPowerSnapshots = (previousOlt, nextOlt) => {
+  if (!previousOlt || !shouldCarryForwardPower(previousOlt, nextOlt)) return nextOlt
+
+  const previousSnapshotByOnu = buildOltPowerSnapshotMap(previousOlt)
+  if (!previousSnapshotByOnu.size) return nextOlt
+
+  const slots = asList(nextOlt?.slots).map((slot) => ({
+    ...slot,
+    pons: asList(slot?.pons).map((pon) => ({
+      ...pon,
+      onus: asList(pon?.onus).map((onu) => {
+        const currentSnapshot = getOnuPowerSnapshot(onu)
+        if (hasPowerSnapshot(currentSnapshot)) return onu
+
+        const previousSnapshot = previousSnapshotByOnu.get(String(onu?.id))
+        if (!previousSnapshot) return onu
+
+        return {
+          ...onu,
+          onu_rx_power: previousSnapshot.onuRx,
+          olt_rx_power: previousSnapshot.oltRx,
+          power_read_at: previousSnapshot.readAt
+        }
+      })
+    }))
+  }))
+
+  return {
+    ...nextOlt,
+    slots
+  }
+}
+
+const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
+  const previousByOltId = new Map(asList(previousOlts).map((olt) => [String(olt?.id), olt]))
+  return asList(nextOlts).map((nextOlt) => mergeOltPowerSnapshots(previousByOltId.get(String(nextOlt?.id)), nextOlt))
+}
+
+const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
+const BACKGROUND_ACTION_TIMEOUT_MS = 20_000
+const SEARCH_ROW_HIGHLIGHT_STYLE = {
+  boxShadow: [
+    'inset 2px 0 0 rgba(16, 185, 129, 0.65)',
+    'inset -2px 0 0 rgba(16, 185, 129, 0.65)',
+    'inset 0 2px 0 rgba(16, 185, 129, 0.65)',
+    'inset 0 -2px 0 rgba(16, 185, 129, 0.65)'
+  ].join(', ')
+}
+
+const toIntOrNull = (value) => {
+  const numeric = Number(value)
+  if (!Number.isInteger(numeric)) return null
+  return numeric
+}
+
+const patchPonPowerRows = (olts, target, rows) => {
+  const rowMap = new Map(
+    asList(rows)
+      .filter((row) => row?.onu_id != null)
+      .map((row) => [String(row.onu_id), row])
+  )
+  if (!rowMap.size) return olts
+
+  let changed = false
+
+  const nextOlts = asList(olts).map((olt) => {
+    if (String(olt?.id) !== String(target.oltId)) return olt
+
+    const nextSlots = asList(olt?.slots).map((slot) => {
+      const slotNumber = slot?.slot_number ?? slot?.slot_id
+      if (String(slotNumber) !== String(target.slotNumber)) return slot
+
+      const nextPons = asList(slot?.pons).map((pon) => {
+        const ponNumber = pon?.pon_number ?? pon?.pon_id
+        if (String(ponNumber) !== String(target.ponNumber)) return pon
+
+        const nextOnus = asList(pon?.onus).map((onu) => {
+          const row = rowMap.get(String(onu?.id))
+          if (!row) return onu
+
+          changed = true
+          return {
+            ...onu,
+            onu_rx_power: row.onu_rx_power ?? null,
+            olt_rx_power: row.olt_rx_power ?? null,
+            power_read_at: row.power_read_at ?? null
+          }
+        })
+
+        return {
+          ...pon,
+          onus: nextOnus
+        }
+      })
+
+      return {
+        ...slot,
+        pons: nextPons
+      }
+    })
+
+    return {
+      ...olt,
+      slots: nextSlots
+    }
+  })
+
+  return changed ? nextOlts : olts
+}
+
+const formatDisconnectionWindow = (startValue, endValue, language) => {
+  if (!startValue || !endValue) return '—'
+
+  const start = new Date(startValue)
+  const end = new Date(endValue)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '—'
+
+  const locale = language === 'pt' ? 'pt-BR' : 'en-US'
+  const sameDay = (
+    start.getFullYear() === end.getFullYear() &&
+    start.getMonth() === end.getMonth() &&
+    start.getDate() === end.getDate()
+  )
+
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
     day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
+    month: '2-digit'
+  })
+  const timeFormatter = new Intl.DateTimeFormat(locale, {
     hour: '2-digit',
     minute: '2-digit'
-  }).format(parsed)
+  })
+
+  if (sameDay) {
+    return `${dateFormatter.format(start)} ${timeFormatter.format(start)}-${timeFormatter.format(end)}`
+  }
+  return `${dateFormatter.format(start)} ${timeFormatter.format(start)}-${dateFormatter.format(end)} ${timeFormatter.format(end)}`
 }
 
 const formatReadingAt = (value, language) => {
@@ -144,6 +301,8 @@ const mapTopologyToSlots = (olt, topology) => {
           status: onu.status,
           disconnect_reason: onu.disconnect_reason,
           offline_since: onu.offline_since,
+          disconnect_window_start: onu.disconnect_window_start,
+          disconnect_window_end: onu.disconnect_window_end,
           onu_rx_power: onu.onu_rx_power ?? onu.onu_rx ?? onu.rx_onu ?? null,
           olt_rx_power: onu.olt_rx_power ?? onu.olt_rx ?? onu.rx_olt ?? null,
           power_read_at: onu.power_read_at ?? onu.read_at ?? onu.power_timestamp ?? null
@@ -238,9 +397,20 @@ const App = () => {
   const [activeTab, setActiveTab] = useState('status')
   const [statusSortMode, setStatusSortMode] = useState('onu_id')
   const [powerSortMode, setPowerSortMode] = useState('default')
-  const [alarmSortConfig, setAlarmSortConfig] = useState({
-    enabled: false,
-    reasons: ALARM_REASON_PRIORITY
+  const [alarmSortConfig, setAlarmSortConfig] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('varuna.alarmConfig'))
+      if (saved) {
+        const reasons = saved.reasons && typeof saved.reasons === 'object'
+          ? Object.entries(saved.reasons).filter(([, v]) => v).map(([k]) => k).filter((r) => ALARM_REASON_PRIORITY.includes(r))
+          : ['linkLoss']
+        return {
+          enabled: saved.enabled ?? true,
+          reasons: reasons.length ? reasons : ['linkLoss']
+        }
+      }
+    } catch { /* use defaults */ }
+    return { enabled: true, reasons: ['linkLoss'] }
   })
   const [activeNav, setActiveNav] = useState(() => {
     const saved = localStorage.getItem('varuna_active_tab')
@@ -293,11 +463,10 @@ const App = () => {
   const [settingsActionError, setSettingsActionError] = useState(null)
   const [settingsActionMessage, setSettingsActionMessage] = useState('')
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
-  const [isRefreshing, setIsRefreshing] = useState(false)
-  const [isRefreshingPonPower, setIsRefreshingPonPower] = useState(false)
-  const [isPowerCooldown, setIsPowerCooldown] = useState(false)
-  const powerCooldownTimerRef = useRef(null)
-  useEffect(() => () => clearTimeout(powerCooldownTimerRef.current), [])
+  const [isRefreshingPonPanel, setIsRefreshingPonPanel] = useState(false)
+  const [ponPanelError, setPonPanelError] = useState('')
+  const ponPanelErrorTimerRef = useRef(null)
+  useEffect(() => () => clearTimeout(ponPanelErrorTimerRef.current), [])
   const [healthTick, setHealthTick] = useState(() => Date.now())
   const [snmpStatus, setSnmpStatus] = useState({}) // { [oltId]: { status: 'pending'|'reachable'|'unreachable', sysDescr } }
   const snmpInFlightRef = useRef(false)
@@ -324,13 +493,21 @@ const App = () => {
     }
   }, [isDarkMode])
 
-  const fetchOlts = useCallback(async () => {
+  const showPonPanelError = useCallback((message) => {
+    setPonPanelError(message)
+    clearTimeout(ponPanelErrorTimerRef.current)
+    ponPanelErrorTimerRef.current = setTimeout(() => setPonPanelError(''), 6000)
+  }, [])
+
+  const fetchOlts = useCallback(async ({ surfaceError = false } = {}) => {
     const isInitialLoad = !oltsRef.current.length
     if (isInitialLoad) setLoading(true)
-    setError(null)
+    if (isInitialLoad || surfaceError) setError(null)
     try {
       const res = await api.get('/olts/', { params: { include_topology: 'true' } })
-      setOlts(normalizeList(res.data))
+      const nextOlts = normalizeList(res.data)
+      setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, nextOlts))
+      return { ok: true }
     } catch (err) {
       try {
         const base = await api.get('/olts/')
@@ -345,11 +522,14 @@ const App = () => {
             }
           })
         )
-        setOlts(enriched)
+        setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, enriched))
+        return { ok: true, usedFallback: true }
       } catch (fallbackErr) {
-        if (isInitialLoad) {
-          setError(getApiErrorMessage(err, getApiErrorMessage(fallbackErr, 'Failed to load OLT data')))
+        const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, 'Failed to load OLT data'))
+        if (isInitialLoad || surfaceError) {
+          setError(message)
         }
+        return { ok: false, message }
       }
     } finally {
       if (isInitialLoad) setLoading(false)
@@ -368,12 +548,6 @@ const App = () => {
       setVendorLoading(false)
     }
   }, [])
-
-  const handleRefresh = async () => {
-    setIsRefreshing(true)
-    await Promise.all([fetchOlts(), fetchVendorProfiles()])
-    setTimeout(() => setIsRefreshing(false), 400)
-  }
 
   // ─── SNMP connectivity checks (shared across Settings + Topology) ───
   const runSnmpChecks = useCallback(async (oltList) => {
@@ -490,7 +664,11 @@ const App = () => {
         if (pollDue && !pollLocks.has(oltId)) {
           pollLocks.add(oltId)
           requests.push(
-            api.post(`/olts/${oltId}/run_polling/`)
+            api.post(
+              `/olts/${oltId}/run_polling/`,
+              { background: true },
+              { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
+            )
               .catch(() => null)
               .finally(() => pollLocks.delete(oltId))
           )
@@ -504,7 +682,11 @@ const App = () => {
         if (discoveryDue && !discoveryLocks.has(oltId)) {
           discoveryLocks.add(oltId)
           requests.push(
-            api.post(`/olts/${oltId}/run_discovery/`)
+            api.post(
+              `/olts/${oltId}/run_discovery/`,
+              { background: true },
+              { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
+            )
               .catch(() => null)
               .finally(() => discoveryLocks.delete(oltId))
           )
@@ -520,7 +702,11 @@ const App = () => {
         if (powerDue && !powerLocks.has(oltId)) {
           powerLocks.add(oltId)
           requests.push(
-            api.post(`/olts/${oltId}/refresh_power/`)
+            api.post(
+              `/olts/${oltId}/refresh_power/`,
+              { background: true },
+              { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
+            )
               .catch(() => null)
               .finally(() => powerLocks.delete(oltId))
           )
@@ -564,10 +750,12 @@ const App = () => {
       const result = await request()
       if (successMessage) {
         setSettingsActionMessage(successMessage)
+        setTimeout(() => setSettingsActionMessage(''), 4000)
       }
       return result
     } catch (err) {
       setSettingsActionError(getApiErrorMessage(err, 'Failed to execute settings action'))
+      setTimeout(() => setSettingsActionError(null), 5000)
       return null
     } finally {
       setSettingsActionBusy((prev) => {
@@ -575,6 +763,26 @@ const App = () => {
         delete next[key]
         return next
       })
+    }
+  }
+
+  const runQueuedSettingsAction = async ({ endpoint, acceptedMessage, alreadyRunningMessage }) => {
+    setSettingsActionError(null)
+    setSettingsActionMessage('')
+    try {
+      const response = await api.post(endpoint, { background: true })
+      const queuedStatus = response?.data?.status
+      if (queuedStatus === 'already_running') {
+        setSettingsActionMessage(alreadyRunningMessage || acceptedMessage)
+      } else {
+        setSettingsActionMessage(acceptedMessage)
+      }
+      setTimeout(() => setSettingsActionMessage(''), 4000)
+      return response?.data || null
+    } catch (err) {
+      setSettingsActionError(getApiErrorMessage(err, 'Failed to execute settings action'))
+      setTimeout(() => setSettingsActionError(null), 5000)
+      return null
     }
   }
 
@@ -618,39 +826,27 @@ const App = () => {
   }
 
   const runDiscovery = async (oltId) => {
-    await runSettingsAction(
-      `discovery:${oltId}`,
-      async () => {
-        await api.post(`/olts/${oltId}/run_discovery/`)
-        await fetchOlts()
-        return true
-      },
-      t('Discovery executed successfully')
-    )
+    await runQueuedSettingsAction({
+      endpoint: `/olts/${oltId}/run_discovery/`,
+      acceptedMessage: t('Discovery queued successfully'),
+      alreadyRunningMessage: t('Discovery already running')
+    })
   }
 
   const runPolling = async (oltId) => {
-    await runSettingsAction(
-      `polling:${oltId}`,
-      async () => {
-        await api.post(`/olts/${oltId}/run_polling/`)
-        await fetchOlts()
-        return true
-      },
-      t('Polling executed successfully')
-    )
+    await runQueuedSettingsAction({
+      endpoint: `/olts/${oltId}/run_polling/`,
+      acceptedMessage: t('Polling queued successfully'),
+      alreadyRunningMessage: t('Polling already running')
+    })
   }
 
   const refreshPower = async (oltId) => {
-    await runSettingsAction(
-      `power:${oltId}`,
-      async () => {
-        await api.post(`/olts/${oltId}/refresh_power/`)
-        await fetchOlts()
-        return true
-      },
-      t('Power refresh executed successfully')
-    )
+    await runQueuedSettingsAction({
+      endpoint: `/olts/${oltId}/refresh_power/`,
+      acceptedMessage: t('Power refresh queued successfully'),
+      alreadyRunningMessage: t('Power refresh already running')
+    })
   }
 
   const rawSelectedPonData = useMemo(() => {
@@ -676,23 +872,59 @@ const App = () => {
     }
   }, [rawSelectedPonData, selectedPonId])
 
-  const handleRefreshPonPower = useCallback(async () => {
-    if (isPowerCooldown || isRefreshingPonPower) return
+  const collectPowerForSelectedPon = useCallback(async () => {
+    const oltId = toIntOrNull(selectedPonData?.olt?.id)
+    const slotNumber = toIntOrNull(selectedPonData?.slot?.slot_number ?? selectedPonData?.slot?.slot_id)
+    const ponNumber = toIntOrNull(selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id)
 
-    setIsRefreshingPonPower(true)
-    try {
-      await api.post('/olts/refresh_power/')
-      await fetchOlts()
-      setError(null)
-    } catch (err) {
-      setError(getApiErrorMessage(err, 'Failed to refresh power data'))
-    } finally {
-      setIsRefreshingPonPower(false)
-      setIsPowerCooldown(true)
-      clearTimeout(powerCooldownTimerRef.current)
-      powerCooldownTimerRef.current = setTimeout(() => setIsPowerCooldown(false), 10000)
+    if (!oltId || slotNumber == null || ponNumber == null) {
+      return { ok: false, message: t('Failed to refresh power data') }
     }
-  }, [fetchOlts, isPowerCooldown, isRefreshingPonPower])
+
+    const response = await api.post(
+      '/onu/batch-power/',
+      {
+        olt_id: oltId,
+        slot_id: slotNumber,
+        pon_id: ponNumber,
+        refresh: true
+      },
+      { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
+    )
+    const rows = asList(response.data?.results)
+    setOlts((previous) => patchPonPowerRows(previous, { oltId, slotNumber, ponNumber }, rows))
+    return { ok: true }
+  }, [selectedPonData, t])
+
+  const handleRefreshPonPanel = useCallback(async () => {
+    if (isRefreshingPonPanel) return
+
+    setPonPanelError('')
+    setIsRefreshingPonPanel(true)
+    try {
+      const selectedOltId = toIntOrNull(selectedPonData?.olt?.id)
+      if (selectedOltId && activeTab === 'status') {
+        await api.post(`/olts/${selectedOltId}/run_polling/`, {}, { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS })
+      } else if (activeTab === 'power') {
+        const powerResult = await collectPowerForSelectedPon()
+        if (!powerResult?.ok) {
+          showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
+        }
+      }
+
+      const result = await fetchOlts({ surfaceError: false })
+      if (!result?.ok) {
+        showPonPanelError(result?.message || t('Failed to refresh panel data'))
+      }
+    } catch (err) {
+      const fallback = activeTab === 'power'
+        ? t('Failed to refresh power data')
+        : t('Failed to refresh status data')
+      showPonPanelError(getApiErrorMessage(err, fallback))
+    } finally {
+      setIsRefreshingPonPanel(false)
+    }
+  }, [activeTab, collectPowerForSelectedPon, fetchOlts, isRefreshingPonPanel, selectedPonData, showPonPanelError, t])
 
   useEffect(() => {
     if (!selectedPonId) {
@@ -884,7 +1116,7 @@ const App = () => {
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
   const currentSortLabel = activeSortOptions.find((option) => option.id === currentSortMode)?.label || activeSortOptions[0]?.label || t('ONU ID')
-  const isSidebarRefreshBusy = activeTab === 'power' ? (isRefreshingPonPower || isPowerCooldown) : isRefreshing
+  const isSidebarRefreshBusy = isRefreshingPonPanel
   const setCurrentSortMode = (mode) => {
     if (activeTab === 'power') {
       setPowerSortMode(mode)
@@ -906,7 +1138,7 @@ const App = () => {
     const baseRows = selectedOnus.map((onu) => {
       const classification = classifyOnu(onu)
       const statusKey = classification.status
-      const parsedOffline = Date.parse(onu?.offline_since || '')
+      const parsedOffline = Date.parse(onu?.disconnect_window_end || '')
       return {
         onu,
         statusKey,
@@ -1447,22 +1679,22 @@ const App = () => {
                       </DropdownMenu.Root>
 
                       <button
-                        onClick={() => {
-                          if (activeTab === 'power') {
-                            handleRefreshPonPower()
-                            return
-                          }
-                          handleRefresh()
-                        }}
+                        onClick={handleRefreshPonPanel}
                         disabled={isSidebarRefreshBusy}
                         className="shrink-0 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95 disabled:opacity-55 disabled:cursor-not-allowed"
                         aria-label={t('Refresh')}
                         title={t('Refresh')}
                       >
-                        <RotateCw className={`w-4 h-4 ${(activeTab === 'power' ? isRefreshingPonPower : isRefreshing) ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+                        <RotateCw className={`w-4 h-4 ${isRefreshingPonPanel ? 'animate-spin' : ''}`} strokeWidth={2.5} />
                       </button>
                     </div>
                   </div>
+
+                  {ponPanelError && (
+                    <div className="mb-2 rounded-lg border border-rose-200 dark:border-rose-500/40 bg-rose-50/80 dark:bg-rose-500/10 px-3 py-2 text-[11px] font-semibold text-rose-600 dark:text-rose-300">
+                      {ponPanelError}
+                    </div>
+                  )}
 
                   {activeTab === 'status' ? (
                     <>
@@ -1511,7 +1743,13 @@ const App = () => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
-                              const offlineSince = statusKey === 'online' ? '—' : formatOfflineSince(onu.offline_since, i18n.language)
+                              const disconnectWindow = statusKey === 'online'
+                                ? '—'
+                                : formatDisconnectionWindow(
+                                    onu.disconnect_window_start,
+                                    onu.disconnect_window_end,
+                                    i18n.language
+                                  )
                               const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
                               const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
                                 (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
@@ -1526,7 +1764,7 @@ const App = () => {
                                     h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
-                                  style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
+                                  style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}
                                 >
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
@@ -1548,7 +1786,7 @@ const App = () => {
                                     </span>
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-center">
-                                    {offlineSince}
+                                    {disconnectWindow}
                                   </td>
                                 </tr>
                               )
@@ -1580,7 +1818,13 @@ const App = () => {
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                           const serialValue = onu.serial_number || onu.serial || '—'
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
-                          const offlineSince = statusKey === 'online' ? '—' : formatOfflineSince(onu.offline_since, i18n.language)
+                          const disconnectWindow = statusKey === 'online'
+                            ? '—'
+                            : formatDisconnectionWindow(
+                                onu.disconnect_window_start,
+                                onu.disconnect_window_end,
+                                i18n.language
+                              )
                           const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
                           const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
                             (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
@@ -1604,7 +1848,7 @@ const App = () => {
                                   <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
                                   {statusLabel}
                                 </span>
-                                {statusKey !== 'online' && offlineSince !== '—' && <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{offlineSince}</span>}
+                                {statusKey !== 'online' && disconnectWindow !== '—' && <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{disconnectWindow}</span>}
                               </div>
                             </div>
                           )
@@ -1620,7 +1864,7 @@ const App = () => {
 
                   ) : (
                     <div className="relative flex flex-col w-full max-h-full min-h-0">
-                    {isRefreshingPonPower && (
+                    {isRefreshingPonPanel && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
                         <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
                       </div>
@@ -1683,7 +1927,7 @@ const App = () => {
                                     h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
-                                  style={isHighlightedFromSearch ? { boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
+                                  style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}
                                 >
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}

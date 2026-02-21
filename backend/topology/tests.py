@@ -1,12 +1,14 @@
-from unittest.mock import patch
+from io import StringIO
+from unittest.mock import ANY, patch
 
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, VendorProfile
+from topology.services.power_service import power_service
 from topology.services.vendor_profile import map_status_code, parse_onu_index
 
 
@@ -260,6 +262,8 @@ class PollingCommandTests(TestCase):
         self.assertEqual(self.onu.status, ONU.STATUS_OFFLINE)
         open_log = ONULog.objects.get(onu=self.onu, offline_until__isnull=True)
         self.assertEqual(open_log.disconnect_reason, ONULog.REASON_DYING_GASP)
+        self.assertIsNone(open_log.disconnect_window_start)
+        self.assertIsNone(open_log.disconnect_window_end)
 
         mock_get.return_value = {f'{status_oid}.{self.onu.snmp_index}': '4'}
         call_command('poll_onu_status', olt_id=self.olt.id)
@@ -268,6 +272,350 @@ class PollingCommandTests(TestCase):
         open_log.refresh_from_db()
         self.assertEqual(self.onu.status, ONU.STATUS_ONLINE)
         self.assertIsNotNone(open_log.offline_until)
+
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_poll_sets_disconnect_window_when_previous_online_snapshot_is_trusted(self, mock_get):
+        status_oid = self.vendor.oid_templates['status']['onu_status_oid']
+        previous_poll = timezone.now() - timezone.timedelta(minutes=5)
+        self.olt.last_poll_at = previous_poll
+        self.olt.snmp_reachable = True
+        self.olt.save(update_fields=['last_poll_at', 'snmp_reachable'])
+
+        mock_get.return_value = {f'{status_oid}.{self.onu.snmp_index}': '5'}
+        call_command('poll_onu_status', olt_id=self.olt.id)
+
+        self.onu.refresh_from_db()
+        self.assertEqual(self.onu.status, ONU.STATUS_OFFLINE)
+        open_log = ONULog.objects.get(onu=self.onu, offline_until__isnull=True)
+        self.assertEqual(open_log.disconnect_reason, ONULog.REASON_DYING_GASP)
+        self.assertIsNotNone(open_log.disconnect_window_start)
+        self.assertIsNotNone(open_log.disconnect_window_end)
+        self.assertEqual(open_log.disconnect_window_start, previous_poll)
+        self.assertLessEqual(open_log.disconnect_window_start, open_log.disconnect_window_end)
+
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_poll_keeps_disconnect_window_empty_when_previous_snapshot_is_not_trusted(self, mock_get):
+        status_oid = self.vendor.oid_templates['status']['onu_status_oid']
+        self.olt.last_poll_at = timezone.now() - timezone.timedelta(minutes=5)
+        self.olt.snmp_reachable = False
+        self.olt.save(update_fields=['last_poll_at', 'snmp_reachable'])
+
+        mock_get.return_value = {f'{status_oid}.{self.onu.snmp_index}': '5'}
+        call_command('poll_onu_status', olt_id=self.olt.id)
+
+        open_log = ONULog.objects.get(onu=self.onu, offline_until__isnull=True)
+        self.assertIsNone(open_log.disconnect_window_start)
+        self.assertIsNone(open_log.disconnect_window_end)
+
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_poll_recovers_from_failed_large_chunks(self, mock_get):
+        status_oid = self.vendor.oid_templates['status']['onu_status_oid']
+        onu_b = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='285278465.2',
+            name='client-b',
+            serial='SERIAL-B',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+        onu_c = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=3,
+            snmp_index='285278465.3',
+            name='client-c',
+            serial='SERIAL-C',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+        self.onu.status = ONU.STATUS_UNKNOWN
+        self.onu.save(update_fields=['status'])
+
+        def _side_effect(_olt, oids, **_kwargs):
+            if len(oids) > 1:
+                return None
+            return {oids[0]: '4'}
+
+        mock_get.side_effect = _side_effect
+
+        call_command('poll_onu_status', olt_id=self.olt.id)
+
+        self.onu.refresh_from_db()
+        onu_b.refresh_from_db()
+        onu_c.refresh_from_db()
+
+        self.assertEqual(self.onu.status, ONU.STATUS_ONLINE)
+        self.assertEqual(onu_b.status, ONU.STATUS_ONLINE)
+        self.assertEqual(onu_c.status, ONU.STATUS_ONLINE)
+        self.assertTrue(any(len(call.args[1]) > 1 for call in mock_get.call_args_list))
+        self.assertTrue(any(len(call.args[1]) == 1 for call in mock_get.call_args_list))
+        self.olt.refresh_from_db()
+        self.assertIsNotNone(self.olt.last_poll_at)
+
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_poll_preserves_previous_status_when_partial_snapshot_missing(self, mock_get):
+        status_oid = self.vendor.oid_templates['status']['onu_status_oid']
+        onu_missing = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='285278465.2',
+            name='client-missing',
+            serial='SERIAL-MISSING',
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        open_log = ONULog.objects.create(
+            onu=onu_missing,
+            offline_since=timezone.now() - timezone.timedelta(minutes=10),
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+        )
+        self.onu.status = ONU.STATUS_UNKNOWN
+        self.onu.save(update_fields=['status'])
+
+        def _side_effect(_olt, oids, **_kwargs):
+            response = {}
+            for oid in oids:
+                if oid.endswith(f".{self.onu.snmp_index}"):
+                    response[oid] = '4'
+            return response
+
+        mock_get.side_effect = _side_effect
+
+        output = StringIO()
+        call_command('poll_onu_status', olt_id=self.olt.id, stdout=output)
+
+        self.onu.refresh_from_db()
+        onu_missing.refresh_from_db()
+        open_log.refresh_from_db()
+
+        self.assertEqual(self.onu.status, ONU.STATUS_ONLINE)
+        self.assertEqual(onu_missing.status, ONU.STATUS_OFFLINE)
+        self.assertIsNone(open_log.offline_until)
+        self.assertIn('missing=1', output.getvalue())
+        self.assertIn('missing_preserved=1', output.getvalue())
+
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_poll_normalizes_snmp_index_lookup(self, mock_get):
+        status_oid = self.vendor.oid_templates['status']['onu_status_oid']
+        weird_index_onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='.285278465.2.',
+            name='client-weird',
+            serial='SERIAL-WEIRD',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+        self.onu.status = ONU.STATUS_UNKNOWN
+        self.onu.save(update_fields=['status'])
+
+        mock_get.return_value = {
+            f'{status_oid}.285278465.1': '4',
+            f'{status_oid}.285278465.2': '4',
+        }
+
+        call_command('poll_onu_status', olt_id=self.olt.id)
+
+        self.onu.refresh_from_db()
+        weird_index_onu.refresh_from_db()
+
+        self.assertEqual(self.onu.status, ONU.STATUS_ONLINE)
+        self.assertEqual(weird_index_onu.status, ONU.STATUS_ONLINE)
+
+
+class PowerServiceResilienceTests(TestCase):
+    def setUp(self):
+        vendor = build_vendor_profile(name='POWER-RESILIENCE')
+        templates = dict(vendor.oid_templates or {})
+        templates['power'] = {
+            'onu_rx_oid': '1.3.6.1.4.1.test.90',
+            'olt_rx_oid': '1.3.6.1.4.1.test.91',
+        }
+        vendor.oid_templates = templates
+        vendor.save(update_fields=['oid_templates'])
+
+        self.olt = OLT.objects.create(
+            name='OLT-POWER-RESILIENCE',
+            vendor_profile=vendor,
+            ip_address='10.0.0.55',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            polling_enabled=True,
+            is_active=True,
+        )
+        self.onu_a = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        self.onu_b = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='285278465.2',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        self.onu_c = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=3,
+            snmp_index='285278465.3',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        self.onu_offline = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=4,
+            snmp_index='285278465.4',
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        self.onus = [self.onu_a, self.onu_b, self.onu_c]
+
+    @patch('topology.services.power_service.cache_service.set_onu_power', return_value=True)
+    @patch('topology.services.power_service.cache_service.get_onu_power', return_value=None)
+    @patch('topology.services.power_service.snmp_service.get')
+    def test_refresh_for_onus_recovers_from_failed_large_chunks(self, mock_snmp_get, _mock_cache_get, _mock_cache_set):
+        def _side_effect(_olt, oids, **_kwargs):
+            if len(oids) > 2:
+                return None
+            response = {}
+            for oid in oids:
+                if oid.startswith('1.3.6.1.4.1.test.90.'):
+                    response[oid] = '5000'
+                else:
+                    response[oid] = '-22000'
+            return response
+
+        mock_snmp_get.side_effect = _side_effect
+
+        with patch.object(power_service, 'chunk_size', 6):
+            with patch.object(power_service, 'chunk_retry_attempts', 1):
+                with patch.object(power_service, 'single_oid_retry_attempts', 1):
+                    result_map = power_service.refresh_for_onus(self.onus, force_refresh=True)
+
+        self.assertEqual(len(result_map), 3)
+        for onu in self.onus:
+            self.assertEqual(result_map[onu.id]['onu_rx_power'], -20.0)
+            self.assertEqual(result_map[onu.id]['olt_rx_power'], -22.0)
+            self.assertIsNotNone(result_map[onu.id]['power_read_at'])
+
+        self.assertTrue(any(len(call.args[1]) > 2 for call in mock_snmp_get.call_args_list))
+        self.assertTrue(any(len(call.args[1]) == 1 for call in mock_snmp_get.call_args_list))
+
+    @patch('topology.services.power_service.cache_service.set_onu_power', return_value=True)
+    @patch('topology.services.power_service.cache_service.get_onu_power', return_value=None)
+    @patch('topology.services.power_service.snmp_service.get')
+    def test_refresh_for_onus_recovers_missing_varbinds_with_single_oid_retry(self, mock_snmp_get, _mock_cache_get, _mock_cache_set):
+        def _side_effect(_olt, oids, **_kwargs):
+            if len(oids) == 1:
+                oid = oids[0]
+                return {oid: '5000' if oid.startswith('1.3.6.1.4.1.test.90.') else '-22000'}
+
+            if len(oids) == 2:
+                first = oids[0]
+                return {first: '5000' if first.startswith('1.3.6.1.4.1.test.90.') else '-22000'}
+
+            response = {}
+            for oid in oids:
+                if oid.endswith('.1'):
+                    continue
+                response[oid] = '5000' if oid.startswith('1.3.6.1.4.1.test.90.') else '-22000'
+            return response
+
+        mock_snmp_get.side_effect = _side_effect
+
+        with patch.object(power_service, 'chunk_size', 2):
+            with patch.object(power_service, 'chunk_retry_attempts', 1):
+                with patch.object(power_service, 'single_oid_retry_attempts', 1):
+                    result_map = power_service.refresh_for_onus([self.onu_a], force_refresh=True)
+
+        payload = result_map[self.onu_a.id]
+        self.assertEqual(payload['onu_rx_power'], -20.0)
+        self.assertEqual(payload['olt_rx_power'], -22.0)
+        self.assertIsNotNone(payload['power_read_at'])
+        self.assertTrue(any(len(call.args[1]) == 1 for call in mock_snmp_get.call_args_list))
+
+    @override_settings(POWER_CACHE_TTL=60)
+    @patch('topology.services.power_service.cache_service.get_onu_power', return_value=None)
+    @patch('topology.services.power_service.cache_service.set_onu_power', return_value=True)
+    @patch('topology.services.power_service.snmp_service.get')
+    def test_refresh_for_onus_uses_interval_aware_cache_ttl(self, mock_snmp_get, mock_cache_set, _mock_cache_get):
+        self.olt.power_interval_seconds = 3600
+        self.olt.save(update_fields=['power_interval_seconds'])
+
+        def _side_effect(_olt, oids, **_kwargs):
+            response = {}
+            for oid in oids:
+                response[oid] = '5000' if oid.startswith('1.3.6.1.4.1.test.90.') else '-22000'
+            return response
+
+        mock_snmp_get.side_effect = _side_effect
+
+        with patch.object(power_service, 'chunk_size', 2):
+            result_map = power_service.refresh_for_onus([self.onu_a], force_refresh=True)
+
+        self.assertIn(self.onu_a.id, result_map)
+        self.assertTrue(mock_cache_set.called)
+        called_ttl = mock_cache_set.call_args.kwargs.get('ttl')
+        self.assertEqual(called_ttl, 7200)
+
+    @patch('topology.services.power_service.cache_service.set_onu_power', return_value=True)
+    @patch('topology.services.power_service.cache_service.get_onu_power', return_value=None)
+    @patch('topology.services.power_service.snmp_service.get')
+    def test_refresh_for_onus_skips_offline_onus(self, mock_snmp_get, _mock_cache_get, _mock_cache_set):
+        def _side_effect(_olt, oids, **_kwargs):
+            response = {}
+            for oid in oids:
+                response[oid] = '5000' if oid.startswith('1.3.6.1.4.1.test.90.') else '-22000'
+            return response
+
+        mock_snmp_get.side_effect = _side_effect
+
+        with patch.object(power_service, 'chunk_size', 8):
+            result_map = power_service.refresh_for_onus([self.onu_a, self.onu_offline], force_refresh=True)
+
+        online_payload = result_map[self.onu_a.id]
+        offline_payload = result_map[self.onu_offline.id]
+
+        self.assertEqual(online_payload['onu_rx_power'], -20.0)
+        self.assertEqual(online_payload['olt_rx_power'], -22.0)
+        self.assertIsNotNone(online_payload['power_read_at'])
+
+        self.assertIsNone(offline_payload['onu_rx_power'])
+        self.assertIsNone(offline_payload['olt_rx_power'])
+        self.assertIsNone(offline_payload['power_read_at'])
+        self.assertEqual(offline_payload.get('skipped_reason'), 'offline')
+
+        all_requested_oids = []
+        for call in mock_snmp_get.call_args_list:
+            all_requested_oids.extend(call.args[1])
+        offline_index = str(self.onu_offline.snmp_index).strip('.')
+        self.assertFalse(
+            any(
+                oid.endswith(f'.{offline_index}') or f'.{offline_index}.' in oid
+                for oid in all_requested_oids
+            )
+        )
 
 
 class SettingsApiContractTests(TestCase):
@@ -413,6 +761,55 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(onu.status, ONU.STATUS_UNKNOWN)
         self.assertIsNotNone(log.offline_until)
 
+    def test_include_topology_returns_disconnect_window_fields(self):
+        olt = self._create_olt(name='OLT-TOPOLOGY-DISCONNECT-WINDOW')
+        slot = OLTSlot.objects.create(
+            olt=olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=olt,
+            slot=slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        window_start = timezone.now() - timezone.timedelta(minutes=5)
+        window_end = timezone.now()
+        ONULog.objects.create(
+            onu=onu,
+            offline_since=window_end,
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+            disconnect_window_start=window_start,
+            disconnect_window_end=window_end,
+        )
+
+        response = self.client.get('/api/olts/?include_topology=true')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        rows = response.data if isinstance(response.data, list) else response.data.get('results', [])
+        self.assertTrue(rows)
+        payload = rows[0]
+        onu_payload = payload['slots'][0]['pons'][0]['onus'][0]
+        self.assertEqual(onu_payload['id'], onu.id)
+        self.assertIn('disconnect_window_start', onu_payload)
+        self.assertIn('disconnect_window_end', onu_payload)
+        self.assertEqual(onu_payload['disconnect_window_start'], window_start.isoformat())
+        self.assertEqual(onu_payload['disconnect_window_end'], window_end.isoformat())
+
     def test_run_polling_rejects_unsupported_vendor_capability(self):
         vendor = build_vendor_profile(
             name='NO-POLL',
@@ -425,6 +822,40 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.data['status'], 'error')
         self.assertIn('does not support ONU status polling', response.data['detail'])
 
+    @patch('topology.api.views.OLTViewSet._queue_background_olt_job', return_value=True)
+    def test_run_discovery_background_returns_accepted(self, mock_queue):
+        olt = self._create_olt(name='OLT-BG-DISCOVERY')
+        response = self.client.post(
+            f'/api/olts/{olt.id}/run_discovery/',
+            {'background': True},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(response.data['status'], 'accepted')
+        self.assertEqual(response.data['olt_id'], olt.id)
+        self.assertIn('scheduled', response.data['detail'].lower())
+        mock_queue.assert_called_once()
+        self.assertEqual(mock_queue.call_args.kwargs['kind'], 'discovery')
+        self.assertEqual(mock_queue.call_args.kwargs['olt_id'], olt.id)
+        self.assertTrue(callable(mock_queue.call_args.kwargs['runner']))
+
+    @patch('topology.api.views.OLTViewSet._queue_background_olt_job', return_value=False)
+    def test_run_polling_background_returns_already_running(self, mock_queue):
+        olt = self._create_olt(name='OLT-BG-POLLING')
+        response = self.client.post(
+            f'/api/olts/{olt.id}/run_polling/',
+            {'background': True},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(response.data['status'], 'already_running')
+        self.assertEqual(response.data['olt_id'], olt.id)
+        mock_queue.assert_called_once()
+        self.assertEqual(mock_queue.call_args.kwargs['kind'], 'polling')
+        self.assertEqual(mock_queue.call_args.kwargs['olt_id'], olt.id)
+
     def test_refresh_power_rejects_missing_vendor_power_templates(self):
         olt = self._create_olt(name='OLT-NO-POWER-TPL')
         response = self.client.post(f'/api/olts/{olt.id}/refresh_power/')
@@ -434,6 +865,108 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(
             sorted(response.data['missing_templates']),
             ['power.olt_rx_oid', 'power.onu_rx_oid'],
+        )
+
+    @patch('topology.api.views.OLTViewSet._queue_background_olt_job', return_value=True)
+    def test_refresh_power_background_returns_accepted(self, mock_queue):
+        templates = dict(self.vendor.oid_templates or {})
+        templates['power'] = {
+            'onu_rx_oid': '1.3.6.1.4.1.test.50',
+            'olt_rx_oid': '1.3.6.1.4.1.test.51',
+        }
+        power_vendor = build_vendor_profile(name='SETTINGS-POWER-BG', oid_templates=templates)
+        olt = self._create_olt(name='OLT-BG-POWER', vendor_profile=power_vendor)
+        response = self.client.post(
+            f'/api/olts/{olt.id}/refresh_power/',
+            {'background': True},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(response.data['status'], 'accepted')
+        self.assertEqual(response.data['olt_id'], olt.id)
+        self.assertIn('scheduled', response.data['detail'].lower())
+        mock_queue.assert_called_once()
+        self.assertEqual(mock_queue.call_args.kwargs['kind'], 'power')
+        self.assertEqual(mock_queue.call_args.kwargs['olt_id'], olt.id)
+        self.assertTrue(callable(mock_queue.call_args.kwargs['runner']))
+
+    @patch('topology.api.views.power_service.refresh_for_onus')
+    @patch('topology.api.views.call_command')
+    def test_refresh_power_runs_polling_when_status_snapshot_missing(self, mock_call_command, mock_refresh):
+        templates = dict(self.vendor.oid_templates or {})
+        templates['power'] = {
+            'onu_rx_oid': '1.3.6.1.4.1.test.61',
+            'olt_rx_oid': '1.3.6.1.4.1.test.62',
+        }
+        power_vendor = build_vendor_profile(name='SETTINGS-POWER-PREPOLL', oid_templates=templates)
+        olt = self._create_olt(name='OLT-POWER-PREPOLL', vendor_profile=power_vendor, last_poll_at=None)
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+        mock_refresh.return_value = {
+            onu.id: {
+                'onu_id': onu.id,
+                'slot_id': onu.slot_id,
+                'pon_id': onu.pon_id,
+                'onu_number': onu.onu_id,
+                'onu_rx_power': -20.10,
+                'olt_rx_power': -22.00,
+                'power_read_at': timezone.now().isoformat(),
+            }
+        }
+
+        response = self.client.post(f'/api/olts/{olt.id}/refresh_power/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_call_command.assert_any_call('poll_onu_status', olt_id=olt.id, force=True, stdout=ANY)
+
+    @patch('topology.api.views.power_service.refresh_for_onus')
+    @patch('topology.api.views.call_command')
+    def test_refresh_power_skips_polling_when_status_snapshot_exists(self, mock_call_command, mock_refresh):
+        templates = dict(self.vendor.oid_templates or {})
+        templates['power'] = {
+            'onu_rx_oid': '1.3.6.1.4.1.test.63',
+            'olt_rx_oid': '1.3.6.1.4.1.test.64',
+        }
+        power_vendor = build_vendor_profile(name='SETTINGS-POWER-WITH-STATUS', oid_templates=templates)
+        olt = self._create_olt(
+            name='OLT-POWER-WITH-STATUS',
+            vendor_profile=power_vendor,
+            last_poll_at=timezone.now() - timezone.timedelta(minutes=1),
+        )
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        mock_refresh.return_value = {
+            onu.id: {
+                'onu_id': onu.id,
+                'slot_id': onu.slot_id,
+                'pon_id': onu.pon_id,
+                'onu_number': onu.onu_id,
+                'onu_rx_power': -20.10,
+                'olt_rx_power': -22.00,
+                'power_read_at': timezone.now().isoformat(),
+            }
+        }
+
+        response = self.client.post(f'/api/olts/{olt.id}/refresh_power/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(
+            any(call.args and call.args[0] == 'poll_onu_status' for call in mock_call_command.call_args_list)
         )
 
     @patch('topology.api.views.power_service.refresh_for_onus')
@@ -477,6 +1010,10 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['status'], 'completed')
         self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['attempted_count'], 1)
+        self.assertEqual(response.data['skipped_not_online_count'], 0)
+        self.assertEqual(response.data['skipped_offline_count'], 0)
+        self.assertEqual(response.data['skipped_unknown_count'], 0)
         self.assertEqual(response.data['collected_count'], 1)
         self.assertTrue(response.data['last_power_at'])
         self.assertTrue(response.data['next_power_at'])
@@ -544,6 +1081,10 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.data['skipped_count'], 0)
         self.assertEqual(response.data['error_count'], 0)
         self.assertEqual(response.data['total_onu_count'], 2)
+        self.assertEqual(response.data['total_attempted_count'], 2)
+        self.assertEqual(response.data['total_skipped_not_online_count'], 0)
+        self.assertEqual(response.data['total_skipped_offline_count'], 0)
+        self.assertEqual(response.data['total_skipped_unknown_count'], 0)
         self.assertEqual(response.data['total_collected_count'], 2)
 
         olt_a.refresh_from_db()

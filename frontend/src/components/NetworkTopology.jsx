@@ -14,6 +14,14 @@ const isActiveEntity = (entity) => Boolean(entity) && entity.is_active !== false
 
 const normalizeSearch = (value) => String(value || '').toLowerCase().trim()
 
+const onuMatchesSearchTerm = (onu, term) => {
+  const normalizedTerm = normalizeSearch(term)
+  if (!normalizedTerm) return false
+  const onuLogin = normalizeSearch(onu?.client_name || onu?.name || '')
+  const onuSerial = normalizeSearch(onu?.serial || onu?.serial_number || '')
+  return onuLogin.includes(normalizedTerm) || onuSerial.includes(normalizedTerm)
+}
+
 const scoreSearchMatch = (rawValue, term) => {
   const value = normalizeSearch(rawValue)
   if (!value || !term) return -1
@@ -283,12 +291,24 @@ export const NetworkTopology = ({
   const [oltFilterOpen, setOltFilterOpen] = useState(false)
   const [selectedOltIds, setSelectedOltIds] = useState([])
   const [alarmMenuOpen, setAlarmMenuOpen] = useState(false)
-  const [alarmEnabled, setAlarmEnabled] = useState(false)
-  const [alarmMinCountInput, setAlarmMinCountInput] = useState('1')
-  const [alarmReasons, setAlarmReasons] = useState({
-    linkLoss: true,
-    dyingGasp: true,
-    unknown: true,
+  const [alarmEnabled, setAlarmEnabled] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('varuna.alarmConfig'))
+      return saved?.enabled ?? true
+    } catch { return true }
+  })
+  const [alarmMinCountInput, setAlarmMinCountInput] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('varuna.alarmConfig'))
+      return saved?.minCount != null ? String(saved.minCount) : '4'
+    } catch { return '4' }
+  })
+  const [alarmReasons, setAlarmReasons] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('varuna.alarmConfig'))
+      if (saved?.reasons && typeof saved.reasons === 'object') return saved.reasons
+    } catch { /* use defaults */ }
+    return { linkLoss: true, dyingGasp: false, unknown: false }
   })
   const searchContainerRef = useRef(null)
   const oltFilterContainerRef = useRef(null)
@@ -384,6 +404,16 @@ export const NetworkTopology = ({
       minCount: effectiveAlarmMinCount
     })
   }, [alarmEnabled, activeAlarmReasons, effectiveAlarmMinCount, onAlarmModeChange])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('varuna.alarmConfig', JSON.stringify({
+        enabled: alarmEnabled,
+        reasons: alarmReasons,
+        minCount: effectiveAlarmMinCount
+      }))
+    } catch { /* storage full or unavailable */ }
+  }, [alarmEnabled, alarmReasons, effectiveAlarmMinCount])
 
   const toggleAlarmReason = (reasonKey) => {
     setAlarmReasons((prev) => {
@@ -488,23 +518,66 @@ export const NetworkTopology = ({
   const searchedOlts = useMemo(() => {
     const oltVisible = olts.filter((olt) => selectedOltIds.includes(String(olt.id)))
     const term = normalizedSearchTerm
-    return !term
-      ? oltVisible
-      : oltVisible.filter((olt) => {
-          const matchOnu = asList(olt?.slots).some((slot) =>
-            asList(slot?.pons).some((pon) =>
-              asList(pon?.onus).some((onu) => {
-                const onuLogin = normalizeSearch(onu?.client_name || onu?.name || '')
-                const onuSerial = normalizeSearch(onu?.serial || onu?.serial_number || '')
-                return onuLogin.includes(term) || onuSerial.includes(term)
+    if (!term) return oltVisible
+
+    const hasPinnedSearchPath = Boolean(
+      selectedSearchMatch?.ponId &&
+      selectedSearchMatch?.oltId &&
+      normalizeSearch(selectedSearchMatch?.searchTerm) === term
+    )
+    const hasPinnedSlotId = selectedSearchMatch?.slotId != null
+    return oltVisible
+      .map((olt) => {
+        const isPinnedOlt = hasPinnedSearchPath && String(olt.id) === String(selectedSearchMatch.oltId)
+        if (hasPinnedSearchPath && !isPinnedOlt) {
+          return {
+            ...olt,
+            slots: [],
+            slot_count: 0,
+          }
+        }
+
+        const slots = asList(olt?.slots)
+          .filter(isActiveEntity)
+          .map((slot) => {
+            const isPinnedSlot = hasPinnedSearchPath
+              ? (!hasPinnedSlotId || String(slot?.id) === String(selectedSearchMatch?.slotId))
+              : true
+            if (!isPinnedSlot) {
+              return {
+                ...slot,
+                pons: [],
+                pon_count: 0,
+              }
+            }
+
+            const pons = asList(slot?.pons)
+              .filter(isActiveEntity)
+              .filter((pon) => {
+                const matchesSearch = asList(pon?.onus).some((onu) => onuMatchesSearchTerm(onu, term))
+                if (!matchesSearch) return false
+                if (!hasPinnedSearchPath) return true
+                return String(pon?.id) === String(selectedSearchMatch?.ponId)
               })
-            )
-          )
-          return matchOnu
-        })
-  }, [olts, selectedOltIds, normalizedSearchTerm])
+            return {
+              ...slot,
+              pons,
+              pon_count: pons.length,
+            }
+          })
+          .filter((slot) => asList(slot?.pons).length > 0)
+
+        return {
+          ...olt,
+          slots,
+          slot_count: slots.length,
+        }
+      })
+      .filter((olt) => asList(olt?.slots).length > 0)
+  }, [olts, selectedOltIds, normalizedSearchTerm, selectedSearchMatch])
 
   const filteredOlts = useMemo(() => {
+    if (normalizedSearchTerm) return searchedOlts
     if (!alarmEnabled) return searchedOlts
 
     return searchedOlts
@@ -528,7 +601,7 @@ export const NetworkTopology = ({
         }
       })
       .filter((olt) => asList(olt?.slots).length > 0)
-  }, [searchedOlts, alarmEnabled, effectiveAlarmMinCount, activeAlarmReasons])
+  }, [searchedOlts, alarmEnabled, normalizedSearchTerm, effectiveAlarmMinCount, activeAlarmReasons])
 
   const searchedOltMap = useMemo(() => {
     return new Map(searchedOlts.map((olt) => [String(olt.id), olt]))
@@ -967,10 +1040,10 @@ export const NetworkTopology = ({
           <div className="flex flex-col items-center justify-center w-full py-20 text-slate-300">
             <Search className="w-16 h-16 mb-4 opacity-10" />
             <p className="text-[12px] font-black uppercase tracking-[0.2em]">
-              {alarmEnabled
-                ? t('No PON matches alarm filter')
-                : searchTerm
-                  ? t('No equipment matches your search')
+              {normalizedSearchTerm
+                ? t('No equipment matches your search')
+                : alarmEnabled
+                  ? t('No PON matches alarm filter')
                   : t('No OLTs found')}
             </p>
           </div>
