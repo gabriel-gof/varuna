@@ -152,7 +152,7 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Mobile PON Panel
 - The PON detail panel uses responsive CSS (`hidden lg:flex` / `lg:hidden`) to render separate desktop and mobile layouts at the `lg` (1024px) breakpoint.
-- Desktop (>=1024px): unchanged table layout with `minWidth: 520px` for both Status and Power tabs.
+- Desktop (>=1024px): breadcrumb header uses `py-2.5` with description on a second line below the breadcrumb (matching mobile stacked layout), table layout with `minWidth: 520px` for both Status and Power tabs.
 - Mobile (<1024px): card-based layout with compact header (back arrow + breadcrumb + PON description nested inside breadcrumb's flex container for natural alignment).
   - Cards use `rounded-md` (6px) inside `rounded-xl` (12px) containers for geometric nesting.
   - Card spacing: `space-y-1.5` (6px) between cards, `py-1.5` vertical padding inside cards.

@@ -1609,18 +1609,19 @@ const App = () => {
               return (
               <div className="h-full min-h-0 flex flex-col">
                 {/* Desktop header */}
-                <div className="hidden lg:flex pl-8 pr-4 h-20 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 items-center">
-                  <div className="w-full flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
-                      {selectedPonPath.map((part, idx) => (
-                        <React.Fragment key={`${part}-${idx}`}>
-                          {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" strokeWidth={2.5} />}
-                          <span className={`${idx === selectedPonPath.length - 1 ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'} ${idx === 0 ? 'truncate' : 'whitespace-nowrap'}`}>
-                            {part}
-                          </span>
-                        </React.Fragment>
-                      ))}
-                      <span className="text-slate-300/60 dark:text-slate-700/60 font-normal">–</span>
+                <div className="hidden lg:flex pl-8 pr-4 py-2.5 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 items-center">
+                  <div className="w-full flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex flex-col">
+                      <div className="flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
+                        {selectedPonPath.map((part, idx) => (
+                          <React.Fragment key={`${part}-${idx}`}>
+                            {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" strokeWidth={2.5} />}
+                            <span className={`${idx === selectedPonPath.length - 1 ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'} ${idx === 0 ? 'truncate' : 'whitespace-nowrap'}`}>
+                              {part}
+                            </span>
+                          </React.Fragment>
+                        ))}
+                      </div>
                       <InlineEditableText
                         value={selectedPonData?.pon?.description || ''}
                         placeholder={t('addDescription')}
@@ -1629,7 +1630,7 @@ const App = () => {
                     </div>
                     <button
                       onClick={handleClosePanel}
-                      className="h-9 w-9 self-center flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+                      className="mt-0.5 h-9 w-9 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
                       aria-label={t('Close')}
                     >
                       <X className="w-[18px] h-[18px]" />

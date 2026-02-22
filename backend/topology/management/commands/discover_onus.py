@@ -305,20 +305,23 @@ class Command(BaseCommand):
                     continue
 
                 try:
+                    defaults = {
+                        "snmp_index": index,
+                        "name": name,
+                        "status": new_status,
+                        "slot_ref": slot,
+                        "pon_ref": pon,
+                        "is_active": True,
+                    }
+                    # Preserve previously discovered serial on partial serial-walk gaps.
+                    if serial:
+                        defaults["serial"] = serial
                     onu, was_created = ONU.objects.update_or_create(
                         olt=olt,
                         slot_id=identity["slot_id"],
                         pon_id=identity["pon_id"],
                         onu_id=identity["onu_id"],
-                        defaults={
-                            "snmp_index": index,
-                            "name": name,
-                            "serial": serial,
-                            "status": new_status,
-                            "slot_ref": slot,
-                            "pon_ref": pon,
-                            "is_active": True,
-                        },
+                        defaults=defaults,
                     )
                 except IntegrityError as exc:
                     logger.warning("ONU upsert failed for index %s on OLT %s: %s", index, olt.id, exc)

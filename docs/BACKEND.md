@@ -80,6 +80,7 @@ Create semantics were also hardened:
 - Missing in discovery (when enabled): deactivated immediately from active topology (`disable_lost_after_minutes` is forced to `0` by discovery runtime policy).
 - `deactivate_missing` remains enabled.
 - `delete_lost_after_minutes` remains optional hard-delete for already inactive ONUs.
+- Discovery serial safety: when a discovery run receives partial/empty serial rows (SNMP walk timeout gaps), existing ONU serial values are preserved instead of being overwritten with blank strings.
 
 Default global policy (any OLT/vendor profile):
 - Disable lost resources after `0` minutes (immediate deactivation from active topology).

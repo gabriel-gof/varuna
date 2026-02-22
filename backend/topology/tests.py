@@ -245,6 +245,38 @@ class DiscoveryCommandTests(TestCase):
 
         self.assertFalse(ONU.objects.filter(id=stale.id).exists())
 
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_discovery_preserves_existing_serial_on_partial_serial_walk(self, mock_walk):
+        existing = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            name='old-name',
+            serial='SERIAL-OLD',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+        index = '285278465.1'
+
+        mock_walk.side_effect = [
+            [{'oid': f'{base_name_oid}.{index}', 'value': 'client-a'}],
+            [],
+            [{'oid': f'{base_status_oid}.{index}', 'value': '4'}],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.serial, 'SERIAL-OLD')
+        self.assertEqual(existing.name, 'client-a')
+        self.assertTrue(existing.is_active)
+
 
 class PollingCommandTests(TestCase):
     def setUp(self):
