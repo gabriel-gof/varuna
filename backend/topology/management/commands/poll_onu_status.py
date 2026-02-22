@@ -279,7 +279,7 @@ class Command(BaseCommand):
             pon_groups[(int(onu.slot_id or -1), int(onu.pon_id or -1))].append(onu)
 
         ordered_pon_keys = sorted(pon_groups.keys(), key=lambda item: (item[0], item[1]))
-        logger.warning(
+        logger.info(
             "Status polling OLT %s: paced PON batches (active_onus=%s, pons=%s, chunk_size=%s, timeout=%.2fs).",
             olt.id,
             len(onus),
@@ -369,6 +369,7 @@ class Command(BaseCommand):
         logs_to_close: List[ONULog] = []
         logs_to_reason_update: List[ONULog] = []
         new_logs: List[ONULog] = []
+        cache_batch: Dict[int, Dict] = {}
 
         for onu in onus:
             normalized_index = onu_index_map.get(onu.id)
@@ -403,18 +404,13 @@ class Command(BaseCommand):
                     )
                 elif current_status == ONU.STATUS_UNKNOWN:
                     disconnect_reason = ONULog.REASON_UNKNOWN
-                cache_service.set_onu_status(
-                    olt.id,
-                    onu.id,
-                    {
-                        "status": current_status,
-                        "disconnect_reason": disconnect_reason,
-                        "offline_since": offline_since,
-                        "disconnect_window_start": disconnect_window_start,
-                        "disconnect_window_end": disconnect_window_end,
-                    },
-                    ttl=ttl,
-                )
+                cache_batch[onu.id] = {
+                    "status": current_status,
+                    "disconnect_reason": disconnect_reason,
+                    "offline_since": offline_since,
+                    "disconnect_window_start": disconnect_window_start,
+                    "disconnect_window_end": disconnect_window_end,
+                }
                 missing_preserved += 1
                 continue
 
@@ -480,22 +476,19 @@ class Command(BaseCommand):
                 disconnect_window_start = _iso_or_empty(active_log.disconnect_window_start)
                 disconnect_window_end = _iso_or_empty(active_log.disconnect_window_end)
 
-            cache_service.set_onu_status(
-                olt.id,
-                onu.id,
-                {
-                    "status": new_status,
-                    "disconnect_reason": reason,
-                    "offline_since": offline_since,
-                    "disconnect_window_start": disconnect_window_start,
-                    "disconnect_window_end": disconnect_window_end,
-                },
-                ttl=ttl,
-            )
+            cache_batch[onu.id] = {
+                "status": new_status,
+                "disconnect_reason": reason,
+                "offline_since": offline_since,
+                "disconnect_window_start": disconnect_window_start,
+                "disconnect_window_end": disconnect_window_end,
+            }
 
             updated += 1
 
         if not dry_run:
+            if cache_batch:
+                cache_service.set_many_onu_status(olt.id, cache_batch, ttl=ttl)
             with transaction.atomic():
                 if new_logs:
                     ONULog.objects.bulk_create(new_logs)

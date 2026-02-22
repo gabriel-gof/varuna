@@ -115,7 +115,7 @@ class SNMPService:
         """
         if not oids:
             return None
-        
+
         m = self.pysnmp_modules
         var_binds = [m['ObjectType'](m['ObjectIdentity'](oid)) for oid in oids]
         timeout_value = self.timeout if timeout is None else float(timeout)
@@ -126,6 +126,7 @@ class SNMPService:
             return None
 
         async def _get():
+            engine = self.engine
             try:
                 # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
                 transport = await m['UdpTransportTarget'].create(
@@ -133,9 +134,9 @@ class SNMPService:
                     timeout=timeout_value,
                     retries=retries_value
                 )
-                
+
                 errorIndication, errorStatus, errorIndex, varBinds = await m['getCmd'](
-                    self.engine,
+                    engine,
                     auth_data,
                     transport,
                     m['ContextData'](),
@@ -162,7 +163,7 @@ class SNMPService:
 
         return self._run(_get())
     
-    def walk(self, olt: Any, oid: str) -> List[Dict[str, Any]]:
+    def walk(self, olt: Any, oid: str, *, max_walk_rows: int = 20000) -> List[Dict[str, Any]]:
         """
         Executa SNMP WALK para uma OID
         Executes SNMP WALK for an OID
@@ -175,13 +176,14 @@ class SNMPService:
             return results
 
         async def _walk():
+            engine = self.engine
             # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
             transport = await m['UdpTransportTarget'].create(
                 (olt.ip_address, olt.snmp_port),
                 timeout=self.timeout,
                 retries=self.retries
             )
-            
+
             current_oid = base_oid
             bulk_cmd = m.get('bulkCmd')
             max_repetitions = 25
@@ -189,7 +191,7 @@ class SNMPService:
                 try:
                     if bulk_cmd:
                         errorIndication, errorStatus, errorIndex, varBinds = await bulk_cmd(
-                            self.engine,
+                            engine,
                             auth_data,
                             transport,
                             m['ContextData'](),
@@ -200,7 +202,7 @@ class SNMPService:
                         )
                     else:
                         errorIndication, errorStatus, errorIndex, varBinds = await m['nextCmd'](
-                            self.engine,
+                            engine,
                             auth_data,
                             transport,
                             m['ContextData'](),
@@ -236,6 +238,15 @@ class SNMPService:
                         advanced = True
 
                 if not advanced:
+                    break
+
+                if len(results) >= max_walk_rows:
+                    logger.warning(
+                        "SNMP WALK on %s hit max_walk_rows cap (%s); stopping walk for OID %s.",
+                        getattr(olt, 'name', '<unknown>'),
+                        max_walk_rows,
+                        base_oid,
+                    )
                     break
 
             return results

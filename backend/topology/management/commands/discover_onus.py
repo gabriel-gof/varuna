@@ -1,11 +1,12 @@
 import logging
 import re
+import time
 from contextlib import nullcontext
 from datetime import timedelta
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from django.core.management.base import BaseCommand
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.utils import timezone
 
 from topology.models import OLT, OLTSlot, OLTPON, ONU
@@ -239,9 +240,12 @@ class Command(BaseCommand):
                         port_id = int(match.group(3))
                     except (IndexError, ValueError):
                         continue
+                    slot_from = indexing_cfg.get("slot_from", "shelf")
+                    pon_from = indexing_cfg.get("pon_from", "port")
+                    location = {"rack": rack_id, "shelf": shelf_id, "port": port_id}
                     identity = {
-                        "slot_id": shelf_id,
-                        "pon_id": port_id,
+                        "slot_id": location.get(slot_from, shelf_id),
+                        "pon_id": location.get(pon_from, port_id),
                         "pon_numeric": None,
                         "rack_id": rack_id,
                         "shelf_id": shelf_id,
@@ -250,8 +254,15 @@ class Command(BaseCommand):
                     slot = ensure_slot(identity)
                     ensure_pon(identity, slot, pon_name=iface_name)
 
+        pause_between_walks = float(discovery_cfg.get('pause_between_walks_seconds', 0.5))
+        pause_between_walks = max(0.0, min(pause_between_walks, 5.0))
+
         name_rows = snmp_service.walk(olt, name_oid)
+        if pause_between_walks > 0:
+            time.sleep(pause_between_walks)
         serial_rows = snmp_service.walk(olt, serial_oid)
+        if pause_between_walks > 0 and status_oid:
+            time.sleep(pause_between_walks)
         status_rows = snmp_service.walk(olt, status_oid) if status_oid else []
 
         snmp_returned = bool(name_rows or serial_rows or status_rows or iface_rows_total)
@@ -270,28 +281,46 @@ class Command(BaseCommand):
         indices = set(names.keys()) | set(serials.keys())
         created = updated = skipped = 0
 
+        # Partial walk deactivation guard
+        active_count = ONU.objects.filter(olt=olt, is_active=True).count()
+        min_safe_ratio = float(discovery_cfg.get('min_safe_ratio', 0.5))
+        min_safe_ratio = max(0.0, min(min_safe_ratio, 1.0))
+        skip_deactivation = False
+        if active_count > 0 and len(indices) < active_count * min_safe_ratio:
+            logger.critical(
+                "OLT %s discovery returned %s ONUs but %s are active (%.0f%%). "
+                "Skipping deactivation to avoid mass false removal.",
+                olt.id,
+                len(indices),
+                active_count,
+                (len(indices) / active_count) * 100 if active_count else 0,
+            )
+            skip_deactivation = True
+
+        # Parse all discovered ONUs into a list
+        parsed_onus: List[Dict[str, Any]] = []
+        for index in sorted(indices):
+            identity = parse_onu_index(index, indexing_cfg)
+            if not identity:
+                skipped += 1
+                continue
+            name = names.get(index, "").strip()
+            serial = _normalize_serial(serials.get(index, ""))
+            status_code = statuses.get(index)
+            mapped = map_status_code(status_code, status_map)
+            parsed_onus.append({
+                "index": index,
+                "identity": identity,
+                "name": name,
+                "serial": serial,
+                "status": mapped["status"],
+            })
+
         write_context = transaction.atomic() if not dry_run else nullcontext()
         with write_context:
-            for index in sorted(indices):
-                identity = parse_onu_index(index, indexing_cfg)
-                if not identity:
-                    skipped += 1
-                    continue
-
-                slot = None
-                pon = None
-                if not dry_run:
-                    slot = ensure_slot(identity)
-                    pon = ensure_pon(identity, slot)
-
-                name = names.get(index, "").strip()
-                serial = _normalize_serial(serials.get(index, ""))
-
-                status_code = statuses.get(index)
-                mapped = map_status_code(status_code, status_map)
-                new_status = mapped["status"]
-
-                if dry_run:
+            if dry_run:
+                for entry in parsed_onus:
+                    identity = entry["identity"]
                     exists = ONU.objects.filter(
                         olt=olt,
                         slot_id=identity["slot_id"],
@@ -302,43 +331,88 @@ class Command(BaseCommand):
                         updated += 1
                     else:
                         created += 1
-                    continue
+            else:
+                # Ensure slots and PONs for all discovered ONUs (cached, few upserts)
+                for entry in parsed_onus:
+                    identity = entry["identity"]
+                    slot = ensure_slot(identity)
+                    pon = ensure_pon(identity, slot)
+                    entry["_slot"] = slot
+                    entry["_pon"] = pon
 
-                try:
-                    defaults = {
-                        "snmp_index": index,
-                        "name": name,
-                        "status": new_status,
-                        "slot_ref": slot,
-                        "pon_ref": pon,
-                        "is_active": True,
+                # Fetch all existing ONUs for this OLT in one query
+                existing_onus_qs = ONU.objects.filter(olt=olt).values_list(
+                    "id", "slot_id", "pon_id", "onu_id", "serial",
+                )
+                existing_lookup: Dict[tuple, Dict[str, Any]] = {}
+                for onu_id, s_id, p_id, o_id, existing_serial in existing_onus_qs:
+                    existing_lookup[(s_id, p_id, o_id)] = {
+                        "id": onu_id,
+                        "serial": existing_serial or "",
                     }
-                    # Preserve previously discovered serial on partial serial-walk gaps.
-                    if serial:
-                        defaults["serial"] = serial
-                    onu, was_created = ONU.objects.update_or_create(
-                        olt=olt,
-                        slot_id=identity["slot_id"],
-                        pon_id=identity["pon_id"],
-                        onu_id=identity["onu_id"],
-                        defaults=defaults,
-                    )
-                except IntegrityError as exc:
-                    logger.warning("ONU upsert failed for index %s on OLT %s: %s", index, olt.id, exc)
-                    skipped += 1
-                    continue
 
-                seen_onu_ids.add(onu.id)
-                if was_created:
-                    created += 1
-                else:
-                    updated += 1
+                to_create: List[ONU] = []
+                to_update: List[ONU] = []
+                for entry in parsed_onus:
+                    identity = entry["identity"]
+                    key = (identity["slot_id"], identity["pon_id"], identity["onu_id"])
+                    existing = existing_lookup.get(key)
+
+                    serial = entry["serial"]
+                    if existing:
+                        # Preserve previously discovered serial on partial serial-walk gaps
+                        if not serial:
+                            serial = existing["serial"]
+                        onu = ONU(
+                            id=existing["id"],
+                            olt=olt,
+                            slot_id=identity["slot_id"],
+                            pon_id=identity["pon_id"],
+                            onu_id=identity["onu_id"],
+                            snmp_index=entry["index"],
+                            name=entry["name"],
+                            serial=serial,
+                            status=entry["status"],
+                            slot_ref=entry["_slot"],
+                            pon_ref=entry["_pon"],
+                            is_active=True,
+                        )
+                        to_update.append(onu)
+                        seen_onu_ids.add(existing["id"])
+                        updated += 1
+                    else:
+                        onu = ONU(
+                            olt=olt,
+                            slot_id=identity["slot_id"],
+                            pon_id=identity["pon_id"],
+                            onu_id=identity["onu_id"],
+                            snmp_index=entry["index"],
+                            name=entry["name"],
+                            serial=serial,
+                            status=entry["status"],
+                            slot_ref=entry["_slot"],
+                            pon_ref=entry["_pon"],
+                            is_active=True,
+                        )
+                        to_create.append(onu)
+                        created += 1
+
+                if to_create:
+                    created_onus = ONU.objects.bulk_create(to_create)
+                    for onu in created_onus:
+                        seen_onu_ids.add(onu.id)
+                if to_update:
+                    ONU.objects.bulk_update(
+                        to_update,
+                        ["snmp_index", "name", "serial", "status", "slot_ref", "pon_ref", "is_active"],
+                        batch_size=500,
+                    )
 
             deactivate_missing = bool(discovery_cfg.get('deactivate_missing', True))
             stale_onus = stale_slots = stale_pons = 0
             waiting_onus = waiting_slots = waiting_pons = 0
             deleted_onus = 0
-            if not dry_run and deactivate_missing:
+            if not dry_run and deactivate_missing and not skip_deactivation:
                 now = timezone.now()
                 disable_cutoff = now - timedelta(minutes=disable_lost_after_minutes)
 

@@ -24,7 +24,9 @@
 ## Vendor Extensibility Contract
 Vendor behavior is controlled by `VendorProfile.oid_templates`:
 - `indexing`: how SNMP index maps to `(slot_id, pon_id, onu_id)`.
-- `discovery`: OIDs for name/serial/status and stale-deactivation policy.
+- `discovery`: OIDs for name/serial/status, stale-deactivation policy, and walk pacing/safety settings.
+  - `pause_between_walks_seconds` (default `0.5`, range `0.0-5.0`): delay between the main discovery walks (name, serial, status) to reduce burst SNMP load on the OLT.
+  - `min_safe_ratio` (default `0.5`, range `0.0-1.0`): minimum ratio of discovered ONUs to existing active ONUs. If the walk returns fewer ONUs than `active_count * min_safe_ratio`, deactivation is skipped and a critical log is emitted. Guard only applies when `active_count > 0` (first discovery always proceeds). ONU upserts still run.
 - `status`: status OID, `status_map`, and optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause).
 - `power`: OIDs/suffix for RX reads plus optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause, bounded online retry pass).
 
@@ -74,6 +76,9 @@ Create semantics were also hardened:
 - Creating an OLT with the same name as an inactive OLT reactivates that record instead of failing or creating duplicates.
 - Reactivation resets runtime health/scheduling fields so discovery/polling restarts from a clean state.
 
+## SNMP Walk Safety
+SNMP walks include a configurable iteration cap (`max_walk_rows`, default `20000`). If a walk exceeds this limit, it stops early and logs a warning. This prevents infinite loops from buggy OLT firmware returning cyclic or unbounded OID trees.
+
 ## ONU Lifecycle
 `ONU.is_active` is used to keep history without polluting live topology.
 - Seen in discovery: `is_active=True`.
@@ -81,6 +86,8 @@ Create semantics were also hardened:
 - `deactivate_missing` remains enabled.
 - `delete_lost_after_minutes` remains optional hard-delete for already inactive ONUs.
 - Discovery serial safety: when a discovery run receives partial/empty serial rows (SNMP walk timeout gaps), existing ONU serial values are preserved instead of being overwritten with blank strings.
+- Discovery DB operations use bulk create/update for ONU upserts to reduce query overhead on large OLTs.
+- PON interface discovery respects `slot_from`/`pon_from` from indexing config (consistent with `parse_onu_index`).
 
 Default global policy (any OLT/vendor profile):
 - Disable lost resources after `0` minutes (immediate deactivation from active topology).
@@ -179,6 +186,7 @@ Power refresh contract:
   - online ONUs that still return empty readings after the main pass get a bounded targeted retry pass for higher completion reliability.
   - per-OLT SNMP call budget is derived from OLT size (`estimated_calls * multiplier`) instead of a fixed low cap, so large OLTs (e.g. 4k ONUs) are still fully attempted.
 - Power runtime pacing is vendor-tunable through `oid_templates.power` (chunk size, timeout, retries/backoff, call-budget multiplier, inter-PON pause, retry cap), allowing slower but safer collection profiles when OLT load protection is preferred over speed.
+- Status and power cache writes use Redis pipelines (`set_many_onu_status`/`set_many_onu_power`) to batch all per-OLT entries into a single pipeline execution, reducing Redis round-trips.
 - Power cache TTL is interval-aware per OLT (`max(POWER_CACHE_TTL, power_interval_seconds * 2, 300)`), preventing early expiry during long full-OLT collections.
   This reduces partial-power gaps where a full OLT run timed out while single-PON refresh succeeded.
 - OLT RX is optional by vendor:
@@ -190,10 +198,12 @@ Power refresh contract:
 Current tests validate:
 - vendor index/status mapping behavior,
 - discovery stale deactivation,
+- discovery partial walk guard (skips deactivation when walk returns too few ONUs),
 - polling unreachable handling,
 - polling online/offline transition logs,
 - settings API validation guardrails,
 - soft OLT deactivation lifecycle,
-- action preflight capability/template checks.
+- action preflight capability/template checks,
+- SNMP walk iteration cap (`max_walk_rows`).
 
 File: `backend/topology/tests.py`

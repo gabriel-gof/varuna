@@ -93,6 +93,33 @@ class CacheService:
             logger.error(f"Erro ao escrever no cache ({key}): {e}")
             return False
     
+    def set_many(self, items: Dict[str, Any], ttl: int = 300) -> bool:
+        if not self.redis_client or not items:
+            return False
+        try:
+            pipe = self.redis_client.pipeline()
+            for key, value in items.items():
+                pipe.setex(key, ttl, json.dumps(value))
+            pipe.execute()
+            return True
+        except Exception as e:
+            logger.error("Erro ao escrever batch no cache (%s keys): %s", len(items), e)
+            return False
+
+    def set_many_onu_status(self, olt_id: int, entries: Dict[int, Dict[str, Any]], ttl: int = 180) -> bool:
+        items = {
+            self.get_onu_status_key(olt_id, onu_id): data
+            for onu_id, data in entries.items()
+        }
+        return self.set_many(items, ttl=ttl)
+
+    def set_many_onu_power(self, olt_id: int, entries: Dict[int, Dict[str, Any]], ttl: int = 60) -> bool:
+        items = {
+            self.get_onu_power_key(olt_id, onu_id): data
+            for onu_id, data in entries.items()
+        }
+        return self.set_many(items, ttl=ttl)
+
     def delete(self, key: str) -> bool:
         """
         Remove valor do cache
@@ -100,30 +127,14 @@ class CacheService:
         """
         if not self.redis_client:
             return False
-        
+
         try:
             self.redis_client.delete(key)
             return True
         except Exception as e:
             logger.error(f"Erro ao deletar do cache ({key}): {e}")
             return False
-    
-    def get_onu_status(self, olt_id: int, onu_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Obtém status da ONU do cache
-        Gets ONU status from cache
-        """
-        key = self.get_onu_status_key(olt_id, onu_id)
-        return self.get(key)
-    
-    def set_onu_status(self, olt_id: int, onu_id: int, status_data: Dict[str, Any], ttl: int = 180) -> bool:
-        """
-        Define status da ONU no cache
-        Sets ONU status in cache
-        """
-        key = self.get_onu_status_key(olt_id, onu_id)
-        return self.set(key, status_data, ttl)
-    
+
     def get_onu_power(self, olt_id: int, onu_id: int) -> Optional[Dict[str, Any]]:
         """
         Obtém potência da ONU do cache

@@ -418,7 +418,7 @@ class PowerService:
                 minimum=0.0,
                 maximum=5.0,
             )
-            logger.warning(
+            logger.info(
                 "Power refresh OLT %s: querying online ONUs only (active=%s, online=%s, skipped_offline=%s, skipped_unknown=%s).",
                 olt.id,
                 metrics.get("total_active", len(olt_onus)),
@@ -426,7 +426,7 @@ class PowerService:
                 metrics.get("skipped_offline", 0),
                 metrics.get("skipped_unknown", 0),
             )
-            logger.warning(
+            logger.info(
                 "Power refresh OLT %s: paced PON batches (online_onus=%s, chunk_size=%s, timeout=%.2fs).",
                 olt.id,
                 len(olt_onus),
@@ -444,6 +444,7 @@ class PowerService:
             ttl = max(base_ttl, interval_ttl, 300)
 
             supports_olt_rx = bool(olt_rx_oid)
+            power_cache_batch: Dict[int, Dict] = {}
 
             if not onu_rx_oid:
                 for onu in olt_onus:
@@ -540,7 +541,7 @@ class PowerService:
                         "olt_rx_power": olt_rx,
                         "power_read_at": read_at,
                     }
-                    cache_service.set_onu_power(onu.olt_id, onu.id, payload, ttl=ttl)
+                    power_cache_batch[onu.id] = payload
                     results[onu.id] = payload
 
                 if (
@@ -607,7 +608,7 @@ class PowerService:
                         "olt_rx_power": olt_rx,
                         "power_read_at": now_iso,
                     }
-                    cache_service.set_onu_power(onu.olt_id, onu.id, payload, ttl=ttl)
+                    power_cache_batch[onu.id] = payload
                     results[onu.id] = payload
 
                     if (
@@ -615,6 +616,9 @@ class PowerService:
                         and retry_index < len(retry_candidates) - 1
                     ):
                         time.sleep(pause_between_single_retries_seconds)
+
+            if power_cache_batch:
+                cache_service.set_many_onu_power(olt.id, power_cache_batch, ttl=ttl)
 
         return results
 
