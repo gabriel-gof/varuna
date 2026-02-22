@@ -664,7 +664,7 @@ export const NetworkTopology = ({
                   key={slotId}
                   type="slot"
                   label={`${t('SLOT')} ${pad2(slotNumber)}`}
-                  sublabel={`${ponCount} PONS`}
+                  sublabel={`${ponCount} ${t('PONS')}`}
                   isOpen={openNodes[slotId]}
                   onToggle={() => toggleNode(slotId)}
                   healthState={slotHealthState}

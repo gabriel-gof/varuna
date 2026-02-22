@@ -89,6 +89,8 @@ The UI remains topology-first. No dashboard page is required for current product
 - Alarm configuration (enabled, reasons, minCount) is persisted in `localStorage` (`varuna.alarmConfig`) per browser. Defaults: enabled=true, reasons=linkLoss only, minOnus=4. Users can change settings freely; preferences survive page reloads.
 
 ## Settings Panel Design
+- Multiple OLT cards can be expanded simultaneously. Each expanded card maintains independent tab selection, form state, threshold state, and dirty detection.
+- Expanded card IDs are persisted as a JSON array in localStorage (`varuna.settings.expandedOltIds`). Migration from the old single-ID key (`varuna.settings.selectedOltId`) is automatic.
 - OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
 - Container width: `max-w-2xl` for compact, focused layout.
 - **Tabs inside expanded card**: `Device`, `Intervals`, and `Thresholds`.
@@ -110,16 +112,16 @@ The UI remains topology-first. No dashboard page is required for current product
 - Interval inputs accept **Zabbix-style durations**: bare numbers (seconds), or suffixed values (`30s`, `5m`, `1h`, `4h`, `1d`).
   - `parseDuration()` converts input string → seconds; `formatDuration()` converts seconds → human-readable string.
   - Form state stores human-readable strings; save handlers convert back to `discovery_interval_minutes` / `polling_interval_seconds` / `power_interval_seconds` for the API.
-- Dirty detection compares `editForm` values against current OLT data with special duration-aware comparison, and also compares `thresholdForm` against its original snapshot to detect threshold changes. The Save button activates for any change — device fields, intervals, or thresholds.
-- Cancel/Discard resets both the device/interval form and the threshold form to their original values.
+- Dirty detection is per-card: each card compares its own `editForm` values against current OLT data with special duration-aware comparison, and also compares its `thresholdForm` against its original snapshot to detect threshold changes. The Save button activates for any change — device fields, intervals, or thresholds. Saving or discarding one card does not affect other expanded cards.
+- Cancel/Discard resets a single card's device/interval form and threshold form to their original values without affecting other expanded cards.
 - Vendor dropdown re-selection (same vendor) is guarded to prevent Radix `onSelect` from resetting `vendor_profile` and falsely marking the form dirty.
 - Card header shows OLT name with total ONU count and online (green) / offline (red) breakdown as subtitle. IP:port, vendor, and model are not shown in the header — they live in the Device tab form fields.
-- OLT cards start collapsed; selection is persisted in `localStorage` but no auto-select on initial load.
+- OLT cards start collapsed; expanded state is persisted in `localStorage` but no auto-expand on initial load. Background topology refreshes silently update non-dirty forms; mid-edit forms are preserved.
 - Error and success messages render in normal document flow between the tab content area and the action bar, with a translucent backdrop blur. They do not overlay tab content (e.g. threshold inputs). Auto-dismiss after 5 seconds.
 - Manual interval action buttons (`Run` for discovery/polling/power) are non-blocking:
   - Request payload includes `{ background: true }`.
   - UI shows immediate inline acknowledgment and does not wait for command completion.
-  - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend displays that exact backend message.
+  - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend translates known backend messages via `translateBackendMessage()`, preferring its own translated strings for queued action responses.
   - Run buttons do not show per-button loading animation for these long-running operations.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 
@@ -128,7 +130,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Save actions can return explicit `400` validation errors for invalid runtime configuration (unsupported SNMP version, invalid intervals/ports, missing required fields).
 - Manual action buttons (`Run` for discovery/polling/power) can return explicit `400` errors when the vendor profile lacks required capabilities or OID templates.
 - Manual action buttons (`run_discovery`, `run_polling`, `refresh_power`) are acknowledged immediately by backend `202` responses when queued in background mode.
-- Frontend should continue surfacing backend `detail` errors directly so operator misconfiguration is visible and actionable.
+- Frontend translates known backend errors through the i18n system; unknown messages pass through as-is for operator visibility.
 
 ## Power Threshold Coloring
 - Utility: `frontend/src/utils/powerThresholds.js`.
@@ -180,6 +182,17 @@ The UI remains topology-first. No dashboard page is required for current product
 - The timestamp is the latest `last_poll_at` across all OLTs, formatted with `formatReadingAt` for locale awareness.
 - The right side is empty when no poll has occurred yet.
 - Footer respects dark mode and does not collapse in the flex layout (`shrink-0`).
+
+## Internationalization (i18n)
+- Translation is handled by `react-i18next` configured in `frontend/src/i18n.js`.
+- Supported languages: English (`en`) and Brazilian Portuguese (`pt`, default).
+- All user-visible strings use `t('key')` lookups; no hardcoded display text in components.
+- Backend API messages (errors, validation, queued-action details) stay in English as stable API keys. The frontend maps known backend messages to i18n keys via `translateBackendMessage()` in `App.jsx`.
+  - `BACKEND_MESSAGE_MAP`: exact-match lookup for known backend strings.
+  - `BACKEND_PREFIX_PATTERNS`: prefix-match for parametric messages (e.g. interval-exceeds-maximum with dynamic values).
+  - Unknown backend messages pass through untranslated for operator visibility.
+- `getApiErrorMessage()` accepts a `t` function and runs all extracted backend messages through `translateBackendMessage()` before returning.
+- Queued settings actions (`runQueuedSettingsAction`) prefer frontend-translated messages over raw backend `detail` strings.
 
 ## Frontend Invariants
 - Do not change visual identity without explicit product request.

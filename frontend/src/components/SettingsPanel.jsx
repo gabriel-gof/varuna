@@ -6,7 +6,8 @@ import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, clearOltThresh
 import { HEALTH_STYLES } from '../utils/healthStyles'
 
 const MAX_OLT_NAME = 12
-const SELECTED_OLT_STORAGE_KEY = 'varuna.settings.selectedOltId'
+const EXPANDED_OLTS_STORAGE_KEY = 'varuna.settings.expandedOltIds'
+const OLD_SELECTED_OLT_STORAGE_KEY = 'varuna.settings.selectedOltId'
 
 const timeAgo = (dateStr, t) => {
   if (!dateStr) return '-'
@@ -228,7 +229,7 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy,
       ${isSelected ? health.borderActive : health.borderIdle}
     `}>
       <div
-        onClick={() => onSelect(isSelected ? null : String(olt.id))}
+        onClick={() => onSelect(String(olt.id))}
         className="group/node relative flex items-center gap-2.5 px-3 py-2.5 cursor-pointer select-none"
       >
         <div className={`absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full transition-all duration-300 ${
@@ -416,23 +417,40 @@ export const SettingsPanel = ({
 }) => {
   const { t } = useTranslation()
   const [showAddForm, setShowAddForm] = useState(false)
-  const [selectedOltId, setSelectedOltId] = useState(() => {
+  const [expandedIds, setExpandedIds] = useState(() => {
     try {
-      if (typeof window === 'undefined') return null
-      const saved = window.localStorage.getItem(SELECTED_OLT_STORAGE_KEY)
-      return saved ? String(saved) : null
+      if (typeof window === 'undefined') return {}
+      // Migrate from old single-ID key
+      const oldSaved = window.localStorage.getItem(OLD_SELECTED_OLT_STORAGE_KEY)
+      if (oldSaved) {
+        window.localStorage.removeItem(OLD_SELECTED_OLT_STORAGE_KEY)
+        const migrated = { [String(oldSaved)]: true }
+        window.localStorage.setItem(EXPANDED_OLTS_STORAGE_KEY, JSON.stringify([String(oldSaved)]))
+        return migrated
+      }
+      const saved = window.localStorage.getItem(EXPANDED_OLTS_STORAGE_KEY)
+      if (saved) {
+        const arr = JSON.parse(saved)
+        if (Array.isArray(arr)) {
+          const obj = {}
+          arr.forEach((id) => { obj[String(id)] = true })
+          return obj
+        }
+      }
+      return {}
     } catch (_err) {
-      return null
+      return {}
     }
   })
   const [form, setForm] = useState(() => buildInitialForm(vendorProfiles))
-  const [editForm, setEditForm] = useState(null)
+  const [editForms, setEditForms] = useState({})
   const [localError, setLocalError] = useState('')
+  const [localErrors, setLocalErrors] = useState({})
   const addNameRef = useRef(null)
   const [createCardTab, setCreateCardTab] = useState('device')
-  const [editCardTab, setEditCardTab] = useState('device')
-  const [thresholdForm, setThresholdForm] = useState(null)
-  const [originalThresholds, setOriginalThresholds] = useState(null)
+  const [editCardTabs, setEditCardTabs] = useState({})
+  const [thresholdForms, setThresholdForms] = useState({})
+  const [originalThresholdsMap, setOriginalThresholdsMap] = useState({})
   const [createThresholdForm, setCreateThresholdForm] = useState(DEFAULT_THRESHOLDS)
 
   const vendorOptions = useMemo(() => {
@@ -445,78 +463,108 @@ export const SettingsPanel = ({
   }, [vendorProfiles])
 
   const modelOptions = useMemo(() => modelOptionsForVendor(form.vendor), [modelOptionsForVendor, form.vendor])
-  const editModelOptions = useMemo(() => modelOptionsForVendor(editForm?.vendor), [modelOptionsForVendor, editForm?.vendor])
   const vendorProfileById = useMemo(
     () => new Map((vendorProfiles || []).map((profile) => [String(profile.id), profile])),
     [vendorProfiles],
   )
 
-  // Selected OLT object (for dirty detection)
-  const selectedOlt = useMemo(() => {
-    if (!selectedOltId) return null
-    return olts.find((item) => String(item.id) === String(selectedOltId)) || null
-  }, [olts, selectedOltId])
   const createSelectedProfile = vendorProfileById.get(String(form.vendor_profile || ''))
-  const editSelectedProfile = vendorProfileById.get(String(editForm?.vendor_profile || ''))
   const createSupportsOltRxPower = typeof createSelectedProfile?.supports_olt_rx_power === 'boolean'
     ? createSelectedProfile.supports_olt_rx_power
     : true
-  const editSupportsOltRxPower = typeof editSelectedProfile?.supports_olt_rx_power === 'boolean'
-    ? editSelectedProfile.supports_olt_rx_power
-    : (typeof selectedOlt?.supports_olt_rx_power === 'boolean' ? selectedOlt.supports_olt_rx_power : true)
-  const thresholdKeys = editSupportsOltRxPower
-    ? ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad']
-    : ['onu_rx_good', 'onu_rx_bad']
 
-  // Dirty detection — Save only matters when something changed
-  const formDirty = useMemo(() => isFormDirty(editForm, selectedOlt, vendorProfiles), [editForm, selectedOlt, vendorProfiles])
+  // Toggle an OLT card open/closed
+  const toggleCard = useCallback((oltId) => {
+    setExpandedIds((prev) => {
+      const next = { ...prev }
+      if (next[oltId]) {
+        // Collapsing — clean up per-card state
+        delete next[oltId]
+        setEditForms((p) => { const n = { ...p }; delete n[oltId]; return n })
+        setEditCardTabs((p) => { const n = { ...p }; delete n[oltId]; return n })
+        setThresholdForms((p) => { const n = { ...p }; delete n[oltId]; return n })
+        setOriginalThresholdsMap((p) => { const n = { ...p }; delete n[oltId]; return n })
+        setLocalErrors((p) => { const n = { ...p }; delete n[oltId]; return n })
+      } else {
+        // Expanding — initialize per-card state
+        next[oltId] = true
+        const olt = olts.find((item) => String(item.id) === oltId)
+        if (olt) {
+          setEditForms((p) => ({ ...p, [oltId]: buildEditForm(olt, vendorProfiles) }))
+          setEditCardTabs((p) => ({ ...p, [oltId]: 'device' }))
+          const loaded = getOltThresholds(oltId)
+          setThresholdForms((p) => ({ ...p, [oltId]: loaded }))
+          setOriginalThresholdsMap((p) => ({ ...p, [oltId]: loaded }))
+        }
+      }
+      return next
+    })
+  }, [olts, vendorProfiles])
 
-  const thresholdDirty = useMemo(() => {
-    if (!thresholdForm || !originalThresholds) return false
-    return thresholdKeys.some(
-      (k) => thresholdForm[k] !== originalThresholds[k]
-    )
-  }, [thresholdForm, originalThresholds, thresholdKeys])
-
-  const dirty = formDirty || thresholdDirty
-
-  // Reset card tab + threshold form when selection changes
-  useEffect(() => {
-    setEditCardTab('device')
-    if (!selectedOltId) { setThresholdForm(null); setOriginalThresholds(null); return }
-    const loaded = getOltThresholds(selectedOltId)
-    setThresholdForm(loaded)
-    setOriginalThresholds(loaded)
-  }, [selectedOltId])
-
-  // Clear selection when the selected OLT disappears (e.g. deleted)
-  useEffect(() => {
-    if (!selectedOltId) return
-    if (!olts.length) { setSelectedOltId(null); return }
-    const exists = olts.some((item) => String(item.id) === String(selectedOltId))
-    if (!exists) setSelectedOltId(null)
-  }, [olts, selectedOltId])
-
+  // Persist expanded IDs to localStorage
   useEffect(() => {
     try {
       if (typeof window === 'undefined') return
-      if (selectedOltId) {
-        window.localStorage.setItem(SELECTED_OLT_STORAGE_KEY, String(selectedOltId))
+      const ids = Object.keys(expandedIds)
+      if (ids.length) {
+        window.localStorage.setItem(EXPANDED_OLTS_STORAGE_KEY, JSON.stringify(ids))
       } else {
-        window.localStorage.removeItem(SELECTED_OLT_STORAGE_KEY)
+        window.localStorage.removeItem(EXPANDED_OLTS_STORAGE_KEY)
       }
     } catch (_err) {
       // noop
     }
-  }, [selectedOltId])
+  }, [expandedIds])
 
-  // Sync edit form when selection changes
+  // Stale cleanup: remove expanded IDs whose OLTs no longer exist
   useEffect(() => {
-    if (!selectedOltId) { setEditForm(null); return }
-    const olt = olts.find((item) => String(item.id) === String(selectedOltId))
-    if (olt) setEditForm(buildEditForm(olt, vendorProfiles))
-    else setEditForm(null)
-  }, [selectedOltId, olts, vendorProfiles])
+    const expandedKeys = Object.keys(expandedIds)
+    if (!expandedKeys.length) return
+    const oltIdSet = new Set(olts.map((o) => String(o.id)))
+    const stale = expandedKeys.filter((id) => !oltIdSet.has(id))
+    if (!stale.length) return
+    setExpandedIds((prev) => {
+      const next = { ...prev }
+      stale.forEach((id) => delete next[id])
+      return next
+    })
+    stale.forEach((id) => {
+      setEditForms((p) => { const n = { ...p }; delete n[id]; return n })
+      setEditCardTabs((p) => { const n = { ...p }; delete n[id]; return n })
+      setThresholdForms((p) => { const n = { ...p }; delete n[id]; return n })
+      setOriginalThresholdsMap((p) => { const n = { ...p }; delete n[id]; return n })
+      setLocalErrors((p) => { const n = { ...p }; delete n[id]; return n })
+    })
+  }, [olts, expandedIds])
+
+  // Background sync: re-sync editForms from fresh OLT data for non-dirty forms
+  useEffect(() => {
+    const expandedKeys = Object.keys(expandedIds)
+    if (!expandedKeys.length) return
+    setEditForms((prev) => {
+      let changed = false
+      const next = { ...prev }
+      expandedKeys.forEach((oltId) => {
+        const olt = olts.find((item) => String(item.id) === oltId)
+        if (!olt) return
+        // Only sync if form exists and is NOT dirty
+        if (prev[oltId] && !isFormDirty(prev[oltId], olt, vendorProfiles)) {
+          const fresh = buildEditForm(olt, vendorProfiles)
+          // Avoid object identity churn if nothing changed
+          const prevForm = prev[oltId]
+          const isDifferent = Object.keys(fresh).some((k) => String(fresh[k] || '') !== String(prevForm[k] || ''))
+          if (isDifferent) {
+            next[oltId] = fresh
+            changed = true
+          }
+        } else if (!prev[oltId]) {
+          next[oltId] = buildEditForm(olt, vendorProfiles)
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [olts, vendorProfiles, expandedIds])
 
   // Create form syncs
   useEffect(() => {
@@ -543,27 +591,44 @@ export const SettingsPanel = ({
     }
   }, [showAddForm, modelOptions, form.vendor_profile])
 
-  // Edit form model sync
+  // Edit form model sync — iterate over all editForms
   useEffect(() => {
-    if (!editForm) return
-    if (!editModelOptions.length) {
-      setEditForm((prev) => prev ? { ...prev, vendor_profile: '' } : prev)
-      return
-    }
-    const exists = editModelOptions.some((item) => String(item.id) === String(editForm.vendor_profile))
-    if (!exists) {
-      setEditForm((prev) => prev ? { ...prev, vendor_profile: String(editModelOptions[0].id) } : prev)
-    }
-  }, [editModelOptions, editForm?.vendor_profile])
+    setEditForms((prev) => {
+      let changed = false
+      const next = { ...prev }
+      Object.keys(prev).forEach((oltId) => {
+        const cardForm = prev[oltId]
+        if (!cardForm) return
+        const cardModelOptions = modelOptionsForVendor(cardForm.vendor)
+        if (!cardModelOptions.length) {
+          if (cardForm.vendor_profile !== '') {
+            next[oltId] = { ...cardForm, vendor_profile: '' }
+            changed = true
+          }
+          return
+        }
+        const exists = cardModelOptions.some((item) => String(item.id) === String(cardForm.vendor_profile))
+        if (!exists) {
+          next[oltId] = { ...cardForm, vendor_profile: String(cardModelOptions[0].id) }
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [vendorProfiles, modelOptionsForVendor])
 
   const setField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }))
-  const setEditField = (key, value) => setEditForm((prev) => prev ? ({ ...prev, [key]: value }) : prev)
-  
+  const setEditField = (oltId, key, value) => setEditForms((prev) => {
+    const cardForm = prev[oltId]
+    if (!cardForm) return prev
+    return { ...prev, [oltId]: { ...cardForm, [key]: value } }
+  })
+
   const setCreateThresholdField = (key, rawValue) => {
     const numValue = rawValue === '' || rawValue === '-' ? rawValue : parseFloat(rawValue)
-    setCreateThresholdForm((prev) => ({ 
-      ...prev, 
-      [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue 
+    setCreateThresholdForm((prev) => ({
+      ...prev,
+      [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue
     }))
   }
 
@@ -577,14 +642,13 @@ export const SettingsPanel = ({
     }))
   }
 
-  const handleEditVendorChange = (nextVendor) => {
-    if (nextVendor === editForm?.vendor) return
-    const nextModel = (vendorProfiles || []).find((item) => item.vendor === nextVendor)
-    setEditForm((prev) => prev ? ({
-      ...prev,
-      vendor: nextVendor,
-      vendor_profile: nextModel?.id ? String(nextModel.id) : ''
-    }) : prev)
+  const handleEditVendorChange = (oltId, nextVendor) => {
+    setEditForms((prev) => {
+      const cardForm = prev[oltId]
+      if (!cardForm || nextVendor === cardForm.vendor) return prev
+      const nextModel = (vendorProfiles || []).find((item) => item.vendor === nextVendor)
+      return { ...prev, [oltId]: { ...cardForm, vendor: nextVendor, vendor_profile: nextModel?.id ? String(nextModel.id) : '' } }
+    })
   }
 
   const handleCreate = async () => {
@@ -621,36 +685,45 @@ export const SettingsPanel = ({
     }
   }
 
-  const handleUpdate = async () => {
-    if (!selectedOltId || !editForm) return
+  const handleUpdate = async (oltId) => {
+    const cardEditForm = editForms[oltId]
+    if (!oltId || !cardEditForm) return
 
     const payload = {
-      name: String(editForm.name || '').trim().slice(0, MAX_OLT_NAME),
-      ip_address: String(editForm.ip_address || '').trim(),
-      vendor_profile: Number(editForm.vendor_profile),
-      snmp_community: String(editForm.snmp_community || '').trim(),
-      snmp_port: Number(editForm.snmp_port || 161),
-      discovery_interval_minutes: Math.round((parseDuration(editForm.discovery_interval) || 18000) / 60),
-      polling_interval_seconds: parseDuration(editForm.polling_interval) || 300,
-      power_interval_seconds: parseDuration(editForm.power_interval) || 86400,
+      name: String(cardEditForm.name || '').trim().slice(0, MAX_OLT_NAME),
+      ip_address: String(cardEditForm.ip_address || '').trim(),
+      vendor_profile: Number(cardEditForm.vendor_profile),
+      snmp_community: String(cardEditForm.snmp_community || '').trim(),
+      snmp_port: Number(cardEditForm.snmp_port || 161),
+      discovery_interval_minutes: Math.round((parseDuration(cardEditForm.discovery_interval) || 18000) / 60),
+      polling_interval_seconds: parseDuration(cardEditForm.polling_interval) || 300,
+      power_interval_seconds: parseDuration(cardEditForm.power_interval) || 86400,
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
-      setLocalError(t('Required fields are missing'))
-      setTimeout(() => setLocalError(''), 5000)
+      setLocalErrors((prev) => ({ ...prev, [oltId]: t('Required fields are missing') }))
+      setTimeout(() => setLocalErrors((prev) => { const n = { ...prev }; delete n[oltId]; return n }), 5000)
       return
     }
 
-    setLocalError('')
-    await onUpdateOlt?.(selectedOltId, payload)
+    setLocalErrors((prev) => { const n = { ...prev }; delete n[oltId]; return n })
+    await onUpdateOlt?.(oltId, payload)
     // Persist thresholds to localStorage
-    if (thresholdForm && selectedOltId) {
-      const allValid = thresholdKeys.every(
-        (k) => typeof thresholdForm[k] === 'number' && Number.isFinite(thresholdForm[k])
+    const cardThresholdForm = thresholdForms[oltId]
+    if (cardThresholdForm && oltId) {
+      const cardProfile = vendorProfileById.get(String(cardEditForm.vendor_profile || ''))
+      const cardSupportsOltRx = typeof cardProfile?.supports_olt_rx_power === 'boolean'
+        ? cardProfile.supports_olt_rx_power
+        : true
+      const cardKeys = cardSupportsOltRx
+        ? ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad']
+        : ['onu_rx_good', 'onu_rx_bad']
+      const allValid = cardKeys.every(
+        (k) => typeof cardThresholdForm[k] === 'number' && Number.isFinite(cardThresholdForm[k])
       )
       if (allValid) {
-        saveOltThresholds(selectedOltId, thresholdForm)
-        setOriginalThresholds({ ...thresholdForm })
+        saveOltThresholds(oltId, cardThresholdForm)
+        setOriginalThresholdsMap((prev) => ({ ...prev, [oltId]: { ...cardThresholdForm } }))
       }
     }
   }
@@ -658,39 +731,38 @@ export const SettingsPanel = ({
   const handleDelete = async (oltId) => {
     const confirmed = window.confirm(t('Do you want to remove this OLT?'))
     if (!confirmed) return
-    const removed = await onDeleteOlt?.(oltId)
-    if (removed) setSelectedOltId(null)
+    await onDeleteOlt?.(oltId)
+    // Stale cleanup effect handles removing expanded state
   }
 
   const handleDiscovery = async (oltId) => {
     await onRunDiscovery?.(oltId)
   }
 
-  const handleDiscard = () => {
-    if (!selectedOlt) return
-    setEditForm(buildEditForm(selectedOlt, vendorProfiles))
-    if (originalThresholds) setThresholdForm({ ...originalThresholds })
+  const handleDiscard = (oltId) => {
+    const olt = olts.find((item) => String(item.id) === oltId)
+    if (!olt) return
+    setEditForms((prev) => ({ ...prev, [oltId]: buildEditForm(olt, vendorProfiles) }))
+    const origThresholds = originalThresholdsMap[oltId]
+    if (origThresholds) setThresholdForms((prev) => ({ ...prev, [oltId]: { ...origThresholds } }))
   }
 
-  const setThresholdField = (key, rawValue) => {
+  const setThresholdField = (oltId, key, rawValue) => {
     const numValue = rawValue === '' || rawValue === '-' ? rawValue : parseFloat(rawValue)
-    setThresholdForm((prev) => {
-      if (!prev) return prev
-      return { ...prev, [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue }
+    setThresholdForms((prev) => {
+      const cardForm = prev[oltId]
+      if (!cardForm) return prev
+      return { ...prev, [oltId]: { ...cardForm, [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue } }
     })
   }
 
-  const resetThresholds = () => {
-    if (!selectedOltId) return
-    clearOltThresholds(selectedOltId)
-    setThresholdForm({ ...DEFAULT_THRESHOLDS })
+  const resetThresholds = (oltId) => {
+    if (!oltId) return
+    clearOltThresholds(oltId)
+    setThresholdForms((prev) => ({ ...prev, [oltId]: { ...DEFAULT_THRESHOLDS } }))
   }
 
-  const isOverride = selectedOltId ? hasOltOverride(selectedOltId) : false
-
   const createBusy = Boolean(actionBusy?.create)
-  const updateBusy = Boolean(actionBusy?.[`update:${selectedOltId}`])
-  const anyError = error || vendorError || actionError || localError
 
   return (
     <div className="w-full h-full overflow-y-auto custom-scrollbar">
@@ -997,13 +1069,37 @@ export const SettingsPanel = ({
           )}
 
           {olts.map((olt) => {
-            const isSelected = String(selectedOltId) === String(olt.id)
+            const oltId = String(olt.id)
+            const isSelected = Boolean(expandedIds[oltId])
             const health = getOltHealth(olt, snmpStatus, oltHealthById)
             const vp = vendorProfiles?.find(p => String(p.id) === String(olt.vendor_profile))
-            const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || 'Unknown'
+            const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || t('Unknown')
             const deleteBusy = Boolean(actionBusy?.[`delete:${olt.id}`])
             const localUpdateBusy = Boolean(actionBusy?.[`update:${olt.id}`])
             const snmpBadge = getSnmpBadge(olt, snmpStatus, t)
+
+            // Per-card state
+            const cardEditForm = editForms[oltId]
+            const cardTab = editCardTabs[oltId] || 'device'
+            const cardThresholdForm = thresholdForms[oltId]
+            const cardOriginalThresholds = originalThresholdsMap[oltId]
+            const cardError = localErrors[oltId]
+
+            // Per-card derived values
+            const cardEditModelOptions = cardEditForm ? modelOptionsForVendor(cardEditForm.vendor) : []
+            const cardEditSelectedProfile = cardEditForm ? vendorProfileById.get(String(cardEditForm.vendor_profile || '')) : null
+            const cardEditSupportsOltRxPower = typeof cardEditSelectedProfile?.supports_olt_rx_power === 'boolean'
+              ? cardEditSelectedProfile.supports_olt_rx_power
+              : (typeof olt?.supports_olt_rx_power === 'boolean' ? olt.supports_olt_rx_power : true)
+            const cardThresholdKeys = cardEditSupportsOltRxPower
+              ? ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad']
+              : ['onu_rx_good', 'onu_rx_bad']
+            const cardFormDirty = isFormDirty(cardEditForm, olt, vendorProfiles)
+            const cardThresholdDirty = cardThresholdForm && cardOriginalThresholds
+              ? cardThresholdKeys.some((k) => cardThresholdForm[k] !== cardOriginalThresholds[k])
+              : false
+            const cardDirty = cardFormDirty || cardThresholdDirty
+            const cardIsOverride = hasOltOverride(oltId)
 
             return (
               <div key={olt.id}>
@@ -1011,13 +1107,13 @@ export const SettingsPanel = ({
                   olt={olt}
                   isSelected={isSelected}
                   health={health}
-                  onSelect={setSelectedOltId}
+                  onSelect={toggleCard}
                   onDeleteClick={() => handleDelete(olt.id)}
                   deleteBusy={deleteBusy}
                   resolvedVendor={resolvedVendor}
                   t={t}
                 >
-                {isSelected && editForm && (
+                {isSelected && cardEditForm && (
                   <div className="pt-3 space-y-4">
 
                     {/* ── Tab bar (Segmented Toggle) ── */}
@@ -1027,9 +1123,9 @@ export const SettingsPanel = ({
                           <button
                             key={tab}
                             type="button"
-                            onClick={() => setEditCardTab(tab)}
+                            onClick={() => setEditCardTabs((prev) => ({ ...prev, [oltId]: tab }))}
                             className={`min-w-[96px] px-4 py-1 rounded-full text-[9px] font-black uppercase tracking-widest transition-all text-center ${
-                              editCardTab === tab
+                              cardTab === tab
                                 ? 'bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-emerald-500/10'
                                 : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-700/30'
                             }`}
@@ -1044,17 +1140,17 @@ export const SettingsPanel = ({
                     <div className="min-h-[170px] w-full overflow-y-auto custom-scrollbar">
 
                     {/* ── TAB: Device + Connection ── */}
-                    {editCardTab === 'device' && (
+                    {cardTab === 'device' && (
                       <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-200 px-2 pt-2 pb-1">
                         <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-4 w-full max-w-xl">
-                           
+
                            {/* Row 1 */}
                            <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('OLT name')}</FieldLabel>
                               <FieldInput
                                 className="text-center"
-                                value={editForm.name}
-                                onChange={(e) => setEditField('name', e.target.value.slice(0, MAX_OLT_NAME))}
+                                value={cardEditForm.name}
+                                onChange={(e) => setEditField(oltId, 'name', e.target.value.slice(0, MAX_OLT_NAME))}
                                 maxLength={MAX_OLT_NAME}
                                 placeholder="OLT-01"
                               />
@@ -1063,8 +1159,8 @@ export const SettingsPanel = ({
                            <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('Vendor')}</FieldLabel>
                               <FieldSelect
-                                value={editForm.vendor}
-                                onChange={handleEditVendorChange}
+                                value={cardEditForm.vendor}
+                                onChange={(v) => handleEditVendorChange(oltId, v)}
                                 options={vendorOptions.map((v) => ({ value: v, label: String(v).toUpperCase() }))}
                                 disabled={vendorLoading || !vendorOptions.length}
                               />
@@ -1073,10 +1169,10 @@ export const SettingsPanel = ({
                            <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('Model')}</FieldLabel>
                               <FieldSelect
-                                value={editForm.vendor_profile}
-                                onChange={(val) => setEditField('vendor_profile', val)}
-                                options={editModelOptions.map((item) => ({ value: String(item.id), label: item.model_name }))}
-                                disabled={vendorLoading || !editModelOptions.length}
+                                value={cardEditForm.vendor_profile}
+                                onChange={(val) => setEditField(oltId, 'vendor_profile', val)}
+                                options={cardEditModelOptions.map((item) => ({ value: String(item.id), label: item.model_name }))}
+                                disabled={vendorLoading || !cardEditModelOptions.length}
                               />
                            </div>
 
@@ -1085,8 +1181,8 @@ export const SettingsPanel = ({
                               <FieldLabel>{t('IP')}</FieldLabel>
                               <FieldInput
                                 className="text-center"
-                                value={editForm.ip_address}
-                                onChange={(e) => setEditField('ip_address', e.target.value)}
+                                value={cardEditForm.ip_address}
+                                onChange={(e) => setEditField(oltId, 'ip_address', e.target.value)}
                                 placeholder="10.0.0.1"
                               />
                            </div>
@@ -1095,8 +1191,8 @@ export const SettingsPanel = ({
                               <FieldLabel>{t('SNMP community')}</FieldLabel>
                               <FieldInput
                                 className="text-center"
-                                value={editForm.snmp_community}
-                                onChange={(e) => setEditField('snmp_community', e.target.value)}
+                                value={cardEditForm.snmp_community}
+                                onChange={(e) => setEditField(oltId, 'snmp_community', e.target.value)}
                                 placeholder="public"
                               />
                            </div>
@@ -1108,8 +1204,8 @@ export const SettingsPanel = ({
                                 type="number"
                                 min={1}
                                 max={65535}
-                                value={editForm.snmp_port}
-                                onChange={(e) => setEditField('snmp_port', e.target.value)}
+                                value={cardEditForm.snmp_port}
+                                onChange={(e) => setEditField(oltId, 'snmp_port', e.target.value)}
                                 placeholder="161"
                               />
                            </div>
@@ -1119,9 +1215,9 @@ export const SettingsPanel = ({
                     )}
 
                     {/* ── TAB: Intervals ── */}
-                    {editCardTab === 'intervals' && (
+                    {cardTab === 'intervals' && (
                       <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-300 px-2 pt-4 pb-2">
-                        
+
                         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                           {/* Item 1: Discovery */}
                           <div className="group flex flex-col items-center gap-2.5">
@@ -1131,8 +1227,8 @@ export const SettingsPanel = ({
                             <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
                                 className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
-                                value={editForm.discovery_interval}
-                                onChange={(e) => setEditField('discovery_interval', e.target.value)}
+                                value={cardEditForm.discovery_interval}
+                                onChange={(e) => setEditField(oltId, 'discovery_interval', e.target.value)}
                                 placeholder="5h"
                               />
                                <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
@@ -1154,8 +1250,8 @@ export const SettingsPanel = ({
                             <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
                                 className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
-                                value={editForm.polling_interval}
-                                onChange={(e) => setEditField('polling_interval', e.target.value)}
+                                value={cardEditForm.polling_interval}
+                                onChange={(e) => setEditField(oltId, 'polling_interval', e.target.value)}
                                 placeholder="5m"
                               />
                                <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
@@ -1177,8 +1273,8 @@ export const SettingsPanel = ({
                             <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
                                 className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
-                                value={editForm.power_interval}
-                                onChange={(e) => setEditField('power_interval', e.target.value)}
+                                value={cardEditForm.power_interval}
+                                onChange={(e) => setEditField(oltId, 'power_interval', e.target.value)}
                                 placeholder="1d"
                               />
                                <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5"></div>
@@ -1196,48 +1292,48 @@ export const SettingsPanel = ({
                     )}
 
                     {/* ── TAB: Thresholds ── */}
-                    {editCardTab === 'thresholds' && thresholdForm && (
+                    {cardTab === 'thresholds' && cardThresholdForm && (
                       <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
-                         <div className={`grid gap-4 relative ${editSupportsOltRxPower ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                            {editSupportsOltRxPower && (
+                         <div className={`grid gap-4 relative ${cardEditSupportsOltRxPower ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                            {cardEditSupportsOltRxPower && (
                               <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
                             )}
-                            
-                            <ThresholdControl 
+
+                            <ThresholdControl
                                 label="ONU RX"
                                 goodKey="onu_rx_good"
                                 badKey="onu_rx_bad"
-                                values={thresholdForm}
-                                onChange={setThresholdField}
+                                values={cardThresholdForm}
+                                onChange={(key, val) => setThresholdField(oltId, key, val)}
                                 t={t}
                             />
-                            {editSupportsOltRxPower && (
-                              <ThresholdControl 
+                            {cardEditSupportsOltRxPower && (
+                              <ThresholdControl
                                   label="OLT RX"
                                   goodKey="olt_rx_good"
                                   badKey="olt_rx_bad"
-                                  values={thresholdForm}
-                                  onChange={setThresholdField}
+                                  values={cardThresholdForm}
+                                  onChange={(key, val) => setThresholdField(oltId, key, val)}
                                   t={t}
                               />
                             )}
                          </div>
 
                         {/* Reset & Instructions (optional, keeps it clean) */}
-                        {isOverride && null}
+                        {cardIsOverride && null}
                       </div>
                     )}
                     </div>{/* End fixed height */}
 
                     {/* Notification messages between content and action bar */}
-                    {(localError || actionError) && (
+                    {(cardError || actionError) && (
                       <div className="flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
                         <AlertCircle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
-                        <p className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{localError || actionError}</p>
+                        <p className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{cardError || actionError}</p>
                       </div>
                     )}
 
-                    {actionMessage && !(localError || actionError) && (
+                    {actionMessage && !(cardError || actionError) && (
                       <div className="flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
                         <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{actionMessage}</p>
@@ -1259,18 +1355,16 @@ export const SettingsPanel = ({
                           <div className="flex items-center gap-1.5 animate-in fade-in duration-200">
                             <button
                               type="button"
-                              onClick={handleDiscard}
-                              // Only disable if not dirty to prevent accidental clears? User asked for always present. 
-                              // Usually cancel resets to original state. If not dirty, it does nothing essentially.
-                              disabled={!dirty}
+                              onClick={() => handleDiscard(oltId)}
+                              disabled={!cardDirty}
                               className="h-7 px-3 rounded-lg border border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-[9px] font-black uppercase tracking-wider transition-all active:scale-95 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {t('Cancel')}
                             </button>
                             <button
                               type="button"
-                              onClick={handleUpdate}
-                              disabled={localUpdateBusy || !dirty}
+                              onClick={() => handleUpdate(oltId)}
+                              disabled={localUpdateBusy || !cardDirty}
                               className="h-7 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all active:scale-95 whitespace-nowrap"
                             >
                               {localUpdateBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}

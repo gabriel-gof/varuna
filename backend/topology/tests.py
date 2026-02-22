@@ -11,6 +11,7 @@ from rest_framework.test import APIClient
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, VendorProfile
 from topology.services.power_service import power_service
 from topology.services.snmp_service import SNMPService
+from topology.management.commands.discover_onus import _normalize_serial
 from topology.services.vendor_profile import map_status_code, parse_onu_index
 
 
@@ -1327,7 +1328,7 @@ class DiscoveryPartialWalkGuardTests(TestCase):
                 is_active=True,
             )
 
-        # Walk returns only 2 ONUs (10% of 20 — below 50% default threshold)
+        # Walk returns only 1 ONU (5% of 20 — below 30% default threshold)
         mock_walk.side_effect = [
             [{'oid': f'{base_name_oid}.285278465.1', 'value': 'client-1'}],
             [{'oid': f'{base_serial_oid}.285278465.1', 'value': 'vendor,SERIAL-1'}],
@@ -1360,7 +1361,7 @@ class DiscoveryPartialWalkGuardTests(TestCase):
                 is_active=True,
             )
 
-        # Walk returns 3 out of 4 (75% — above 50% threshold)
+        # Walk returns 3 out of 4 (75% — above 30% threshold)
         name_rows = [{'oid': f'{base_name_oid}.285278465.{i}', 'value': f'client-{i}'} for i in range(1, 4)]
         serial_rows = [{'oid': f'{base_serial_oid}.285278465.{i}', 'value': f'vendor,SERIAL-{i}'} for i in range(1, 4)]
         status_rows = [{'oid': f'{base_status_oid}.285278465.{i}', 'value': '4'} for i in range(1, 4)]
@@ -1394,7 +1395,7 @@ class DiscoveryPartialWalkGuardTests(TestCase):
 
     @patch('topology.management.commands.discover_onus.snmp_service.walk')
     def test_partial_walk_guard_at_exact_boundary_does_not_skip(self, mock_walk):
-        """Exactly 50% should NOT trigger the guard (guard triggers on strictly less than)."""
+        """Exactly 30% should NOT trigger the guard (guard triggers on strictly less than)."""
         base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
         base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
         base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
@@ -1413,17 +1414,17 @@ class DiscoveryPartialWalkGuardTests(TestCase):
                 is_active=True,
             )
 
-        # Walk returns exactly 5 out of 10 (50% — not strictly below threshold)
-        name_rows = [{'oid': f'{base_name_oid}.285278465.{i}', 'value': f'client-{i}'} for i in range(1, 6)]
-        serial_rows = [{'oid': f'{base_serial_oid}.285278465.{i}', 'value': f'vendor,SERIAL-{i}'} for i in range(1, 6)]
-        status_rows = [{'oid': f'{base_status_oid}.285278465.{i}', 'value': '4'} for i in range(1, 6)]
+        # Walk returns exactly 3 out of 10 (30% — not strictly below 0.3 threshold)
+        name_rows = [{'oid': f'{base_name_oid}.285278465.{i}', 'value': f'client-{i}'} for i in range(1, 4)]
+        serial_rows = [{'oid': f'{base_serial_oid}.285278465.{i}', 'value': f'vendor,SERIAL-{i}'} for i in range(1, 4)]
+        status_rows = [{'oid': f'{base_status_oid}.285278465.{i}', 'value': '4'} for i in range(1, 4)]
 
         mock_walk.side_effect = [name_rows, serial_rows, status_rows]
 
         call_command('discover_onus', olt_id=self.olt.id)
 
-        # ONUs 6-10 should be deactivated (guard did NOT skip)
-        for onu_id in range(6, 11):
+        # ONUs 4-10 should be deactivated (guard did NOT skip)
+        for onu_id in range(4, 11):
             onu = ONU.objects.get(olt=self.olt, onu_id=onu_id)
             self.assertFalse(onu.is_active, f"ONU {onu_id} should be deactivated")
 
@@ -1695,6 +1696,272 @@ class DiscoveryBatchOperationsTests(TestCase):
         self.assertIn('updated=1', output.getvalue())
 
 
+class WalkTimeoutTests(TestCase):
+    def test_walk_uses_custom_timeout_parameter(self):
+        """walk() passes timeout/retries to UdpTransportTarget.create()."""
+        service = SNMPService()
+
+        class MockOLT:
+            ip_address = '10.0.0.1'
+            snmp_port = 161
+            snmp_community = 'public'
+            snmp_version = 'v2c'
+            name = 'test-olt'
+
+        from unittest.mock import AsyncMock, MagicMock
+
+        create_mock = AsyncMock(return_value=MagicMock())
+        mock_transport = MagicMock()
+        mock_transport.create = create_mock
+
+        async def mock_bulk_cmd(engine, auth, transport, ctx, non_rep, max_rep, *var_binds, **kwargs):
+            return None, None, None, []
+
+        original_modules = service._pysnmp
+        try:
+            service._pysnmp = {
+                'SnmpEngine': MagicMock,
+                'CommunityData': lambda *a, **kw: MagicMock(),
+                'UdpTransportTarget': mock_transport,
+                'ContextData': MagicMock,
+                'ObjectType': lambda *a: MagicMock(),
+                'ObjectIdentity': lambda *a: MagicMock(),
+                'getCmd': None,
+                'nextCmd': None,
+                'bulkCmd': mock_bulk_cmd,
+            }
+
+            service.walk(MockOLT(), '1.3.6.1.4.1.test.1', timeout=45.0, retries=2)
+
+            create_mock.assert_called_once()
+            call_kwargs = create_mock.call_args
+            self.assertEqual(call_kwargs.kwargs.get('timeout') or call_kwargs[1].get('timeout'), 45.0)
+            self.assertEqual(call_kwargs.kwargs.get('retries') or call_kwargs[1].get('retries'), 2)
+        finally:
+            service._pysnmp = original_modules
+
+    def test_walk_default_timeout_is_30s(self):
+        """walk() defaults to timeout=30.0, retries=0."""
+        service = SNMPService()
+
+        class MockOLT:
+            ip_address = '10.0.0.1'
+            snmp_port = 161
+            snmp_community = 'public'
+            snmp_version = 'v2c'
+            name = 'test-olt'
+
+        from unittest.mock import AsyncMock, MagicMock
+
+        create_mock = AsyncMock(return_value=MagicMock())
+        mock_transport = MagicMock()
+        mock_transport.create = create_mock
+
+        async def mock_bulk_cmd(engine, auth, transport, ctx, non_rep, max_rep, *var_binds, **kwargs):
+            return None, None, None, []
+
+        original_modules = service._pysnmp
+        try:
+            service._pysnmp = {
+                'SnmpEngine': MagicMock,
+                'CommunityData': lambda *a, **kw: MagicMock(),
+                'UdpTransportTarget': mock_transport,
+                'ContextData': MagicMock,
+                'ObjectType': lambda *a: MagicMock(),
+                'ObjectIdentity': lambda *a: MagicMock(),
+                'getCmd': None,
+                'nextCmd': None,
+                'bulkCmd': mock_bulk_cmd,
+            }
+
+            service.walk(MockOLT(), '1.3.6.1.4.1.test.1')
+
+            create_mock.assert_called_once()
+            call_kwargs = create_mock.call_args
+            self.assertEqual(call_kwargs.kwargs.get('timeout') or call_kwargs[1].get('timeout'), 30.0)
+            self.assertEqual(call_kwargs.kwargs.get('retries') or call_kwargs[1].get('retries'), 0)
+        finally:
+            service._pysnmp = original_modules
+
+
+class DiscoveryGhostFilteringTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile(name='GHOST')
+        self.olt = OLT.objects.create(
+            name='OLT-GHOST',
+            vendor_profile=self.vendor,
+            ip_address='10.0.0.70',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            polling_enabled=True,
+            is_active=True,
+        )
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_ghost_indices_filtered_during_discovery(self, mock_walk):
+        """Empty name+serial indices are excluded; those ONUs get deactivated."""
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+
+        # Pre-create 2 ONUs
+        for i in range(1, 3):
+            ONU.objects.create(
+                olt=self.olt,
+                slot_id=1,
+                pon_id=1,
+                onu_id=i,
+                snmp_index=f'285278465.{i}',
+                name=f'client-{i}',
+                serial=f'SERIAL-{i}',
+                status=ONU.STATUS_ONLINE,
+                is_active=True,
+            )
+
+        # Walk returns ONU 1 (real) + index 99 (ghost: empty name and serial)
+        # ONU 2 is missing from walk → should be deactivated
+        mock_walk.side_effect = [
+            [
+                {'oid': f'{base_name_oid}.285278465.1', 'value': 'client-1'},
+                {'oid': f'{base_name_oid}.285278465.99', 'value': ''},
+            ],
+            [
+                {'oid': f'{base_serial_oid}.285278465.1', 'value': 'vendor,SERIAL-1'},
+                {'oid': f'{base_serial_oid}.285278465.99', 'value': ''},
+            ],
+            [
+                {'oid': f'{base_status_oid}.285278465.1', 'value': '4'},
+                {'oid': f'{base_status_oid}.285278465.99', 'value': '1'},
+            ],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        # ONU 1 still active, ONU 2 deactivated (missing), ghost index 99 not created
+        onu1 = ONU.objects.get(olt=self.olt, onu_id=1)
+        onu2 = ONU.objects.get(olt=self.olt, onu_id=2)
+        self.assertTrue(onu1.is_active)
+        self.assertFalse(onu2.is_active)
+        self.assertFalse(ONU.objects.filter(olt=self.olt, onu_id=99).exists())
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_index_with_name_only_is_not_ghost(self, mock_walk):
+        """An index with name but no serial is valid, not a ghost."""
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+
+        mock_walk.side_effect = [
+            [{'oid': f'{base_name_oid}.285278465.1', 'value': 'has-name'}],
+            [],  # serial walk returns nothing for this index
+            [{'oid': f'{base_status_oid}.285278465.1', 'value': '4'}],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        onu = ONU.objects.get(olt=self.olt, onu_id=1)
+        self.assertTrue(onu.is_active)
+        self.assertEqual(onu.name, 'has-name')
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_index_with_serial_only_is_not_ghost(self, mock_walk):
+        """An index with serial but no name is valid, not a ghost."""
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+
+        mock_walk.side_effect = [
+            [],  # name walk returns nothing for this index
+            [{'oid': f'{base_serial_oid}.285278465.1', 'value': 'vendor,HAS-SERIAL'}],
+            [{'oid': f'{base_status_oid}.285278465.1', 'value': '4'}],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        onu = ONU.objects.get(olt=self.olt, onu_id=1)
+        self.assertTrue(onu.is_active)
+        self.assertEqual(onu.serial, 'HAS-SERIAL')
+
+
+class DiscoveryDefaultMinSafeRatioTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile(name='RATIO')
+        self.olt = OLT.objects.create(
+            name='OLT-RATIO',
+            vendor_profile=self.vendor,
+            ip_address='10.0.0.80',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            polling_enabled=True,
+            is_active=True,
+        )
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_default_min_safe_ratio_is_30_percent(self, mock_walk):
+        """Default min_safe_ratio is 0.3. Walk returning 25% should trigger guard."""
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+
+        # Create 20 existing active ONUs
+        for i in range(1, 21):
+            ONU.objects.create(
+                olt=self.olt,
+                slot_id=1,
+                pon_id=1,
+                onu_id=i,
+                snmp_index=f'285278465.{i}',
+                name=f'client-{i}',
+                serial=f'SERIAL-{i}',
+                status=ONU.STATUS_ONLINE,
+                is_active=True,
+            )
+
+        # Walk returns 5 out of 20 (25% < 30% default threshold → guard triggers)
+        name_rows = [{'oid': f'{base_name_oid}.285278465.{i}', 'value': f'client-{i}'} for i in range(1, 6)]
+        serial_rows = [{'oid': f'{base_serial_oid}.285278465.{i}', 'value': f'vendor,SERIAL-{i}'} for i in range(1, 6)]
+        status_rows = [{'oid': f'{base_status_oid}.285278465.{i}', 'value': '4'} for i in range(1, 6)]
+
+        mock_walk.side_effect = [name_rows, serial_rows, status_rows]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        # All 20 should still be active (guard skipped deactivation)
+        active_count = ONU.objects.filter(olt=self.olt, is_active=True).count()
+        self.assertEqual(active_count, 20)
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_walk_timeout_configurable_from_vendor_profile(self, mock_walk):
+        """Discovery reads walk_timeout_seconds from vendor config and passes to walks."""
+        templates = dict(self.vendor.oid_templates or {})
+        discovery_cfg = dict(templates.get('discovery', {}))
+        discovery_cfg['walk_timeout_seconds'] = 60
+        templates['discovery'] = discovery_cfg
+        self.vendor.oid_templates = templates
+        self.vendor.save(update_fields=['oid_templates'])
+
+        base_name_oid = discovery_cfg['onu_name_oid']
+        base_serial_oid = discovery_cfg['onu_serial_oid']
+        base_status_oid = discovery_cfg['onu_status_oid']
+        index = '285278465.1'
+
+        mock_walk.side_effect = [
+            [{'oid': f'{base_name_oid}.{index}', 'value': 'client-a'}],
+            [{'oid': f'{base_serial_oid}.{index}', 'value': 'vendor,SERIAL-A'}],
+            [{'oid': f'{base_status_oid}.{index}', 'value': '4'}],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        # Verify walk was called with timeout=60.0
+        for call in mock_walk.call_args_list:
+            self.assertEqual(call.kwargs.get('timeout'), 60.0)
+
+
 class WalkIterationCapTests(TestCase):
     def test_walk_stops_at_max_walk_rows(self):
         service = SNMPService()
@@ -1748,3 +2015,26 @@ class WalkIterationCapTests(TestCase):
             self.assertGreaterEqual(len(results), 50)
         finally:
             service._pysnmp = original_modules
+
+
+class NormalizeSerialTests(TestCase):
+    def test_normalize_serial_uppercases(self):
+        self.assertEqual(_normalize_serial("FHTT6a0e1cfa"), "FHTT6A0E1CFA")
+
+    def test_normalize_serial_strips_na_sentinel(self):
+        self.assertEqual(_normalize_serial("N/A"), "")
+
+    def test_normalize_serial_strips_sentinel_case_insensitive(self):
+        self.assertEqual(_normalize_serial("n/a"), "")
+        self.assertEqual(_normalize_serial("None"), "")
+        self.assertEqual(_normalize_serial("null"), "")
+        self.assertEqual(_normalize_serial("NA"), "")
+        self.assertEqual(_normalize_serial("--"), "")
+        self.assertEqual(_normalize_serial("-"), "")
+
+    def test_normalize_serial_strips_vendor_prefix_and_uppercases(self):
+        self.assertEqual(_normalize_serial("vendor,serial-a"), "SERIAL-A")
+
+    def test_normalize_serial_preserves_empty(self):
+        self.assertEqual(_normalize_serial(""), "")
+        self.assertEqual(_normalize_serial(None), "")

@@ -163,10 +163,23 @@ class SNMPService:
 
         return self._run(_get())
     
-    def walk(self, olt: Any, oid: str, *, max_walk_rows: int = 20000) -> List[Dict[str, Any]]:
+    def walk(
+        self,
+        olt: Any,
+        oid: str,
+        *,
+        max_walk_rows: int = 20000,
+        timeout: float = 30.0,
+        retries: int = 0,
+    ) -> List[Dict[str, Any]]:
         """
         Executa SNMP WALK para uma OID
         Executes SNMP WALK for an OID
+
+        Walk uses a generous per-request timeout (default 30s, retries=0)
+        instead of the short GET timeout, because walks involve many
+        sequential bulk requests and slow OLTs may need several seconds
+        per bulk batch.
         """
         base_oid = oid.rstrip(".")
         results = []
@@ -175,13 +188,16 @@ class SNMPService:
         if auth_data is None:
             return results
 
+        walk_timeout = float(timeout)
+        walk_retries = int(retries)
+
         async def _walk():
             engine = self.engine
             # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
             transport = await m['UdpTransportTarget'].create(
                 (olt.ip_address, olt.snmp_port),
-                timeout=self.timeout,
-                retries=self.retries
+                timeout=walk_timeout,
+                retries=walk_retries
             )
 
             current_oid = base_oid

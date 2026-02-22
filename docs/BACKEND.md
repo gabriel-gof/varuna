@@ -26,7 +26,8 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
 - `indexing`: how SNMP index maps to `(slot_id, pon_id, onu_id)`.
 - `discovery`: OIDs for name/serial/status, stale-deactivation policy, and walk pacing/safety settings.
   - `pause_between_walks_seconds` (default `0.5`, range `0.0-5.0`): delay between the main discovery walks (name, serial, status) to reduce burst SNMP load on the OLT.
-  - `min_safe_ratio` (default `0.5`, range `0.0-1.0`): minimum ratio of discovered ONUs to existing active ONUs. If the walk returns fewer ONUs than `active_count * min_safe_ratio`, deactivation is skipped and a critical log is emitted. Guard only applies when `active_count > 0` (first discovery always proceeds). ONU upserts still run.
+  - `walk_timeout_seconds` (default `30`, range `5-120`): per-request timeout for SNMP walk operations during discovery. Walks use a generous timeout (separate from the short 2s GET timeout) because slow OLTs may need several seconds per bulk batch. Healthy OLTs respond in <100ms (zero impact); slow OLTs with 3-5s responses complete fine; dead OLTs timeout after one request and existing `mark_olt_unreachable` handles it.
+  - `min_safe_ratio` (default `0.3`, range `0.0-1.0`): minimum ratio of discovered ONUs to existing active ONUs. If the walk returns fewer ONUs than `active_count * min_safe_ratio`, deactivation is skipped and a critical log is emitted. Guard only applies when `active_count > 0` (first discovery always proceeds). ONU upserts still run.
 - `status`: status OID, `status_map`, and optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause).
 - `power`: OIDs/suffix for RX reads plus optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause, bounded online retry pass).
 
@@ -81,13 +82,17 @@ Create semantics were also hardened:
 ## SNMP Walk Safety
 SNMP walks include a configurable iteration cap (`max_walk_rows`, default `20000`). If a walk exceeds this limit, it stops early and logs a warning. This prevents infinite loops from buggy OLT firmware returning cyclic or unbounded OID trees.
 
+Walk operations use a dedicated timeout (default 30s, `retries=0`) separate from the short GET timeout (2s, `retries=1`). This prevents walk timeouts on slow OLTs (e.g. MAXPRINT) where string-valued OID walks take 3-5s per bulk batch. The walk timeout is configurable per vendor via `discovery.walk_timeout_seconds`.
+
 ## ONU Lifecycle
 `ONU.is_active` is used to keep history without polluting live topology.
 - Seen in discovery: `is_active=True`.
 - Missing in discovery (when enabled): deactivated immediately from active topology (`disable_lost_after_minutes` is forced to `0` by discovery runtime policy).
 - `deactivate_missing` remains enabled.
 - `delete_lost_after_minutes` remains optional hard-delete for already inactive ONUs.
+- Serial normalization: `_normalize_serial` forces all serials to uppercase and strips sentinel values (`N/A`, `NA`, `NONE`, `NULL`, `--`, `-`) to empty string. This ensures consistent display (no mixed-case hex) and prevents firmware-specific placeholder strings from being stored as real serials. Combined with serial preservation, an ONU returning `"N/A"` keeps its previously discovered real serial.
 - Discovery serial safety: when a discovery run receives partial/empty serial rows (SNMP walk timeout gaps), existing ONU serial values are preserved instead of being overwritten with blank strings.
+- Ghost index filtering: SNMP indices where both name and serial are empty/whitespace are filtered out before the `min_safe_ratio` check. This prevents ghost SNMP entries (deregistered ONUs that still appear in walks with empty fields) from inflating the discovered count or being created as phantom ONUs.
 - Discovery DB operations use bulk create/update for ONU upserts to reduce query overhead on large OLTs.
 - PON interface discovery respects `slot_from`/`pon_from` from indexing config (consistent with `parse_onu_index`).
 
@@ -206,6 +211,11 @@ Current tests validate:
 - settings API validation guardrails,
 - soft OLT deactivation lifecycle,
 - action preflight capability/template checks,
-- SNMP walk iteration cap (`max_walk_rows`).
+- SNMP walk iteration cap (`max_walk_rows`),
+- SNMP walk timeout parameter passthrough and defaults,
+- discovery ghost index filtering (empty name+serial excluded),
+- discovery default `min_safe_ratio` (0.3),
+- discovery `walk_timeout_seconds` vendor config integration,
+- serial normalization (uppercase, sentinel stripping, vendor prefix handling, empty preservation).
 
 File: `backend/topology/tests.py`

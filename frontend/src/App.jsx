@@ -41,16 +41,53 @@ const toPositiveInt = (value, fallback) => {
   return Math.round(parsed)
 }
 
-const getApiErrorMessage = (error, fallback) => {
+const BACKEND_MESSAGE_MAP = {
+  'Power refresh scheduled in background.': 'Power refresh scheduled in background.',
+  'Discovery scheduled in background.': 'Discovery scheduled in background.',
+  'Polling scheduled in background.': 'Polling scheduled in background.',
+  'Another maintenance task is already running for this OLT.': 'Another maintenance task is already running for this OLT.',
+  'Vendor profile is inactive.': 'Vendor profile is inactive.',
+  'Vendor profile does not support this action.': 'Vendor profile does not support this action.',
+  'Vendor profile is missing required OID templates.': 'Vendor profile is missing required OID templates.',
+  'Name cannot be empty.': 'Name cannot be empty.',
+  'An active OLT with this name already exists.': 'An active OLT with this name already exists.',
+  'Only SNMP protocol is supported.': 'Only SNMP protocol is supported.',
+  'SNMP community cannot be empty.': 'SNMP community cannot be empty.',
+  'SNMP port must be an integer.': 'SNMP port must be an integer.',
+  'SNMP port must be between 1 and 65535.': 'SNMP port must be between 1 and 65535.',
+  'Only SNMP v2c is currently supported.': 'Only SNMP v2c is currently supported.',
+  'Discovery interval must be greater than 0 minutes.': 'Discovery interval must be greater than 0 minutes.',
+  'Polling interval must be greater than 0 seconds.': 'Polling interval must be greater than 0 seconds.',
+  'Power interval must be greater than 0 seconds.': 'Power interval must be greater than 0 seconds.',
+}
+
+const BACKEND_PREFIX_PATTERNS = [
+  { prefix: 'Discovery interval must be <=', key: 'Discovery interval exceeds maximum' },
+  { prefix: 'Polling interval must be <=', key: 'Polling interval exceeds maximum' },
+  { prefix: 'Power interval must be <=', key: 'Power interval exceeds maximum' },
+  { prefix: 'Vendor profile does not support', key: 'Vendor profile does not support this action.' },
+]
+
+const translateBackendMessage = (message, t) => {
+  if (!message || !t) return message
+  const key = BACKEND_MESSAGE_MAP[message]
+  if (key) return t(key)
+  for (const { prefix, key: patternKey } of BACKEND_PREFIX_PATTERNS) {
+    if (message.startsWith(prefix)) return t(patternKey)
+  }
+  return message
+}
+
+const getApiErrorMessage = (error, fallback, t) => {
   const data = error?.response?.data
-  if (typeof data === 'string' && data.trim()) return data.trim()
-  if (data?.detail) return String(data.detail)
+  if (typeof data === 'string' && data.trim()) return translateBackendMessage(data.trim(), t)
+  if (data?.detail) return translateBackendMessage(String(data.detail), t)
   if (data && typeof data === 'object') {
     const parts = Object.entries(data)
       .map(([key, value]) => {
-        if (Array.isArray(value)) return `${key}: ${value.join(', ')}`
+        if (Array.isArray(value)) return `${key}: ${value.map(v => translateBackendMessage(String(v), t)).join(', ')}`
         if (value && typeof value === 'object') return `${key}: ${JSON.stringify(value)}`
-        return `${key}: ${value}`
+        return `${key}: ${translateBackendMessage(String(value), t)}`
       })
       .filter(Boolean)
     if (parts.length) return parts.join(' | ')
@@ -519,7 +556,7 @@ const App = () => {
         setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, enriched))
         return { ok: true, usedFallback: true }
       } catch (fallbackErr) {
-        const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, 'Failed to load OLT data'))
+        const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, t('Failed to load OLT data'), t), t)
         if (isInitialLoad || surfaceError) {
           setError(message)
         }
@@ -537,7 +574,7 @@ const App = () => {
       const res = await api.get('/vendor-profiles/')
       setVendorProfiles(normalizeList(res.data))
     } catch (err) {
-      setVendorError(getApiErrorMessage(err, 'Failed to load vendor profiles'))
+      setVendorError(getApiErrorMessage(err, t('Failed to load vendor profiles'), t))
     } finally {
       setVendorLoading(false)
     }
@@ -797,7 +834,7 @@ const App = () => {
       }
       return result
     } catch (err) {
-      setSettingsActionError(getApiErrorMessage(err, 'Failed to execute settings action'))
+      setSettingsActionError(getApiErrorMessage(err, t('Failed to execute settings action'), t))
       setTimeout(() => setSettingsActionError(null), 5000)
       return null
     } finally {
@@ -817,14 +854,14 @@ const App = () => {
       const queuedStatus = response?.data?.status
       const queuedDetail = response?.data?.detail
       if (queuedStatus === 'already_running') {
-        setSettingsActionMessage(queuedDetail || alreadyRunningMessage || acceptedMessage)
+        setSettingsActionMessage(alreadyRunningMessage || acceptedMessage)
       } else {
-        setSettingsActionMessage(queuedDetail || acceptedMessage)
+        setSettingsActionMessage(acceptedMessage)
       }
       setTimeout(() => setSettingsActionMessage(''), 4000)
       return response?.data || null
     } catch (err) {
-      setSettingsActionError(getApiErrorMessage(err, 'Failed to execute settings action'))
+      setSettingsActionError(getApiErrorMessage(err, t('Failed to execute settings action'), t))
       setTimeout(() => setSettingsActionError(null), 5000)
       return null
     }
@@ -964,7 +1001,7 @@ const App = () => {
       const fallback = activeTab === 'power'
         ? t('Failed to refresh power data')
         : t('Failed to refresh status data')
-      showPonPanelError(getApiErrorMessage(err, fallback))
+      showPonPanelError(getApiErrorMessage(err, fallback, t))
     } finally {
       setIsRefreshingPonPanel(false)
     }

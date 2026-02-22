@@ -39,12 +39,18 @@ def _rows_to_index_map(rows: list, base_oid: str) -> Dict[str, str]:
     return values
 
 
+_SERIAL_SENTINEL_VALUES = frozenset({"N/A", "NA", "NONE", "NULL", "--", "-"})
+
+
 def _normalize_serial(raw: str) -> str:
     if not raw:
         return ""
     if "," in raw:
         raw = raw.split(",", 1)[1]
-    return raw.strip()
+    normalized = raw.strip().upper()
+    if normalized in _SERIAL_SENTINEL_VALUES:
+        return ""
+    return normalized
 
 
 def _parse_non_negative_int(value, default: int = 0) -> int:
@@ -257,13 +263,16 @@ class Command(BaseCommand):
         pause_between_walks = float(discovery_cfg.get('pause_between_walks_seconds', 0.5))
         pause_between_walks = max(0.0, min(pause_between_walks, 5.0))
 
-        name_rows = snmp_service.walk(olt, name_oid)
+        walk_timeout = float(discovery_cfg.get('walk_timeout_seconds', 30.0))
+        walk_timeout = max(5.0, min(walk_timeout, 120.0))
+
+        name_rows = snmp_service.walk(olt, name_oid, timeout=walk_timeout)
         if pause_between_walks > 0:
             time.sleep(pause_between_walks)
-        serial_rows = snmp_service.walk(olt, serial_oid)
+        serial_rows = snmp_service.walk(olt, serial_oid, timeout=walk_timeout)
         if pause_between_walks > 0 and status_oid:
             time.sleep(pause_between_walks)
-        status_rows = snmp_service.walk(olt, status_oid) if status_oid else []
+        status_rows = snmp_service.walk(olt, status_oid, timeout=walk_timeout) if status_oid else []
 
         snmp_returned = bool(name_rows or serial_rows or status_rows or iface_rows_total)
         if not snmp_returned:
@@ -278,12 +287,26 @@ class Command(BaseCommand):
         serials = _rows_to_index_map(serial_rows, serial_oid)
         statuses = _rows_to_index_map(status_rows, status_oid) if status_oid else {}
 
-        indices = set(names.keys()) | set(serials.keys())
+        raw_indices = set(names.keys()) | set(serials.keys())
+        indices = set()
+        ghost_count = 0
+        for idx in raw_indices:
+            name_val = names.get(idx, "").strip()
+            serial_val = serials.get(idx, "").strip()
+            if not name_val and not serial_val:
+                ghost_count += 1
+                continue
+            indices.add(idx)
+        if ghost_count:
+            logger.info(
+                "OLT %s discovery: filtered %d ghost indices (empty name and serial)",
+                olt.id, ghost_count,
+            )
         created = updated = skipped = 0
 
         # Partial walk deactivation guard
         active_count = ONU.objects.filter(olt=olt, is_active=True).count()
-        min_safe_ratio = float(discovery_cfg.get('min_safe_ratio', 0.5))
+        min_safe_ratio = float(discovery_cfg.get('min_safe_ratio', 0.3))
         min_safe_ratio = max(0.0, min(min_safe_ratio, 1.0))
         skip_deactivation = False
         if active_count > 0 and len(indices) < active_count * min_safe_ratio:
