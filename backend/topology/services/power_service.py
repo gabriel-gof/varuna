@@ -445,6 +445,10 @@ class PowerService:
 
             supports_olt_rx = bool(olt_rx_oid)
             power_cache_batch: Dict[int, Dict] = {}
+            cached_power_by_onu = cache_service.get_many_onu_power(
+                olt.id,
+                [onu.id for onu in olt_onus],
+            )
 
             if not onu_rx_oid:
                 for onu in olt_onus:
@@ -464,7 +468,7 @@ class PowerService:
                 pending_oids: List[str] = []
 
                 for onu in pon_onus:
-                    cached = cache_service.get_onu_power(onu.olt_id, onu.id)
+                    cached = cached_power_by_onu.get(onu.id)
                     if cached and not force_refresh:
                         cached_onu_rx = cached.get("onu_rx_power")
                         cached_olt_rx = cached.get("olt_rx_power") if supports_olt_rx else None
@@ -541,7 +545,8 @@ class PowerService:
                         "olt_rx_power": olt_rx,
                         "power_read_at": read_at,
                     }
-                    power_cache_batch[onu.id] = payload
+                    if read_at is not None:
+                        power_cache_batch[onu.id] = payload
                     results[onu.id] = payload
 
                 if (
@@ -616,6 +621,33 @@ class PowerService:
                         and retry_index < len(retry_candidates) - 1
                     ):
                         time.sleep(pause_between_single_retries_seconds)
+
+            # Do not regress to empty power snapshots: retain last known cache values
+            # when a forced refresh cannot produce fresh readings.
+            if force_refresh:
+                for onu in olt_onus:
+                    current = results.get(onu.id) or {}
+                    if current.get("power_read_at") is not None:
+                        continue
+
+                    cached = cached_power_by_onu.get(onu.id) or {}
+                    cached_onu_rx = cached.get("onu_rx_power")
+                    cached_olt_rx = cached.get("olt_rx_power") if supports_olt_rx else None
+                    cached_read_at = cached.get("power_read_at")
+                    if cached_onu_rx is None and cached_olt_rx is None:
+                        continue
+
+                    cached_payload = {
+                        "onu_id": onu.id,
+                        "slot_id": onu.slot_id,
+                        "pon_id": onu.pon_id,
+                        "onu_number": onu.onu_id,
+                        "onu_rx_power": cached_onu_rx,
+                        "olt_rx_power": cached_olt_rx,
+                        "power_read_at": cached_read_at,
+                    }
+                    results[onu.id] = cached_payload
+                    power_cache_batch[onu.id] = cached_payload
 
             if power_cache_batch:
                 cache_service.set_many_onu_power(olt.id, power_cache_batch, ttl=ttl)

@@ -100,13 +100,22 @@ Default global policy (any OLT/vendor profile):
 - Disable lost resources after `0` minutes (immediate deactivation from active topology).
 - Delete inactive lost ONUs after `10080` minutes (7 days).
 
+## Backend Job Scheduling
+Discovery and polling commands are now due-aware when executed without `--force` and without `--olt-id`:
+- `discover_onus` runs only OLTs due by `next_discovery_at` (or computed from `last_discovery_at + discovery_interval_minutes`).
+- `poll_onu_status` runs only OLTs due by `next_poll_at` (or computed from `last_poll_at + polling_interval_seconds`).
+
+This allows safe host-level scheduling (systemd timer/cron) independent of frontend sessions, while still keeping manual/API-triggered runs immediate via `--force`.
+
 ## Polling Rules
+- Polling collection must run independently from user login sessions (host scheduler invokes command periodically).
 - Status polling uses the same OLT-safe SNMP strategy as power collection:
   - short SNMP GET transport (`timeout≈1.8s`, `retries=0`);
   - chunk retry plus recursive chunk split fallback;
   - per-OID retry when a chunk returns partial varbinds;
   - paced PON batching with per-OLT call budget.
 - Status runtime pacing is vendor-tunable through `oid_templates.status` (chunk size, timeout, retries/backoff, call-budget multiplier, inter-PON pause), enabling conservative profiles for sensitive OLTs.
+- Status runtime also supports per-OLT hard runtime cap (`oid_templates.status.max_runtime_seconds`, default 180s, bounded 30-1800s) to avoid one unstable OLT blocking the scheduler cycle for all others.
 - Missing status for one ONU in a partial snapshot: preserve last known ONU status/log state (do not force `unknown` on transient SNMP gaps).
 - Full SNMP status failure for OLT: mark OLT unreachable and stop status mutation.
 - Offline/online transitions create/close `ONULog` correctly.
@@ -149,14 +158,47 @@ Background queue contract for OLT-scoped manual actions:
 API uses Django REST Framework `TokenAuthentication`. All endpoints require authentication by default (`DEFAULT_PERMISSION_CLASSES = [IsAuthenticated]`).
 
 Auth endpoints (all under `/api/`):
-- `POST /api/auth/login/` — accepts `{username, password}`, returns `{token, user: {id, username}}`. Public (AllowAny).
+- `POST /api/auth/login/` — accepts `{username, password}`, returns `{token, user: {id, username, role, can_modify_settings}}`. Public (AllowAny).
 - `POST /api/auth/logout/` — deletes the user's token. Requires auth.
-- `GET /api/auth/me/` — returns `{id, username}` for the authenticated user.
+- `GET /api/auth/me/` — returns `{id, username, role, can_modify_settings}` for the authenticated user.
+- `POST /api/auth/change-password/` — accepts `{current_password, new_password}`, validates Django password policy, rotates token, returns `{detail, token}`. Requires auth.
 
 Frontend stores the token in `localStorage` as `auth_token` and sends it as `Authorization: Token <key>` on every request via an Axios interceptor. On 401 responses, the interceptor clears the stored token and the app returns to the login screen.
 
 Auth views: `backend/topology/api/auth_views.py`.
 URL routing: `backend/topology/urls.py` (auth paths registered before API includes).
+Role helpers: `backend/topology/api/auth_utils.py`.
+
+Role authorization contract:
+- Role resolution falls back safely:
+  - `superuser => admin`
+  - missing/invalid profile => `viewer`
+- Write/maintenance permissions are granted only for `admin` and `operator` roles (`can_modify_settings=true`).
+- `viewer` role is topology read-only and blocked (`403`) from all configuration/maintenance write actions.
+
+Settings write endpoints blocked for `viewer`:
+- OLT CRUD writes (`POST /api/olts/`, `PUT/PATCH/DELETE /api/olts/{id}/`)
+- OLT maintenance actions (`run_discovery`, `run_polling`, `refresh_power`, `snmp_check`, `refresh_power` bulk)
+- PON description writes (`PATCH /api/pons/{id}/`)
+- ONU power refresh calls when refresh is requested:
+  - `GET /api/onu/{id}/power/?refresh=true`
+  - `POST /api/onu/batch-power/` with `refresh=true`
+
+Vendor profiles are API read-only (`VendorProfileViewSet` uses `ReadOnlyModelViewSet`).
+
+Auth bootstrap command:
+- `python manage.py ensure_auth_user --username <user> --password '<strong-password>' --role admin --superuser`
+- Idempotent behavior:
+  - creates user + `UserProfile` when missing;
+  - updates role on existing user;
+  - updates password only when `--force-password` is passed (or `VARUNA_AUTH_FORCE_PASSWORD=1`).
+- Environment fallback is supported for automation:
+  - `VARUNA_AUTH_USERNAME`
+  - `VARUNA_AUTH_PASSWORD`
+  - `VARUNA_AUTH_EMAIL`
+  - `VARUNA_AUTH_ROLE`
+  - `VARUNA_AUTH_SUPERUSER`
+  - `VARUNA_AUTH_FORCE_PASSWORD`
 
 ## API Notes
 Main endpoints:
@@ -197,6 +239,9 @@ Power refresh contract:
 - Power refresh responses expose collection accounting:
   - single OLT: `count`, `attempted_count`, `skipped_not_online_count`, `skipped_offline_count`, `skipped_unknown_count`, `collected_count`;
   - bulk all OLTs: `total_onu_count`, `total_attempted_count`, `total_skipped_not_online_count`, `total_skipped_offline_count`, `total_skipped_unknown_count`, `total_collected_count`.
+- Failed refreshes do not erase previously cached power snapshots:
+  - when a forced SNMP read returns empty/timeout for an ONU, backend keeps the last valid cached power for that ONU;
+  - cache is only overwritten with non-empty fresh readings (or explicit cached fallback), preventing null-regression after transient SNMP instability.
 - Power SNMP collection is resilient for large OLT batches:
   - power reads use short SNMP transport requests (`timeout≈1.8s`, `retries=0`) with application-level retry/fallback control to avoid long stalls;
   - ONUs are collected in paced PON batches (ordered by slot/pon) to reduce burst load on large OLTs;
@@ -229,6 +274,9 @@ Current tests validate:
 - discovery ghost index filtering (empty name+serial excluded),
 - discovery default `min_safe_ratio` (0.3),
 - discovery `walk_timeout_seconds` vendor config integration,
-- serial normalization (uppercase, sentinel stripping, vendor prefix handling, empty preservation).
+- serial normalization (uppercase, sentinel stripping, vendor prefix handling, empty preservation),
+- auth API contract (`login`, `me`, `logout`, `change-password` token rotation),
+- bootstrap command behavior (`ensure_auth_user` idempotency + role/password rules),
+- viewer role permission enforcement for topology/settings APIs.
 
 File: `backend/topology/tests.py`
