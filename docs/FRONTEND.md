@@ -9,11 +9,22 @@ The UI remains topology-first. No dashboard page is required for current product
 - Browser tab title is `Varuna`.
 
 ## Structure
-- `frontend/src/App.jsx`: app shell, topology/settings tabs, polling refresh, SNMP checks. Nav bar has Topology and Settings buttons grouped on the left; user menu on the right.
+- `frontend/src/App.jsx`: app shell, auth state, topology/settings tabs, polling refresh, SNMP checks. Nav bar has Topology and Settings buttons grouped on the left; user menu on the right.
+- `frontend/src/components/LoginPage.jsx`: login page with token-based authentication.
+- `frontend/src/components/VarunaIcon.jsx`: shared Varuna SVG icon component.
 - `frontend/src/components/NetworkTopology.jsx`: topology tree and alarm/search/filter interactions.
 - `frontend/src/components/SettingsPanel.jsx`: OLT CRUD/configuration UX.
-- `frontend/src/services/api.js`: Axios API client.
+- `frontend/src/services/api.js`: Axios API client with auth token interceptor.
 - `frontend/src/utils/stats.js`: ONU status classification helpers.
+
+## Authentication
+- App checks for stored token on mount by calling `GET /api/auth/me/`. If valid, user proceeds to the main app. If invalid/missing, the login page is shown.
+- Login page sends `POST /api/auth/login/` with username/password, receives a token, stores it in `localStorage` as `auth_token`.
+- Logout calls `POST /api/auth/logout/`, clears the token from `localStorage`, and returns to the login page.
+- Axios request interceptor attaches `Authorization: Token <key>` header on every request.
+- Axios response interceptor clears the stored token on 401 responses (no page reload — React state handles the transition).
+- Data-fetching effects (`fetchOlts`, `fetchVendorProfiles`, SNMP checks) are guarded with `if (!authToken) return` to prevent 401 loops on unauthenticated state.
+- Login page uses the same design language as the main app: emerald accent, VarunaIcon with "VARUNA" text matching the nav header proportions.
 
 ## Threshold Control Logic
 - The **Threshold Control** uses a single input for the "Normal Limit" (Good -> Warning boundary).

@@ -740,7 +740,10 @@ class PowerServiceResilienceTests(TestCase):
 
 class SettingsApiContractTests(TestCase):
     def setUp(self):
+        from django.contrib.auth.models import User
+        self.user = User.objects.create_user(username='testuser', password='testpass')
         self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
         self.vendor = build_vendor_profile(name='SETTINGS-API')
 
     def _create_olt(self, **kwargs):

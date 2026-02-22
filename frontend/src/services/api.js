@@ -37,8 +37,7 @@ api.interceptors.response.use(
     if (error.response) {
       switch (error.response.status) {
         case 401:
-          // Unauthorized - could redirect to login
-          console.warn('Unauthorized request')
+          localStorage.removeItem('auth_token')
           break
         case 403:
           console.warn('Forbidden request')

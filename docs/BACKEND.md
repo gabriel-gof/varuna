@@ -145,6 +145,19 @@ Background queue contract for OLT-scoped manual actions:
 - Commands run in backend daemon threads and clear in-flight flags when finished (or on exception).
 - Without `background=true`, actions keep synchronous behavior and return completion payloads (`200` or `500`) as before.
 
+## Authentication
+API uses Django REST Framework `TokenAuthentication`. All endpoints require authentication by default (`DEFAULT_PERMISSION_CLASSES = [IsAuthenticated]`).
+
+Auth endpoints (all under `/api/`):
+- `POST /api/auth/login/` — accepts `{username, password}`, returns `{token, user: {id, username}}`. Public (AllowAny).
+- `POST /api/auth/logout/` — deletes the user's token. Requires auth.
+- `GET /api/auth/me/` — returns `{id, username}` for the authenticated user.
+
+Frontend stores the token in `localStorage` as `auth_token` and sends it as `Authorization: Token <key>` on every request via an Axios interceptor. On 401 responses, the interceptor clears the stored token and the app returns to the login screen.
+
+Auth views: `backend/topology/api/auth_views.py`.
+URL routing: `backend/topology/urls.py` (auth paths registered before API includes).
+
 ## API Notes
 Main endpoints:
 - `GET /api/olts/`
