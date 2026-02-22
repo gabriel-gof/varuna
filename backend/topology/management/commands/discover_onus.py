@@ -120,10 +120,18 @@ class Command(BaseCommand):
         status_cfg = oid_templates.get("status", {})
         indexing_cfg = oid_templates.get("indexing", {})
 
-        disable_lost_after_minutes = _parse_non_negative_int(
+        configured_disable_lost_after_minutes = _parse_non_negative_int(
             discovery_cfg.get('disable_lost_after_minutes', discovery_cfg.get('keep_lost_minutes', 0)),
             default=0,
         )
+        # Product policy: missing ONUs must leave active topology immediately after a discovery pass.
+        disable_lost_after_minutes = 0
+        if configured_disable_lost_after_minutes > 0:
+            logger.info(
+                "OLT %s discovery config disable_lost_after_minutes=%s is ignored; global policy is immediate deactivation.",
+                olt.id,
+                configured_disable_lost_after_minutes,
+            )
         delete_lost_after_minutes = _parse_optional_non_negative_int(discovery_cfg.get('delete_lost_after_minutes'))
         if (
             delete_lost_after_minutes is not None

@@ -1827,7 +1827,7 @@ const App = () => {
                                   key={onu.id}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/80 dark:hover:bg-slate-800/70 transition-colors
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}
@@ -1991,7 +1991,7 @@ const App = () => {
                                   key={`power-${onu.id}`}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/80 dark:hover:bg-slate-800/70 transition-colors
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}

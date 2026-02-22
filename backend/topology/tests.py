@@ -167,7 +167,7 @@ class DiscoveryCommandTests(TestCase):
         self.assertEqual(stale.status, ONU.STATUS_UNKNOWN)
 
     @patch('topology.management.commands.discover_onus.snmp_service.walk')
-    def test_discovery_keeps_lost_onu_during_disable_grace_period(self, mock_walk):
+    def test_discovery_ignores_disable_grace_and_deactivates_missing_immediately(self, mock_walk):
         templates = dict(self.vendor.oid_templates or {})
         discovery_cfg = dict(templates.get('discovery', {}))
         discovery_cfg['disable_lost_after_minutes'] = 60
@@ -200,8 +200,8 @@ class DiscoveryCommandTests(TestCase):
         call_command('discover_onus', olt_id=self.olt.id)
 
         stale.refresh_from_db()
-        self.assertTrue(stale.is_active)
-        self.assertEqual(stale.status, ONU.STATUS_ONLINE)
+        self.assertFalse(stale.is_active)
+        self.assertEqual(stale.status, ONU.STATUS_UNKNOWN)
 
     @patch('topology.management.commands.discover_onus.snmp_service.walk')
     def test_discovery_deletes_inactive_lost_onu_after_delete_window(self, mock_walk):

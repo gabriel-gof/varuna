@@ -34,6 +34,7 @@ Default seed migrations:
 - `topology.0008_tune_vsol_like_collection_settings`: conservative status/power pacing defaults for `VSOL LIKE / GPON 8P` to reduce OLT load and improve completion reliability on large batches.
 - `topology.0009_fix_vsol_like_status_map_phase_state`: adjusts VSOL-like phase-state mapping so observed OLT values map correctly (`1/2 -> link_loss`, `4/5 -> dying_gasp`, `3 -> online`), avoiding false `unknown` status for LOS/DyingGasp ONUs.
 - `topology.0010_set_immediate_discovery_deactivation`: sets seeded profile discovery policy to deactivate missing ONUs immediately (`disable_lost_after_minutes=0`) while keeping inactive-history retention.
+- `topology.0011_set_global_immediate_discovery_deactivation`: normalizes discovery policy for all vendor profiles to immediate missing-ONU deactivation.
 
 Parser supports:
 - regex-based index extraction,
@@ -76,12 +77,11 @@ Create semantics were also hardened:
 ## ONU Lifecycle
 `ONU.is_active` is used to keep history without polluting live topology.
 - Seen in discovery: `is_active=True`.
-- Missing in discovery (when enabled): managed by retention policy:
-  - `disable_lost_after_minutes`: grace before deactivation.
-  - `delete_lost_after_minutes`: optional hard-delete for already inactive ONUs.
-  - `deactivate_missing`: lifecycle on/off switch.
+- Missing in discovery (when enabled): deactivated immediately from active topology (`disable_lost_after_minutes` is forced to `0` by discovery runtime policy).
+- `deactivate_missing` remains enabled.
+- `delete_lost_after_minutes` remains optional hard-delete for already inactive ONUs.
 
-Default seeded profile policy (`ZTE / C300` and `VSOL LIKE / GPON 8P`):
+Default global policy (any OLT/vendor profile):
 - Disable lost resources after `0` minutes (immediate deactivation from active topology).
 - Delete inactive lost ONUs after `10080` minutes (7 days).
 

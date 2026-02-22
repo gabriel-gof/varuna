@@ -167,6 +167,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Back arrow, X button, sort dropdown, and tab buttons all include `active:scale-95` tap feedback for consistent press response.
 - Mobile header uses `items-start` so the X button anchors to the breadcrumb line rather than centering against the full breadcrumb+description block.
 - Mobile card left columns (status and power) use `gap-0.5` (2px) between ONU number, client name, and serial for readable spacing.
+- Desktop PON table rows (Status and Power tabs) use `dark:even:bg-slate-800/50` for visible dark mode row striping against `dark:odd:bg-slate-900`. No hover highlight — rows are read-only data, not interactive targets.
 
 ## Dark Mode Border Contrast
 - All dark-mode borders use `dark:border-slate-700/50` (not `slate-800`) for visible separation against `slate-900` backgrounds.
