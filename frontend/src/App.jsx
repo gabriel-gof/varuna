@@ -61,6 +61,7 @@ const BACKEND_MESSAGE_MAP = {
   'Discovery interval must be greater than 0 minutes.': 'Discovery interval must be greater than 0 minutes.',
   'Polling interval must be greater than 0 seconds.': 'Polling interval must be greater than 0 seconds.',
   'Power interval must be greater than 0 seconds.': 'Power interval must be greater than 0 seconds.',
+  'Insufficient permissions for this action.': 'Insufficient permissions for this action.',
 }
 
 const BACKEND_PREFIX_PATTERNS = [
@@ -112,6 +113,7 @@ const ALARM_REASON_TO_STATUS_KEY = {
 }
 const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
 const SEARCH_MATCH_STORAGE_KEY = 'varuna.searchMatch'
+const FRONTEND_AUTO_MAINTENANCE_ENABLED = false
 
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
@@ -398,6 +400,7 @@ const App = () => {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth_token'))
   const [authUser, setAuthUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
+  const canManageSettings = Boolean(authUser?.can_modify_settings)
 
   useEffect(() => {
     if (!authToken) {
@@ -474,6 +477,12 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem('varuna_active_tab', activeNav)
   }, [activeNav])
+
+  useEffect(() => {
+    if (!canManageSettings && activeNav === 'settings') {
+      setActiveNav('topology')
+    }
+  }, [canManageSettings, activeNav])
 
   useEffect(() => {
     try {
@@ -685,10 +694,14 @@ const App = () => {
   useEffect(() => {
     if (!authToken) return
     fetchOlts()
-    fetchVendorProfiles()
+    if (canManageSettings) {
+      fetchVendorProfiles()
+    } else {
+      setVendorProfiles([])
+    }
     const interval = setInterval(fetchOlts, 30000)
     return () => clearInterval(interval)
-  }, [authToken, fetchOlts, fetchVendorProfiles])
+  }, [authToken, canManageSettings, fetchOlts, fetchVendorProfiles])
 
   useEffect(() => {
     oltsRef.current = olts
@@ -824,9 +837,11 @@ const App = () => {
   }, [fetchOlts])
 
   useEffect(() => {
+    if (!FRONTEND_AUTO_MAINTENANCE_ENABLED) return
+    if (!canManageSettings) return
     if (!olts.length) return
     runDueMaintenance(olts)
-  }, [olts, runDueMaintenance])
+  }, [canManageSettings, olts, runDueMaintenance])
 
   const oltIdsSignature = useMemo(
     () => [...olts.map((olt) => String(olt?.id)).filter(Boolean)].sort().join(','),
@@ -835,16 +850,18 @@ const App = () => {
 
   // Run SNMP checks when the OLT set changes.
   useEffect(() => {
+    if (!canManageSettings) return
     if (!olts?.length) return
     runSnmpChecks(olts)
-  }, [oltIdsSignature, runSnmpChecks])
+  }, [canManageSettings, oltIdsSignature, runSnmpChecks])
 
   // Keep checks periodic without recreating timers on every topology refresh payload.
   useEffect(() => {
     if (!authToken) return
+    if (!canManageSettings) return
     const timer = setInterval(() => runSnmpChecks(oltsRef.current), 180_000)
     return () => clearInterval(timer)
-  }, [authToken, runSnmpChecks])
+  }, [authToken, canManageSettings, runSnmpChecks])
 
   const runSettingsAction = async (key, request, successMessage = '') => {
     setSettingsActionError(null)
@@ -1008,13 +1025,15 @@ const App = () => {
     setPonPanelError('')
     setIsRefreshingPonPanel(true)
     try {
-      const selectedOltId = toIntOrNull(selectedPonData?.olt?.id)
-      if (selectedOltId && activeTab === 'status') {
-        await api.post(`/olts/${selectedOltId}/run_polling/`, {}, { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS })
-      } else if (activeTab === 'power') {
-        const powerResult = await collectPowerForSelectedPon()
-        if (!powerResult?.ok) {
-          showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
+      if (canManageSettings) {
+        const selectedOltId = toIntOrNull(selectedPonData?.olt?.id)
+        if (selectedOltId && activeTab === 'status') {
+          await api.post(`/olts/${selectedOltId}/run_polling/`, {}, { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS })
+        } else if (activeTab === 'power') {
+          const powerResult = await collectPowerForSelectedPon()
+          if (!powerResult?.ok) {
+            showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
+          }
         }
       }
 
@@ -1030,7 +1049,7 @@ const App = () => {
     } finally {
       setIsRefreshingPonPanel(false)
     }
-  }, [activeTab, collectPowerForSelectedPon, fetchOlts, isRefreshingPonPanel, selectedPonData, showPonPanelError, t])
+  }, [activeTab, canManageSettings, collectPowerForSelectedPon, fetchOlts, isRefreshingPonPanel, selectedPonData, showPonPanelError, t])
 
   useEffect(() => {
     if (!selectedPonId) {
@@ -1441,7 +1460,7 @@ const App = () => {
   }, [])
 
   if (!authChecked) {
-    return <div className="h-screen bg-white dark:bg-slate-950" />
+    return <div className="h-[100dvh] min-h-[100dvh] bg-white dark:bg-slate-950" />
   }
 
   if (!authToken || !authUser) {
@@ -1449,7 +1468,7 @@ const App = () => {
   }
 
   return (
-    <div className="h-screen bg-white dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
+    <div className="h-[100dvh] min-h-[100dvh] bg-white dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
       <nav className="h-16 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-700/50 flex items-center px-6 sticky top-0 z-[100] transition-colors shadow-sm">
         <div className="flex items-center gap-3 mr-4 sm:mr-10">
           <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20">
@@ -1467,14 +1486,16 @@ const App = () => {
             <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
             {activeNav === 'topology' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
-          <button
-            onClick={() => setActiveNav('settings')}
-            className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
-          >
-            <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
-            <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Settings')}</span>
-            {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
-          </button>
+          {canManageSettings && (
+            <button
+              onClick={() => setActiveNav('settings')}
+              className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            >
+              <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
+              <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Settings')}</span>
+              {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+            </button>
+          )}
         </div>
 
         <div className="ml-auto flex items-center gap-3">
@@ -1568,7 +1589,7 @@ const App = () => {
               : 'flex-1'}
           `}
         >
-          {activeNav === 'topology' ? (
+          {activeNav === 'topology' || !canManageSettings ? (
             <NetworkTopology
               olts={olts}
               loading={loading}
@@ -2188,7 +2209,7 @@ const App = () => {
           </aside>
         )}
       </main>
-      <footer className="shrink-0 flex items-center justify-between px-4 py-1.5 text-[11px] font-medium text-slate-400 dark:text-slate-400 border-t border-slate-100 dark:border-slate-700/50 bg-white dark:bg-slate-900 transition-colors">
+      <footer className="shrink-0 flex items-center justify-between px-4 pt-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] text-[11px] font-medium text-slate-400 dark:text-slate-400 border-t border-slate-100 dark:border-slate-700/50 bg-white dark:bg-slate-900 transition-colors">
         <span>{t('Version')} {__APP_VERSION__}</span>
         <span>{lastCollectionAt ? `${t('Last update')}: ${formatReadingAt(lastCollectionAt, i18n.language)}` : ''}</span>
       </footer>

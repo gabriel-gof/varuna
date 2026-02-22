@@ -19,12 +19,24 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Authentication
 - App checks for stored token on mount by calling `GET /api/auth/me/`. If valid, user proceeds to the main app. If invalid/missing, the login page is shown.
-- Login page sends `POST /api/auth/login/` with username/password, receives a token, stores it in `localStorage` as `auth_token`.
+- Login page sends `POST /api/auth/login/` with username/password, receives a token + user payload (`role`, `can_modify_settings`), stores the token in `localStorage` as `auth_token`.
 - Logout calls `POST /api/auth/logout/`, clears the token from `localStorage`, and returns to the login page.
+- If password rotation is triggered through `POST /api/auth/change-password/`, frontend must replace `auth_token` with the new token returned by backend.
 - Axios request interceptor attaches `Authorization: Token <key>` header on every request.
 - Axios response interceptor clears the stored token on 401 responses (no page reload — React state handles the transition).
 - Data-fetching effects (`fetchOlts`, `fetchVendorProfiles`, SNMP checks) are guarded with `if (!authToken) return` to prevent 401 loops on unauthenticated state.
 - Login page uses the same design language as the main app: emerald accent, VarunaIcon with "VARUNA" text matching the nav header proportions.
+
+## Role-Aware UX Contract
+- `can_modify_settings=true` (`admin`/`operator`):
+  - Topology and Settings tabs are visible.
+  - Frontend can execute maintenance/configuration actions (discovery, polling, SNMP check, power refresh, OLT/PON writes).
+- `can_modify_settings=false` (`viewer`):
+  - Settings tab is hidden.
+  - If local state points to Settings, app forces navigation back to Topology.
+  - Vendor profile list is not loaded for viewer sessions.
+  - Automatic maintenance loops and periodic SNMP checks are disabled.
+  - PON panel manual refresh reloads topology data only (no privileged backend write actions).
 
 ## Threshold Control Logic
 - The **Threshold Control** uses a single input for the "Normal Limit" (Good -> Warning boundary).
@@ -51,7 +63,8 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Freshness and Coherence Rules
 - OLT health color is shared between topology and settings views.
 - Stale status data is considered unreliable and forced to gray:
-  - if `now - last_poll_at > polling_interval_seconds` plus an additional grace window.
+  - if `now - last_poll_at > polling_interval_seconds` plus an additional grace window;
+  - minimum stale tolerance is enforced at 10 minutes before gray state.
 - OLT color semantics follow slot health:
   - `red` when all active slots are offline (`red`),
   - `yellow` when at least one slot is offline (`red`) and at least one other slot is not offline,
@@ -69,13 +82,8 @@ The UI remains topology-first. No dashboard page is required for current product
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
   - `power_interval_seconds`
-- Frontend runs due discovery/polling/power actions based on configured OLT intervals to keep data current while UI is open.
-- Interval-driven maintenance requests are queued in backend background mode (`{ background: true }`) so status/discovery/power scheduling stays non-blocking and avoids long-lived frontend request locks.
-- Automatic maintenance now keeps per-OLT pending locks in memory (polling/discovery/power) and does not re-submit a due action until:
-  - backend timestamp advances (`last_poll_at`, `last_discovery_at`, `last_power_at`) or
-  - a safety timeout expires.
-- Auto-maintenance priority per OLT is `polling -> power -> discovery`; at most one automatic maintenance request is submitted per OLT per cycle.
-- Due power collection is OLT-scoped (not per selected PON) and uses backend `last_power_at` plus each OLT `power_interval_seconds`.
+- Periodic polling/discovery scheduling is backend-driven (host scheduler + management commands), not tied to browser sessions.
+- Frontend does not auto-dispatch interval-driven maintenance loops anymore, which avoids duplicate scheduling from multiple open tabs.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
 - PON sidebar refresh is tab-aware and collection-first:
   - `Status`: triggers `POST /api/olts/:id/run_polling/` for the selected OLT.
@@ -140,6 +148,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - OLT removal from Settings maps to backend soft-deactivation (not hard delete), so removed OLTs disappear from active UI while history is preserved server-side.
 - Save actions can return explicit `400` validation errors for invalid runtime configuration (unsupported SNMP version, invalid intervals/ports, missing required fields).
 - Manual action buttons (`Run` for discovery/polling/power) can return explicit `400` errors when the vendor profile lacks required capabilities or OID templates.
+- Viewer attempts on privileged actions return `403` with `Insufficient permissions for this action.` and are translated via i18n mapping.
 - Manual action buttons (`run_discovery`, `run_polling`, `refresh_power`) are acknowledged immediately by backend `202` responses when queued in background mode.
 - Frontend translates known backend errors through the i18n system; unknown messages pass through as-is for operator visibility.
 
@@ -160,6 +169,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - All four toolbar controls (filter, search, collapse, alarm) render in a single row on all breakpoints.
 - On mobile (`<lg`), collapse and alarm buttons are icon-only (`h-9 w-9`). On desktop (`>=lg`), they expand to show labels (`lg:w-auto lg:px-3` with `hidden lg:inline` text).
 - The search input takes remaining space (`flex-1 min-w-0`) on mobile, capped at `lg:max-w-[268px]` on desktop.
+- Mobile search input uses 16px font sizing to prevent browser auto-zoom while typing/focusing.
 - Filter and search dropdowns open downward (`top-11`) on all breakpoints.
 - Toolbar horizontal padding is `px-4` on mobile, `lg:px-10` on desktop, matching the topology content area.
 
@@ -193,6 +203,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - The timestamp is the latest `last_poll_at` across all OLTs, formatted with `formatReadingAt` for locale awareness.
 - The right side is empty when no poll has occurred yet.
 - Footer respects dark mode and does not collapse in the flex layout (`shrink-0`).
+- App shell uses dynamic viewport height (`100dvh`) and footer includes safe-area bottom padding so it remains visible on mobile browsers with dynamic bars/notches.
 
 ## Internationalization (i18n)
 - Translation is handled by `react-i18next` configured in `frontend/src/i18n.js`.
