@@ -243,26 +243,16 @@ const formatDisconnectionWindow = (startValue, endValue, language) => {
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '—'
 
   const locale = language === 'pt' ? 'pt-BR' : 'en-US'
-  const sameDay = (
-    start.getFullYear() === end.getFullYear() &&
-    start.getMonth() === end.getMonth() &&
-    start.getDate() === end.getDate()
-  )
-
-  const dateFormatter = new Intl.DateTimeFormat(locale, {
+  const timestampFormatter = new Intl.DateTimeFormat(locale, {
     day: '2-digit',
     month: '2-digit',
-    year: 'numeric'
-  })
-  const timeFormatter = new Intl.DateTimeFormat(locale, {
+    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit'
   })
 
-  if (sameDay) {
-    return `${dateFormatter.format(start)} ${timeFormatter.format(start)}-${timeFormatter.format(end)}`
-  }
-  return `${dateFormatter.format(start)} ${timeFormatter.format(start)}-${dateFormatter.format(end)} ${timeFormatter.format(end)}`
+  // Compact table display: show the window upper bound using the same style as power timestamps.
+  return timestampFormatter.format(end)
 }
 
 const formatReadingAt = (value, language) => {
@@ -1584,10 +1574,10 @@ const App = () => {
         {activeNav === 'topology' && (
           <aside
             className={`
-              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width] duration-150'}
+              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width,opacity,transform] duration-300 ease-out'}
               ${isPonPanelOpen
-                ? 'w-full lg:w-[var(--pon-panel-width)] opacity-100 border-l border-slate-100 dark:border-slate-700/50'
-                : 'w-0 opacity-0 pointer-events-none border-l-0'}
+                ? 'w-full lg:w-[var(--pon-panel-width)] opacity-100 translate-x-0 border-l border-slate-100 dark:border-slate-700/50'
+                : 'w-0 opacity-0 translate-x-full pointer-events-none border-l-0'}
             `}
           >
             {selectedPonId && (() => {
@@ -1837,7 +1827,7 @@ const App = () => {
                                   key={onu.id}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 transition-colors
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/80 dark:hover:bg-slate-800/70 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}
@@ -1861,7 +1851,7 @@ const App = () => {
                                       {statusLabel}
                                     </span>
                                   </td>
-                                  <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-center">
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${statusKey !== 'online' && disconnectWindow === '—' ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>
                                     {disconnectWindow}
                                   </td>
                                 </tr>
@@ -2001,7 +1991,7 @@ const App = () => {
                                   key={`power-${onu.id}`}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/35 transition-colors
+                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/80 dark:hover:bg-slate-800/70 transition-colors
                                     ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}
@@ -2019,7 +2009,7 @@ const App = () => {
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
                                     {!hasAnyPower ? (
-                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
+                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
                                     ) : (
                                       <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
@@ -2035,7 +2025,7 @@ const App = () => {
                                       </div>
                                     )}
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>
                                     {readingAt}
                                   </td>
                                 </tr>
@@ -2099,10 +2089,10 @@ const App = () => {
                                         <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
                                       </span>
                                     )}
-                                    <span className={`text-[10px] font-semibold tabular-nums ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
+                                    <span className={`text-[10px] font-semibold tabular-nums ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
                                   </>
                                 ) : (
-                                  <span className={`text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
+                                  <span className={`text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
                                 )}
                               </div>
                             </div>
@@ -2124,7 +2114,7 @@ const App = () => {
           </aside>
         )}
       </main>
-      <footer className="shrink-0 flex items-center justify-between px-4 py-1.5 text-[11px] font-medium text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-700/50 bg-white dark:bg-slate-900 transition-colors">
+      <footer className="shrink-0 flex items-center justify-between px-4 py-1.5 text-[11px] font-medium text-slate-400 dark:text-slate-400 border-t border-slate-100 dark:border-slate-700/50 bg-white dark:bg-slate-900 transition-colors">
         <span>{t('Version')} {__APP_VERSION__}</span>
         <span>{lastCollectionAt ? `${t('Last update')}: ${formatReadingAt(lastCollectionAt, i18n.language)}` : ''}</span>
       </footer>

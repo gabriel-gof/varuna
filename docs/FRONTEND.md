@@ -6,6 +6,7 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Dev Runtime
 - Frontend Vite dev server runs on port `4000` in Docker development mode.
 - Backend API remains on port `8000` and is proxied via `/api`.
+- Browser tab title is `Varuna`.
 
 ## Structure
 - `frontend/src/App.jsx`: app shell, topology/settings tabs, polling refresh, SNMP checks. Nav bar has Topology and Settings buttons grouped on the left; user menu on the right.
@@ -70,7 +71,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`).
   - After collection, both paths reload topology (`GET /api/olts/?include_topology=true`) to keep tree + panel in sync.
 - Status table disconnection column is interval-aware:
-  - displays a compact time window (`dd/mm/yyyy hh:mm-hh:mm`, locale-aware) only when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
+  - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.
 - Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
