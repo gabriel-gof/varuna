@@ -211,6 +211,7 @@ const MAINTENANCE_PENDING_WINDOW_MS = {
   power: 45 * 60 * 1000,
   discovery: 30 * 60 * 1000
 }
+const RESUME_REFRESH_THROTTLE_MS = 4000
 const SEARCH_ROW_HIGHLIGHT_STYLE = {
   boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)'
 }
@@ -543,6 +544,7 @@ const App = () => {
   const selectedPonDataRef = useRef(null)
   const wasAlarmEnabledRef = useRef(false)
   const mainLayoutRef = useRef(null)
+  const lastResumeRefreshAtRef = useRef(0)
   const resizePointerIdRef = useRef(null)
   const previousBodyCursorRef = useRef('')
   const previousBodyUserSelectRef = useRef('')
@@ -711,6 +713,43 @@ const App = () => {
     const timer = setInterval(() => setHealthTick(Date.now()), 30_000)
     return () => clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (!authToken) return
+
+    const refreshAfterResume = () => {
+      const now = Date.now()
+      if (now - lastResumeRefreshAtRef.current < RESUME_REFRESH_THROTTLE_MS) return
+      lastResumeRefreshAtRef.current = now
+      setHealthTick(now)
+      void fetchOlts()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      refreshAfterResume()
+    }
+
+    const handleWindowFocus = () => {
+      refreshAfterResume()
+    }
+
+    const handlePageShow = (event) => {
+      if (event.persisted || document.visibilityState === 'visible') {
+        refreshAfterResume()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', handleWindowFocus)
+    window.addEventListener('pageshow', handlePageShow)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleWindowFocus)
+      window.removeEventListener('pageshow', handlePageShow)
+    }
+  }, [authToken, fetchOlts])
 
   const runDueMaintenance = useCallback(async (oltList) => {
     if (!Array.isArray(oltList) || !oltList.length) return
@@ -1858,7 +1897,12 @@ const App = () => {
                   )}
 
                   {activeTab === 'status' ? (
-                    <>
+                    <div className="relative flex flex-col w-full max-h-full min-h-0">
+                    {isRefreshingPonPanel && (
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
+                        <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
+                      </div>
+                    )}
                     {/* Desktop status table */}
                     <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
@@ -2021,7 +2065,7 @@ const App = () => {
                         )}
                       </div>
                     </div>
-                    </>
+                    </div>
 
                   ) : (
                     <div className="relative flex flex-col w-full max-h-full min-h-0">

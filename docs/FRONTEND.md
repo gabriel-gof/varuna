@@ -47,6 +47,8 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Live Data Flow
 - Fetch OLTs with topology (`/api/olts/?include_topology=true`).
 - Refresh periodically.
+- On browser/app resume (`visibilitychange`, `focus`, `pageshow`), frontend triggers an immediate topology refresh (`fetchOlts`) with a short throttle to avoid duplicate requests after mobile wake.
+- Resume refresh is topology-only; it does not trigger extra SNMP check requests.
 - Run `snmp_check` per OLT and map to `reachable/unreachable` with conservative transitions (a single failed check does not immediately flip a previously reachable OLT to unreachable).
 - Render unreachable or stale OLT nodes in gray.
 - When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and offline red-hyphen indicators are all forced to gray to signal that displayed data may be outdated.
@@ -94,7 +96,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - displays `—` when the exact disconnection window is unknown.
 - Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
-- While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
+- While status or power data is being collected from the PON panel refresh action, the active table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
 - `Best/Worst OLT RX` sort options are shown only when the selected OLT supports OLT RX (`supports_olt_rx_power=true`).
 - In Power tab, rows without power readings show only a hyphen (`—`); for offline statuses the hyphen is red in both `Potência` and `Leitura`, and for online rows it keeps the default neutral style.
