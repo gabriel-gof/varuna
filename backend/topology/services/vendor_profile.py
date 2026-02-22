@@ -107,14 +107,20 @@ def parse_onu_index(index_str: str, indexing_cfg: Dict[str, Any]) -> Optional[Di
     if values['port_id'] is not None:
         location['port'] = values['port_id']
 
+    fixed_cfg = indexing_cfg.get('fixed') if isinstance(indexing_cfg.get('fixed'), dict) else {}
+
     slot_id = values['slot_id']
     pon_id = values['pon_id']
     if slot_id is None:
         slot_from = indexing_cfg.get('slot_from', 'shelf')
         slot_id = _to_int(location.get(slot_from))
+    if slot_id is None:
+        slot_id = _to_int(fixed_cfg.get('slot_id'))
     if pon_id is None:
         pon_from = indexing_cfg.get('pon_from', 'port')
         pon_id = _to_int(location.get(pon_from))
+    if pon_id is None:
+        pon_id = _to_int(fixed_cfg.get('pon_id'))
 
     onu_id = values['onu_id']
     if slot_id is None or pon_id is None or onu_id is None:

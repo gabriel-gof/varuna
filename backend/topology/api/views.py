@@ -35,6 +35,7 @@ _background_jobs_by_kind = {
     'polling': set(),
     'power': set(),
 }
+_background_jobs_by_olt = {}
 
 
 def _is_true(value: str | None) -> bool:
@@ -379,10 +380,20 @@ class OLTViewSet(viewsets.ModelViewSet):
 
     def _queue_background_olt_job(self, *, kind: str, olt_id: int, runner):
         with _background_jobs_lock:
+            running_kind = _background_jobs_by_olt.get(olt_id)
+            if running_kind:
+                logger.warning(
+                    "Background %s not queued for OLT %s: %s is already running.",
+                    kind,
+                    olt_id,
+                    running_kind,
+                )
+                return False
             running = _background_jobs_by_kind.setdefault(kind, set())
             if olt_id in running:
                 return False
             running.add(olt_id)
+            _background_jobs_by_olt[olt_id] = kind
 
         def _wrapped():
             close_old_connections()
@@ -393,6 +404,8 @@ class OLTViewSet(viewsets.ModelViewSet):
             finally:
                 with _background_jobs_lock:
                     _background_jobs_by_kind.setdefault(kind, set()).discard(olt_id)
+                    if _background_jobs_by_olt.get(olt_id) == kind:
+                        _background_jobs_by_olt.pop(olt_id, None)
                 close_old_connections()
 
         thread = threading.Thread(
@@ -422,7 +435,7 @@ class OLTViewSet(viewsets.ModelViewSet):
         validation_error = self._validate_vendor_action(
             olt,
             capability_field='supports_power_monitoring',
-            required_template_paths=[('power', 'onu_rx_oid'), ('power', 'olt_rx_oid')],
+            required_template_paths=[('power', 'onu_rx_oid')],
             action_name='power refresh',
         )
         if validation_error is not None:
@@ -443,7 +456,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                     {
                         'status': 'already_running',
                         'olt_id': olt.id,
-                        'detail': 'Power refresh already running for this OLT.',
+                        'detail': 'Another maintenance task is already running for this OLT.',
                     },
                     status=status.HTTP_202_ACCEPTED,
                 )
@@ -486,7 +499,7 @@ class OLTViewSet(viewsets.ModelViewSet):
             validation_error = self._validate_vendor_action(
                 olt,
                 capability_field='supports_power_monitoring',
-                required_template_paths=[('power', 'onu_rx_oid'), ('power', 'olt_rx_oid')],
+                required_template_paths=[('power', 'onu_rx_oid')],
                 action_name='power refresh',
             )
             if validation_error is not None:
@@ -564,7 +577,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                     {
                         'status': 'already_running',
                         'olt_id': olt.id,
-                        'detail': 'Discovery already running for this OLT.',
+                        'detail': 'Another maintenance task is already running for this OLT.',
                     },
                     status=status.HTTP_202_ACCEPTED,
                 )
@@ -663,7 +676,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                     {
                         'status': 'already_running',
                         'olt_id': olt.id,
-                        'detail': 'Polling already running for this OLT.',
+                        'detail': 'Another maintenance task is already running for this OLT.',
                     },
                     status=status.HTTP_202_ACCEPTED,
                 )

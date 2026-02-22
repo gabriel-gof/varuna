@@ -1,4 +1,5 @@
 const normalize = (value) => (value || '').toString().toLowerCase()
+const isUnknownReason = (reason) => reason.includes('unknown') || reason.includes('desconhec')
 
 export const classifyOnu = (onu) => {
   const status = normalize(onu?.status)
@@ -15,6 +16,10 @@ export const classifyOnu = (onu) => {
 
   if (reason.includes('link')) {
     return { status: 'link_loss', label: 'LINK LOSS' }
+  }
+
+  if (status === 'unknown' || isUnknownReason(reason)) {
+    return { status: 'unknown', label: 'UNKNOWN' }
   }
 
   return { status: status || 'offline', label: (status || 'OFFLINE').toUpperCase() }

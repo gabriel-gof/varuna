@@ -51,18 +51,36 @@ def _chunked(values: List[str], size: int) -> Iterator[List[str]]:
         yield values[start:start + size]
 
 
+def _to_int(value) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(value) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 class Command(BaseCommand):
     help = "Poll ONU status via SNMP and update status/logs."
 
     def __init__(self):
         super().__init__()
-        self.chunk_retry_attempts = 1
-        self.single_oid_retry_attempts = 1
-        self.retry_backoff_seconds = 0.12
-        self.snmp_timeout_seconds = 1.2
+        self.chunk_retry_attempts = 2
+        self.single_oid_retry_attempts = 2
+        self.retry_backoff_seconds = 0.2
+        self.snmp_timeout_seconds = 1.8
         self.snmp_retries = 0
-        self.max_get_call_multiplier = 12
-        self.pause_between_pon_batches_seconds = 0.05
+        self.max_get_call_multiplier = 18
+        self.pause_between_pon_batches_seconds = 0.08
 
     def add_arguments(self, parser):
         parser.add_argument("--olt-id", type=int, help="Run polling for a specific OLT id")
@@ -76,6 +94,9 @@ class Command(BaseCommand):
         *,
         attempts: int,
         call_budget: Dict[str, int],
+        timeout_seconds: float,
+        retries: int,
+        retry_backoff_seconds: float,
     ) -> Optional[Dict[str, str]]:
         for attempt in range(attempts):
             if call_budget.get("remaining", 0) <= 0:
@@ -84,13 +105,13 @@ class Command(BaseCommand):
             response = snmp_service.get(
                 olt,
                 oids,
-                timeout=self.snmp_timeout_seconds,
-                retries=self.snmp_retries,
+                timeout=timeout_seconds,
+                retries=retries,
             )
             if response is not None:
                 return response
             if attempt < attempts - 1:
-                time.sleep(self.retry_backoff_seconds * (attempt + 1))
+                time.sleep(retry_backoff_seconds * (attempt + 1))
         return None
 
     def _fetch_status_chunk_resilient(
@@ -99,6 +120,11 @@ class Command(BaseCommand):
         oids: List[str],
         *,
         call_budget: Dict[str, int],
+        chunk_retry_attempts: int,
+        single_oid_retry_attempts: int,
+        timeout_seconds: float,
+        retries: int,
+        retry_backoff_seconds: float,
     ) -> Dict[str, str]:
         if not oids:
             return {}
@@ -106,15 +132,36 @@ class Command(BaseCommand):
         response = self._snmp_get_with_attempts(
             olt,
             oids,
-            attempts=self.chunk_retry_attempts,
+            attempts=chunk_retry_attempts,
             call_budget=call_budget,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+            retry_backoff_seconds=retry_backoff_seconds,
         )
         if response is None:
             if len(oids) == 1:
                 return {}
             midpoint = len(oids) // 2
-            left = self._fetch_status_chunk_resilient(olt, oids[:midpoint], call_budget=call_budget)
-            right = self._fetch_status_chunk_resilient(olt, oids[midpoint:], call_budget=call_budget)
+            left = self._fetch_status_chunk_resilient(
+                olt,
+                oids[:midpoint],
+                call_budget=call_budget,
+                chunk_retry_attempts=chunk_retry_attempts,
+                single_oid_retry_attempts=single_oid_retry_attempts,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+                retry_backoff_seconds=retry_backoff_seconds,
+            )
+            right = self._fetch_status_chunk_resilient(
+                olt,
+                oids[midpoint:],
+                call_budget=call_budget,
+                chunk_retry_attempts=chunk_retry_attempts,
+                single_oid_retry_attempts=single_oid_retry_attempts,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+                retry_backoff_seconds=retry_backoff_seconds,
+            )
             merged: Dict[str, str] = {}
             merged.update(left)
             merged.update(right)
@@ -126,8 +173,11 @@ class Command(BaseCommand):
                 single = self._snmp_get_with_attempts(
                     olt,
                     [oid],
-                    attempts=self.single_oid_retry_attempts,
+                    attempts=single_oid_retry_attempts,
                     call_budget=call_budget,
+                    timeout_seconds=timeout_seconds,
+                    retries=retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
                 )
                 if isinstance(single, dict) and oid in single:
                     response[oid] = single[oid]
@@ -183,14 +233,44 @@ class Command(BaseCommand):
             return
 
         statuses: Dict[str, str] = {}
-        chunk_size = int(status_cfg.get("get_chunk_size", 20))
-        chunk_size = max(chunk_size, 1)
+        chunk_size = _to_int(status_cfg.get("get_chunk_size"))
+        if chunk_size is None:
+            chunk_size = 20
+        chunk_size = max(1, min(chunk_size, 128))
+        chunk_retry_attempts = _to_int(status_cfg.get("chunk_retry_attempts"))
+        if chunk_retry_attempts is None:
+            chunk_retry_attempts = self.chunk_retry_attempts
+        chunk_retry_attempts = max(1, min(chunk_retry_attempts, 6))
+        single_oid_retry_attempts = _to_int(status_cfg.get("single_oid_retry_attempts"))
+        if single_oid_retry_attempts is None:
+            single_oid_retry_attempts = self.single_oid_retry_attempts
+        single_oid_retry_attempts = max(1, min(single_oid_retry_attempts, 6))
+        retry_backoff_seconds = _to_float(status_cfg.get("retry_backoff_seconds"))
+        if retry_backoff_seconds is None:
+            retry_backoff_seconds = self.retry_backoff_seconds
+        retry_backoff_seconds = max(0.0, min(retry_backoff_seconds, 5.0))
+        snmp_timeout_seconds = _to_float(status_cfg.get("snmp_timeout_seconds"))
+        if snmp_timeout_seconds is None:
+            snmp_timeout_seconds = self.snmp_timeout_seconds
+        snmp_timeout_seconds = max(0.3, min(snmp_timeout_seconds, 10.0))
+        snmp_retries = _to_int(status_cfg.get("snmp_retries"))
+        if snmp_retries is None:
+            snmp_retries = self.snmp_retries
+        snmp_retries = max(0, min(snmp_retries, 3))
+        max_get_call_multiplier = _to_int(status_cfg.get("max_get_call_multiplier"))
+        if max_get_call_multiplier is None:
+            max_get_call_multiplier = self.max_get_call_multiplier
+        max_get_call_multiplier = max(2, min(max_get_call_multiplier, 200))
+        pause_between_pon_batches_seconds = _to_float(status_cfg.get("pause_between_pon_batches_seconds"))
+        if pause_between_pon_batches_seconds is None:
+            pause_between_pon_batches_seconds = self.pause_between_pon_batches_seconds
+        pause_between_pon_batches_seconds = max(0.0, min(pause_between_pon_batches_seconds, 5.0))
         failed_chunks = 0
         estimated_calls = max(1, math.ceil(len(status_oids) / chunk_size))
         call_budget = {
             "remaining": max(
                 estimated_calls + 32,
-                estimated_calls * self.max_get_call_multiplier,
+                estimated_calls * max_get_call_multiplier,
             )
         }
 
@@ -200,11 +280,12 @@ class Command(BaseCommand):
 
         ordered_pon_keys = sorted(pon_groups.keys(), key=lambda item: (item[0], item[1]))
         logger.warning(
-            "Status polling OLT %s: paced PON batches (active_onus=%s, pons=%s, chunk_size=%s).",
+            "Status polling OLT %s: paced PON batches (active_onus=%s, pons=%s, chunk_size=%s, timeout=%.2fs).",
             olt.id,
             len(onus),
             len(ordered_pon_keys),
             chunk_size,
+            snmp_timeout_seconds,
         )
 
         budget_exhausted = False
@@ -223,7 +304,16 @@ class Command(BaseCommand):
                         olt.id,
                     )
                     break
-                response = self._fetch_status_chunk_resilient(olt, chunk, call_budget=call_budget)
+                response = self._fetch_status_chunk_resilient(
+                    olt,
+                    chunk,
+                    call_budget=call_budget,
+                    chunk_retry_attempts=chunk_retry_attempts,
+                    single_oid_retry_attempts=single_oid_retry_attempts,
+                    timeout_seconds=snmp_timeout_seconds,
+                    retries=snmp_retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
+                )
                 if not response:
                     failed_chunks += 1
                     continue
@@ -236,10 +326,10 @@ class Command(BaseCommand):
             if budget_exhausted:
                 break
             if (
-                self.pause_between_pon_batches_seconds > 0
+                pause_between_pon_batches_seconds > 0
                 and pon_index < len(ordered_pon_keys) - 1
             ):
-                time.sleep(self.pause_between_pon_batches_seconds)
+                time.sleep(pause_between_pon_batches_seconds)
 
         now = timezone.now()
         ttl = getattr(settings, "STATUS_CACHE_TTL", 180)

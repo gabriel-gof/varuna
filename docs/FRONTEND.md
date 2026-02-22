@@ -33,7 +33,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Topology search suggestions are deduplicated by serial (when present) so the same ONU is shown once even if backend topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
 - Client search applies at PON level: topology renders only PONs containing matching ONU(s), and when a suggestion is selected the tree is pinned to that exact OLT/slot/PON path.
 - Alarm filtering is bypassed while a search term is active, ensuring the searched client PON remains visible even if it fails current alarm thresholds.
-- Desktop table ONU highlight uses explicit per-side inset strokes so all four border edges keep equal thickness.
+- Desktop table ONU highlight uses a single inset stroke (`inset 0 0 0 2px`) so all four border edges render with uniform thickness.
 - Alarm mode state propagation from topology to app shell uses a stable callback and no-op equality guard to avoid render loops (`Maximum update depth exceeded`) during topology view startup.
 
 ## Freshness and Coherence Rules
@@ -59,6 +59,10 @@ The UI remains topology-first. No dashboard page is required for current product
   - `power_interval_seconds`
 - Frontend runs due discovery/polling/power actions based on configured OLT intervals to keep data current while UI is open.
 - Interval-driven maintenance requests are queued in backend background mode (`{ background: true }`) so status/discovery/power scheduling stays non-blocking and avoids long-lived frontend request locks.
+- Automatic maintenance now keeps per-OLT pending locks in memory (polling/discovery/power) and does not re-submit a due action until:
+  - backend timestamp advances (`last_poll_at`, `last_discovery_at`, `last_power_at`) or
+  - a safety timeout expires.
+- Auto-maintenance priority per OLT is `polling -> power -> discovery`; at most one automatic maintenance request is submitted per OLT per cycle.
 - Due power collection is OLT-scoped (not per selected PON) and uses backend `last_power_at` plus each OLT `power_interval_seconds`.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
 - PON sidebar refresh is tab-aware and collection-first:
@@ -66,12 +70,15 @@ The UI remains topology-first. No dashboard page is required for current product
   - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`).
   - After collection, both paths reload topology (`GET /api/olts/?include_topology=true`) to keep tree + panel in sync.
 - Status table disconnection column is interval-aware:
-  - displays a compact time window (`date hh:mm-hh:mm`) only when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
+  - displays a compact time window (`dd/mm/yyyy hh:mm-hh:mm`, locale-aware) only when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.
+- Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
+- `Best/Worst OLT RX` sort options are shown only when the selected OLT supports OLT RX (`supports_olt_rx_power=true`).
 - In Power tab, rows without power readings show only a hyphen (`—`); for offline statuses the hyphen is red in both `Potência` and `Leitura`, and for online rows it keeps the default neutral style.
+- For vendors without OLT RX support, Power tab renders only ONU RX values (no OLT RX line in desktop/mobile rows).
 - During topology reload, if an ONU temporarily arrives without power fields while `last_power_at` has not advanced, the UI keeps the last in-memory ONU power snapshot to avoid false `—` flicker from cache gaps.
 - In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
 - Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
@@ -92,7 +99,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Delete button is integrated inside the card header (visible when expanded), not floated outside the card boundary.
 - Thresholds tab configures power color-coding:
   - **ONU RX Power**: Normal (dBm) and Critical (dBm) breakpoints.
-  - **OLT RX Power**: Normal (dBm) and Critical (dBm) breakpoints.
+  - **OLT RX Power**: Normal (dBm) and Critical (dBm) breakpoints (shown only when selected vendor profile supports OLT RX).
   - Color mapping: `green` (>= normal), `yellow` (between normal and critical), `red` (< critical).
   - Default thresholds: Normal = -25 dBm, Critical = -28 dBm.
   - Stored in `localStorage` with global defaults and per-OLT overrides.
@@ -110,7 +117,8 @@ The UI remains topology-first. No dashboard page is required for current product
 - Error and success messages render in normal document flow between the tab content area and the action bar, with a translucent backdrop blur. They do not overlay tab content (e.g. threshold inputs). Auto-dismiss after 5 seconds.
 - Manual interval action buttons (`Run` for discovery/polling/power) are non-blocking:
   - Request payload includes `{ background: true }`.
-  - UI shows immediate inline success acknowledgment (`queued` / `already running`) and does not wait for command completion.
+  - UI shows immediate inline acknowledgment and does not wait for command completion.
+  - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend displays that exact backend message.
   - Run buttons do not show per-button loading animation for these long-running operations.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 

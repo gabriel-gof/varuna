@@ -31,6 +31,8 @@ class TopologyService:
             .select_related('slot_ref', 'pon_ref')
             .order_by('slot_id', 'pon_id', 'onu_id')
         )
+        power_cfg = ((olt.vendor_profile.oid_templates or {}).get('power', {}))
+        supports_olt_rx_power = bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
 
         onu_ids = [onu.id for onu in onus]
         status_cache = cache_service.get_many_onu_status(olt.id, onu_ids)
@@ -112,6 +114,7 @@ class TopologyService:
                 cached_status=status_cache.get(onu.id),
                 cached_power=power_cache.get(onu.id),
                 active_log=active_logs.get(onu.id),
+                supports_olt_rx_power=supports_olt_rx_power,
             )
             slots[slot_key]['pons'][pon_key]['onus'].append(onu_data)
 
@@ -143,6 +146,7 @@ class TopologyService:
                 'last_snmp_check_at': olt.last_snmp_check_at.isoformat() if olt.last_snmp_check_at else None,
                 'last_discovery': olt.last_discovery_at.isoformat() if olt.last_discovery_at else None,
                 'last_poll': olt.last_poll_at.isoformat() if olt.last_poll_at else None,
+                'supports_olt_rx_power': supports_olt_rx_power,
             },
             'slots': slots,
             'generated_at': timezone.localtime(timezone.now()).isoformat(),
@@ -154,6 +158,7 @@ class TopologyService:
         cached_status: Dict[str, Any] | None,
         cached_power: Dict[str, Any] | None,
         active_log: ONULog | None,
+        supports_olt_rx_power: bool,
     ) -> Dict[str, Any]:
         """
         Constrói dados da ONU para resposta
@@ -177,6 +182,10 @@ class TopologyService:
         if not disconnect_window_end and active_log and active_log.disconnect_window_end:
             disconnect_window_end = active_log.disconnect_window_end.isoformat()
 
+        onu_rx_power = power_payload.get('onu_rx_power')
+        olt_rx_power = power_payload.get('olt_rx_power') if supports_olt_rx_power else None
+        power_read_at = power_payload.get('power_read_at') if (onu_rx_power is not None or olt_rx_power is not None) else None
+
         return {
             'id': onu.id,
             'onu_id': onu.onu_id,
@@ -187,9 +196,9 @@ class TopologyService:
             'offline_since': offline_since or '',
             'disconnect_window_start': disconnect_window_start or '',
             'disconnect_window_end': disconnect_window_end or '',
-            'onu_rx_power': power_payload.get('onu_rx_power'),
-            'olt_rx_power': power_payload.get('olt_rx_power'),
-            'power_read_at': power_payload.get('power_read_at'),
+            'onu_rx_power': onu_rx_power,
+            'olt_rx_power': olt_rx_power,
+            'power_read_at': power_read_at,
         }
 
     def _compute_status(self, online: int, offline: int) -> str:

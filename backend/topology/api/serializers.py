@@ -11,6 +11,7 @@ class VendorProfileSerializer(serializers.ModelSerializer):
     """
     Serializer for VendorProfile
     """
+    supports_olt_rx_power = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorProfile
@@ -23,8 +24,13 @@ class VendorProfileSerializer(serializers.ModelSerializer):
             'supports_onu_status',
             'supports_power_monitoring',
             'supports_disconnect_reason',
+            'supports_olt_rx_power',
         ]
         read_only_fields = ['id']
+
+    def get_supports_olt_rx_power(self, obj):
+        power_cfg = ((obj.oid_templates or {}).get('power', {}))
+        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
 
 
 # ============================================
@@ -125,14 +131,25 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         cache[obj.id] = power
         return power
 
+    def _supports_olt_rx_power(self, obj):
+        power_cfg = ((obj.olt.vendor_profile.oid_templates or {}).get('power', {}))
+        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+
     def get_onu_rx_power(self, obj):
         return self._get_power(obj).get('onu_rx_power')
 
     def get_olt_rx_power(self, obj):
+        if not self._supports_olt_rx_power(obj):
+            return None
         return self._get_power(obj).get('olt_rx_power')
 
     def get_power_read_at(self, obj):
-        return self._get_power(obj).get('power_read_at')
+        power = self._get_power(obj)
+        onu_rx = power.get('onu_rx_power')
+        olt_rx = power.get('olt_rx_power') if self._supports_olt_rx_power(obj) else None
+        if onu_rx is None and olt_rx is None:
+            return None
+        return power.get('power_read_at')
 
 
 class PONNestedSerializer(serializers.ModelSerializer):
@@ -232,6 +249,7 @@ class OLTTopologySerializer(serializers.ModelSerializer):
     onu_count = serializers.SerializerMethodField()
     online_count = serializers.SerializerMethodField()
     offline_count = serializers.SerializerMethodField()
+    supports_olt_rx_power = serializers.SerializerMethodField()
 
     class Meta:
         model = OLT
@@ -261,6 +279,7 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'onu_count',
             'online_count',
             'offline_count',
+            'supports_olt_rx_power',
             'is_active',
         ]
         read_only_fields = [
@@ -297,6 +316,10 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             return int(obj.offline_count)
         return ONU.objects.filter(olt=obj, is_active=True).exclude(status=ONU.STATUS_ONLINE).count()
 
+    def get_supports_olt_rx_power(self, obj):
+        power_cfg = ((obj.vendor_profile.oid_templates or {}).get('power', {}))
+        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+
 
 # ============================================
 # Standard Serializers
@@ -323,6 +346,7 @@ class OLTSerializer(serializers.ModelSerializer):
     onu_count = serializers.SerializerMethodField()
     online_count = serializers.SerializerMethodField()
     offline_count = serializers.SerializerMethodField()
+    supports_olt_rx_power = serializers.SerializerMethodField()
 
     class Meta:
         model = OLT
@@ -362,6 +386,7 @@ class OLTSerializer(serializers.ModelSerializer):
             'onu_count',
             'online_count',
             'offline_count',
+            'supports_olt_rx_power',
         ]
         read_only_fields = [
             'id',
@@ -404,6 +429,10 @@ class OLTSerializer(serializers.ModelSerializer):
         if hasattr(obj, 'offline_count'):
             return int(obj.offline_count)
         return ONU.objects.filter(olt=obj, is_active=True).exclude(status=ONU.STATUS_ONLINE).count()
+
+    def get_supports_olt_rx_power(self, obj):
+        power_cfg = ((obj.vendor_profile.oid_templates or {}).get('power', {}))
+        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
 
     def validate_name(self, value):
         name = str(value or '').strip()

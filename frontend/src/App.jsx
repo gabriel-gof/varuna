@@ -165,13 +165,13 @@ const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
 
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const BACKGROUND_ACTION_TIMEOUT_MS = 20_000
+const MAINTENANCE_PENDING_WINDOW_MS = {
+  polling: 15 * 60 * 1000,
+  power: 45 * 60 * 1000,
+  discovery: 30 * 60 * 1000
+}
 const SEARCH_ROW_HIGHLIGHT_STYLE = {
-  boxShadow: [
-    'inset 2px 0 0 rgba(16, 185, 129, 0.65)',
-    'inset -2px 0 0 rgba(16, 185, 129, 0.65)',
-    'inset 0 2px 0 rgba(16, 185, 129, 0.65)',
-    'inset 0 -2px 0 rgba(16, 185, 129, 0.65)'
-  ].join(', ')
+  boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)'
 }
 
 const toIntOrNull = (value) => {
@@ -251,7 +251,8 @@ const formatDisconnectionWindow = (startValue, endValue, language) => {
 
   const dateFormatter = new Intl.DateTimeFormat(locale, {
     day: '2-digit',
-    month: '2-digit'
+    month: '2-digit',
+    year: 'numeric'
   })
   const timeFormatter = new Intl.DateTimeFormat(locale, {
     hour: '2-digit',
@@ -321,6 +322,9 @@ const mapTopologyToSlots = (olt, topology) => {
 
   return {
     ...olt,
+    supports_olt_rx_power: typeof topology?.olt?.supports_olt_rx_power === 'boolean'
+      ? topology.olt.supports_olt_rx_power
+      : olt?.supports_olt_rx_power,
     slots,
     slot_count: slots.length
   }
@@ -473,9 +477,9 @@ const App = () => {
   const oltsRef = useRef([])
   const selectedPonMissingCyclesRef = useRef(0)
   const maintenanceLocksRef = useRef({
-    polling: new Set(),
-    discovery: new Set(),
-    power: new Set()
+    polling: new Map(),
+    discovery: new Map(),
+    power: new Map()
   })
   const selectedPonDataRef = useRef(null)
   const wasAlarmEnabledRef = useRef(false)
@@ -653,63 +657,112 @@ const App = () => {
     const discoveryLocks = maintenanceLocksRef.current.discovery
     const powerLocks = maintenanceLocksRef.current.power
 
+    const isPending = (lockMap, oltId, latestMetricMs) => {
+      const pending = lockMap.get(oltId)
+      if (!pending) return false
+
+      const completed = Number.isFinite(latestMetricMs) && (
+        (Number.isFinite(pending.lastMetricMs) && latestMetricMs > pending.lastMetricMs) ||
+        (!Number.isFinite(pending.lastMetricMs) && latestMetricMs >= pending.startedAt - 1000)
+      )
+      const expired = nowMs >= pending.expiresAt
+      if (completed || expired) {
+        lockMap.delete(oltId)
+        return false
+      }
+      return true
+    }
+
+    const queueBackgroundMaintenance = ({
+      lockMap,
+      oltId,
+      endpoint,
+      lastMetricMs,
+      pendingWindowMs
+    }) => {
+      lockMap.set(oltId, {
+        startedAt: nowMs,
+        lastMetricMs,
+        expiresAt: nowMs + pendingWindowMs
+      })
+
+      requests.push(
+        api.post(
+          endpoint,
+          { background: true },
+          { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
+        )
+          .then((response) => {
+            const queuedStatus = String(response?.data?.status || '').toLowerCase()
+            if (!['accepted', 'already_running', 'completed'].includes(queuedStatus)) {
+              lockMap.delete(oltId)
+            }
+          })
+          .catch(() => {
+            lockMap.delete(oltId)
+          })
+      )
+    }
+
     oltList.forEach((olt) => {
       const oltId = olt?.id
       if (!oltId) return
 
-      if (olt.polling_enabled !== false) {
-        const pollIntervalMs = toPositiveInt(olt.polling_interval_seconds, 300) * 1000
-        const lastPollMs = parseTimestampMs(olt.last_poll_at)
-        const pollDue = !lastPollMs || nowMs - lastPollMs >= pollIntervalMs
-        if (pollDue && !pollLocks.has(oltId)) {
-          pollLocks.add(oltId)
-          requests.push(
-            api.post(
-              `/olts/${oltId}/run_polling/`,
-              { background: true },
-              { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
-            )
-              .catch(() => null)
-              .finally(() => pollLocks.delete(oltId))
-          )
-        }
+      const lastPollMs = parseTimestampMs(olt.last_poll_at)
+      const lastDiscoveryMs = parseTimestampMs(olt.last_discovery_at)
+      const lastPowerMs = parseTimestampMs(olt.last_power_at)
+
+      if (
+        isPending(pollLocks, oltId, lastPollMs) ||
+        isPending(discoveryLocks, oltId, lastDiscoveryMs) ||
+        isPending(powerLocks, oltId, lastPowerMs)
+      ) {
+        return
       }
 
-      if (olt.discovery_enabled !== false) {
-        const discoveryIntervalMs = toPositiveInt(olt.discovery_interval_minutes, 240) * 60 * 1000
-        const lastDiscoveryMs = parseTimestampMs(olt.last_discovery_at)
-        const discoveryDue = !lastDiscoveryMs || nowMs - lastDiscoveryMs >= discoveryIntervalMs
-        if (discoveryDue && !discoveryLocks.has(oltId)) {
-          discoveryLocks.add(oltId)
-          requests.push(
-            api.post(
-              `/olts/${oltId}/run_discovery/`,
-              { background: true },
-              { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
-            )
-              .catch(() => null)
-              .finally(() => discoveryLocks.delete(oltId))
-          )
+      if (olt.polling_enabled !== false) {
+        const pollIntervalMs = toPositiveInt(olt.polling_interval_seconds, 300) * 1000
+        const pollDue = !lastPollMs || nowMs - lastPollMs >= pollIntervalMs
+        if (pollDue) {
+          queueBackgroundMaintenance({
+            lockMap: pollLocks,
+            oltId,
+            endpoint: `/olts/${oltId}/run_polling/`,
+            lastMetricMs: lastPollMs,
+            pendingWindowMs: MAINTENANCE_PENDING_WINDOW_MS.polling
+          })
+          return
         }
       }
 
       const onuCount = Number(olt?.onu_count ?? 0)
       if (onuCount > 0) {
         const powerIntervalMs = toPositiveInt(olt.power_interval_seconds, 300) * 1000
-        const lastPowerMs = parseTimestampMs(olt.last_power_at)
         const powerDue = !lastPowerMs || nowMs - lastPowerMs >= powerIntervalMs
 
-        if (powerDue && !powerLocks.has(oltId)) {
-          powerLocks.add(oltId)
-          requests.push(
-            api.post(
-              `/olts/${oltId}/refresh_power/`,
-              { background: true },
-              { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
-            )
-              .catch(() => null)
-              .finally(() => powerLocks.delete(oltId))
-          )
+        if (powerDue) {
+          queueBackgroundMaintenance({
+            lockMap: powerLocks,
+            oltId,
+            endpoint: `/olts/${oltId}/refresh_power/`,
+            lastMetricMs: lastPowerMs,
+            pendingWindowMs: MAINTENANCE_PENDING_WINDOW_MS.power
+          })
+          return
+        }
+      }
+
+      if (olt.discovery_enabled !== false) {
+        const discoveryIntervalMs = toPositiveInt(olt.discovery_interval_minutes, 240) * 60 * 1000
+        const discoveryDue = !lastDiscoveryMs || nowMs - lastDiscoveryMs >= discoveryIntervalMs
+        if (discoveryDue) {
+          queueBackgroundMaintenance({
+            lockMap: discoveryLocks,
+            oltId,
+            endpoint: `/olts/${oltId}/run_discovery/`,
+            lastMetricMs: lastDiscoveryMs,
+            pendingWindowMs: MAINTENANCE_PENDING_WINDOW_MS.discovery
+          })
         }
       }
     })
@@ -772,10 +825,11 @@ const App = () => {
     try {
       const response = await api.post(endpoint, { background: true })
       const queuedStatus = response?.data?.status
+      const queuedDetail = response?.data?.detail
       if (queuedStatus === 'already_running') {
-        setSettingsActionMessage(alreadyRunningMessage || acceptedMessage)
+        setSettingsActionMessage(queuedDetail || alreadyRunningMessage || acceptedMessage)
       } else {
-        setSettingsActionMessage(acceptedMessage)
+        setSettingsActionMessage(queuedDetail || acceptedMessage)
       }
       setTimeout(() => setSettingsActionMessage(''), 4000)
       return response?.data || null
@@ -1062,6 +1116,12 @@ const App = () => {
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
 
+  const supportsSelectedOltRxPower = useMemo(() => {
+    const explicit = selectedPonData?.olt?.supports_olt_rx_power
+    if (typeof explicit === 'boolean') return explicit
+    return true
+  }, [selectedPonData])
+
   const availableStatusCounts = useMemo(() => {
     return selectedOnus.reduce((acc, onu) => {
       const statusKey = classifyOnu(onu).status
@@ -1105,13 +1165,18 @@ const App = () => {
     { id: 'online', label: t('Online') }
   ]
 
-  const powerSortOptions = [
-    { id: 'default', label: t('Default order') },
-    { id: 'worst_onu_rx', label: t('Worst ONU RX') },
-    { id: 'worst_olt_rx', label: t('Worst OLT RX') },
-    { id: 'best_onu_rx', label: t('Best ONU RX') },
-    { id: 'best_olt_rx', label: t('Best OLT RX') }
-  ]
+  const powerSortOptions = useMemo(() => {
+    const options = [
+      { id: 'default', label: t('Default order') },
+      { id: 'worst_onu_rx', label: t('Worst ONU RX') },
+      { id: 'best_onu_rx', label: t('Best ONU RX') }
+    ]
+    if (supportsSelectedOltRxPower) {
+      options.splice(2, 0, { id: 'worst_olt_rx', label: t('Worst OLT RX') })
+      options.push({ id: 'best_olt_rx', label: t('Best OLT RX') })
+    }
+    return options
+  }, [supportsSelectedOltRxPower, t])
 
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
@@ -1124,6 +1189,11 @@ const App = () => {
     }
     setStatusSortMode(resolveStatusSortMode(mode))
   }
+
+  useEffect(() => {
+    if (powerSortOptions.some((option) => option.id === powerSortMode)) return
+    setPowerSortMode('default')
+  }, [powerSortMode, powerSortOptions])
 
   useEffect(() => {
     const wasEnabled = wasAlarmEnabledRef.current
@@ -1210,7 +1280,9 @@ const App = () => {
     }
 
     const sortBy = (primaryKey, direction) => {
-      const secondaryKey = primaryKey === 'oltRx' ? 'onuRx' : 'oltRx'
+      const secondaryKey = supportsSelectedOltRxPower
+        ? (primaryKey === 'oltRx' ? 'onuRx' : 'oltRx')
+        : 'onuRx'
       return [...baseRows].sort((a, b) => {
         const primaryDelta = compareNullable(a[primaryKey], b[primaryKey], direction)
         if (primaryDelta !== 0) return primaryDelta
@@ -1223,12 +1295,16 @@ const App = () => {
     }
 
     if (powerSortMode === 'default') return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
-    if (powerSortMode === 'worst_olt_rx') return sortBy('oltRx', 'asc')
+    if (powerSortMode === 'worst_olt_rx') {
+      return supportsSelectedOltRxPower ? sortBy('oltRx', 'asc') : sortBy('onuRx', 'asc')
+    }
     if (powerSortMode === 'worst_onu_rx') return sortBy('onuRx', 'asc')
-    if (powerSortMode === 'best_olt_rx') return sortBy('oltRx', 'desc')
+    if (powerSortMode === 'best_olt_rx') {
+      return supportsSelectedOltRxPower ? sortBy('oltRx', 'desc') : sortBy('onuRx', 'desc')
+    }
     if (powerSortMode === 'best_onu_rx') return sortBy('onuRx', 'desc')
     return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
-  }, [selectedOnus, powerSortMode])
+  }, [selectedOnus, powerSortMode, supportsSelectedOltRxPower])
 
   useEffect(() => {
     if (!selectedSearchMatch) return
@@ -1907,6 +1983,7 @@ const App = () => {
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const hasOnuRx = onuRx !== null
                               const hasOltRx = oltRx !== null
+                              const hasAnyPower = hasOnuRx || (supportsSelectedOltRxPower && hasOltRx)
                               const grayPower = 'text-slate-500 dark:text-slate-400'
                               const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
                               const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
@@ -1941,7 +2018,7 @@ const App = () => {
                                     {serialValue}
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
-                                    {!hasOnuRx && !hasOltRx ? (
+                                    {!hasAnyPower ? (
                                       <span className={`inline-block text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
                                     ) : (
                                       <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
@@ -1949,10 +2026,12 @@ const App = () => {
                                           <span className="inline-block w-8 text-left">{t('ONU')}</span>
                                           <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                         </span>
-                                        <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
-                                          <span className="inline-block w-8 text-left">{t('OLT')}</span>
-                                          <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
-                                        </span>
+                                        {supportsSelectedOltRxPower && (
+                                          <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                                            <span className="inline-block w-8 text-left">{t('OLT')}</span>
+                                            <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                          </span>
+                                        )}
                                       </div>
                                     )}
                                   </td>
@@ -1982,6 +2061,7 @@ const App = () => {
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                           const hasOnuRx = onuRx !== null
                           const hasOltRx = oltRx !== null
+                          const hasAnyPower = hasOnuRx || (supportsSelectedOltRxPower && hasOltRx)
                           const grayPower = 'text-slate-500 dark:text-slate-400'
                           const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
                           const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
@@ -2007,16 +2087,18 @@ const App = () => {
                                 <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
-                                {(hasOnuRx || hasOltRx) ? (
+                                {hasAnyPower ? (
                                   <>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
                                       <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
                                     </span>
-                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
-                                      <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                      <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
-                                    </span>
+                                    {supportsSelectedOltRxPower && (
+                                      <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
+                                        <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
+                                        <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                      </span>
+                                    )}
                                     <span className={`text-[10px] font-semibold tabular-nums ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
                                   </>
                                 ) : (

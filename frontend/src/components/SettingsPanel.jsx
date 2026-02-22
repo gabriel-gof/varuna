@@ -446,22 +446,37 @@ export const SettingsPanel = ({
 
   const modelOptions = useMemo(() => modelOptionsForVendor(form.vendor), [modelOptionsForVendor, form.vendor])
   const editModelOptions = useMemo(() => modelOptionsForVendor(editForm?.vendor), [modelOptionsForVendor, editForm?.vendor])
+  const vendorProfileById = useMemo(
+    () => new Map((vendorProfiles || []).map((profile) => [String(profile.id), profile])),
+    [vendorProfiles],
+  )
 
   // Selected OLT object (for dirty detection)
   const selectedOlt = useMemo(() => {
     if (!selectedOltId) return null
     return olts.find((item) => String(item.id) === String(selectedOltId)) || null
   }, [olts, selectedOltId])
+  const createSelectedProfile = vendorProfileById.get(String(form.vendor_profile || ''))
+  const editSelectedProfile = vendorProfileById.get(String(editForm?.vendor_profile || ''))
+  const createSupportsOltRxPower = typeof createSelectedProfile?.supports_olt_rx_power === 'boolean'
+    ? createSelectedProfile.supports_olt_rx_power
+    : true
+  const editSupportsOltRxPower = typeof editSelectedProfile?.supports_olt_rx_power === 'boolean'
+    ? editSelectedProfile.supports_olt_rx_power
+    : (typeof selectedOlt?.supports_olt_rx_power === 'boolean' ? selectedOlt.supports_olt_rx_power : true)
+  const thresholdKeys = editSupportsOltRxPower
+    ? ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad']
+    : ['onu_rx_good', 'onu_rx_bad']
 
   // Dirty detection — Save only matters when something changed
   const formDirty = useMemo(() => isFormDirty(editForm, selectedOlt, vendorProfiles), [editForm, selectedOlt, vendorProfiles])
 
   const thresholdDirty = useMemo(() => {
     if (!thresholdForm || !originalThresholds) return false
-    return ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad'].some(
+    return thresholdKeys.some(
       (k) => thresholdForm[k] !== originalThresholds[k]
     )
-  }, [thresholdForm, originalThresholds])
+  }, [thresholdForm, originalThresholds, thresholdKeys])
 
   const dirty = formDirty || thresholdDirty
 
@@ -630,7 +645,7 @@ export const SettingsPanel = ({
     await onUpdateOlt?.(selectedOltId, payload)
     // Persist thresholds to localStorage
     if (thresholdForm && selectedOltId) {
-      const allValid = ['onu_rx_good', 'onu_rx_bad', 'olt_rx_good', 'olt_rx_bad'].every(
+      const allValid = thresholdKeys.every(
         (k) => typeof thresholdForm[k] === 'number' && Number.isFinite(thresholdForm[k])
       )
       if (allValid) {
@@ -904,10 +919,10 @@ export const SettingsPanel = ({
                     {/* TAB: Thresholds (Create) */}
                     {createCardTab === 'thresholds' && (
                         <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
-                             {/* Two columns: ONU RX | OLT RX */}
-                             <div className="grid grid-cols-2 gap-4 relative">
-                                {/* Vertical Divider */}
-                                <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
+                             <div className={`grid gap-4 relative ${createSupportsOltRxPower ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                                {createSupportsOltRxPower && (
+                                  <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
+                                )}
                                 
                                 <ThresholdControl 
                                     label="ONU RX"
@@ -917,14 +932,16 @@ export const SettingsPanel = ({
                                     onChange={(key, val) => setCreateThresholdField(key, val)}
                                     t={t}
                                 />
-                                <ThresholdControl 
-                                    label="OLT RX"
-                                    goodKey="olt_rx_good"
-                                    badKey="olt_rx_bad"
-                                    values={createThresholdForm}
-                                    onChange={(key, val) => setCreateThresholdField(key, val)}
-                                    t={t}
-                                />
+                                {createSupportsOltRxPower && (
+                                  <ThresholdControl 
+                                      label="OLT RX"
+                                      goodKey="olt_rx_good"
+                                      badKey="olt_rx_bad"
+                                      values={createThresholdForm}
+                                      onChange={(key, val) => setCreateThresholdField(key, val)}
+                                      t={t}
+                                  />
+                                )}
                              </div>
                         </div>
                     )}
@@ -1181,10 +1198,10 @@ export const SettingsPanel = ({
                     {/* ── TAB: Thresholds ── */}
                     {editCardTab === 'thresholds' && thresholdForm && (
                       <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
-                         {/* Two columns: ONU RX | OLT RX */}
-                         <div className="grid grid-cols-2 gap-4 relative">
-                            {/* Vertical Divider */}
-                            <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
+                         <div className={`grid gap-4 relative ${editSupportsOltRxPower ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                            {editSupportsOltRxPower && (
+                              <div className="absolute left-1/2 top-4 bottom-0 w-px bg-slate-100 dark:bg-slate-800/50 -translate-x-1/2"></div>
+                            )}
                             
                             <ThresholdControl 
                                 label="ONU RX"
@@ -1194,14 +1211,16 @@ export const SettingsPanel = ({
                                 onChange={setThresholdField}
                                 t={t}
                             />
-                            <ThresholdControl 
-                                label="OLT RX"
-                                goodKey="olt_rx_good"
-                                badKey="olt_rx_bad"
-                                values={thresholdForm}
-                                onChange={setThresholdField}
-                                t={t}
-                            />
+                            {editSupportsOltRxPower && (
+                              <ThresholdControl 
+                                  label="OLT RX"
+                                  goodKey="olt_rx_good"
+                                  badKey="olt_rx_bad"
+                                  values={thresholdForm}
+                                  onChange={setThresholdField}
+                                  t={t}
+                              />
+                            )}
                          </div>
 
                         {/* Reset & Instructions (optional, keeps it clean) */}
