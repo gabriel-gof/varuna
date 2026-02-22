@@ -61,6 +61,8 @@ Updated from:
 - discovery command,
 - polling command.
 
+`snmp_check` is maintenance-aware: if a background job (discovery/polling/power) is in-flight for the OLT when the SNMP check times out, the check returns `reachable: true, busy: true` instead of marking the OLT unreachable. This prevents false gray-state on slower OLTs (e.g. VSOL-like) whose SNMP agent cannot serve concurrent requests during heavy power collection.
+
 ## Settings API Guardrails
 The OLT configuration API now enforces strict runtime-safe validation:
 - `protocol` must be `snmp`.

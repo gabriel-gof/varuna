@@ -623,6 +623,7 @@ class OLTViewSet(viewsets.ModelViewSet):
             )
 
         sys_descr_oid = '1.3.6.1.2.1.1.1.0'
+        has_running_job = bool(_background_jobs_by_olt.get(olt.id))
         try:
             result = snmp_service.get(olt, [sys_descr_oid])
             if result and sys_descr_oid in result:
@@ -635,9 +636,26 @@ class OLTViewSet(viewsets.ModelViewSet):
                         'failure_count': olt.snmp_failure_count,
                     }
                 )
+            if has_running_job:
+                return Response({
+                    'reachable': True,
+                    'sys_descr': None,
+                    'olt_id': olt.id,
+                    'failure_count': olt.snmp_failure_count,
+                    'busy': True,
+                })
             mark_olt_unreachable(olt, error='No sysDescr response')
             return Response({'reachable': False, 'sys_descr': None, 'olt_id': olt.id, 'failure_count': olt.snmp_failure_count})
         except Exception as exc:
+            if has_running_job:
+                logger.info("SNMP check for OLT %s timed out during active %s; treating as busy.", olt.name, _background_jobs_by_olt.get(olt.id))
+                return Response({
+                    'reachable': True,
+                    'sys_descr': None,
+                    'olt_id': olt.id,
+                    'failure_count': olt.snmp_failure_count,
+                    'busy': True,
+                })
             logger.warning("SNMP check failed for OLT %s: %s", olt.name, exc)
             mark_olt_unreachable(olt, error=str(exc))
             return Response(

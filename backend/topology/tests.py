@@ -1263,6 +1263,34 @@ class SettingsApiContractTests(TestCase):
         self.assertFalse(response.data['reachable'])
         self.assertIn('SNMP v3', response.data['detail'])
 
+    @patch('topology.api.views.snmp_service.get', return_value=None)
+    def test_snmp_check_returns_busy_when_maintenance_running(self, mock_get):
+        """SNMP check should not mark OLT unreachable if a background job is in-flight."""
+        olt = self._create_olt(name='OLT-BUSY')
+        from topology.api.views import _background_jobs_by_olt
+        _background_jobs_by_olt[olt.id] = 'power'
+        try:
+            response = self.client.post(f'/api/olts/{olt.id}/snmp_check/')
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertTrue(response.data['reachable'])
+            self.assertTrue(response.data.get('busy'))
+            olt.refresh_from_db()
+            # Should NOT be marked unreachable — snmp_reachable stays as-is (None or True)
+            self.assertNotEqual(olt.snmp_reachable, False)
+        finally:
+            _background_jobs_by_olt.pop(olt.id, None)
+
+    @patch('topology.api.views.snmp_service.get', return_value=None)
+    def test_snmp_check_marks_unreachable_when_no_maintenance(self, mock_get):
+        """SNMP check should mark OLT unreachable when no background job is running."""
+        olt = self._create_olt(name='OLT-DOWN')
+        response = self.client.post(f'/api/olts/{olt.id}/snmp_check/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data['reachable'])
+        self.assertFalse(response.data.get('busy', False))
+        olt.refresh_from_db()
+        self.assertFalse(olt.snmp_reachable)
+
 
 class DiscoveryPartialWalkGuardTests(TestCase):
     def setUp(self):
