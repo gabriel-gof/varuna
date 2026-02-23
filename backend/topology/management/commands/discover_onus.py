@@ -119,6 +119,11 @@ class Command(BaseCommand):
         parser.add_argument("--olt-id", type=int, help="Run discovery for a specific OLT id")
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore discovery_enabled for the selected OLT(s)")
+        parser.add_argument(
+            "--max-olts",
+            type=int,
+            help="Process at most this many eligible OLTs in one command run",
+        )
 
     def _is_due(self, olt: OLT, now) -> bool:
         if olt.next_discovery_at:
@@ -127,6 +132,15 @@ class Command(BaseCommand):
             interval_minutes = max(int(olt.discovery_interval_minutes or 0), 1)
             return (olt.last_discovery_at + timedelta(minutes=interval_minutes)) <= now
         return True
+
+    def _due_at(self, olt: OLT, now):
+        if olt.next_discovery_at:
+            return olt.next_discovery_at
+        if olt.last_discovery_at:
+            interval_minutes = max(int(olt.discovery_interval_minutes or 0), 1)
+            return olt.last_discovery_at + timedelta(minutes=interval_minutes)
+        # Never-discovered OLTs should be considered oldest-due.
+        return now - timedelta(days=36500)
 
     def handle(self, *args, **options):
         force = bool(options.get("force", False))
@@ -146,12 +160,12 @@ class Command(BaseCommand):
         if olt_id:
             olt_qs = olt_qs.filter(id=olt_id)
 
-        if not olt_qs.exists():
+        now = timezone.now()
+        olts = list(olt_qs)
+        if not olts:
             self.stdout.write("No OLTs eligible for discovery.")
             return
 
-        now = timezone.now()
-        olts = list(olt_qs)
         if not force and not olt_id:
             due_olts = [
                 olt for olt in olts
@@ -164,6 +178,14 @@ class Command(BaseCommand):
         if not due_olts:
             self.stdout.write("No OLTs due for discovery.")
             return
+
+        due_olts.sort(key=lambda candidate: self._due_at(candidate, now))
+        max_olts = options.get("max_olts")
+        if max_olts is not None and int(max_olts) > 0 and len(due_olts) > int(max_olts):
+            self.stdout.write(
+                f"Capping discovery run to {int(max_olts)} OLTs out of {len(due_olts)} due."
+            )
+            due_olts = due_olts[: int(max_olts)]
 
         for olt in due_olts:
             self._discover_for_olt(olt, dry_run=options.get("dry_run", False))

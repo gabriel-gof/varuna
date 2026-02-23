@@ -145,6 +145,12 @@ backend/venv/bin/python backend/manage.py discover_onus --olt-id <ID>
 backend/venv/bin/python backend/manage.py poll_onu_status --olt-id <ID>
 ```
 
+Run due OLTs in capped batches (oldest due first):
+```bash
+backend/venv/bin/python backend/manage.py discover_onus --max-olts 10
+backend/venv/bin/python backend/manage.py poll_onu_status --max-olts 20
+```
+
 Force run (bypass due checks):
 ```bash
 backend/venv/bin/python backend/manage.py discover_onus --force
@@ -161,6 +167,14 @@ docker compose -f docker-compose.dev.yml exec backend python manage.py run_sched
 
 # With custom intervals:
 docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler --tick-seconds 60 --snmp-check-seconds 300
+
+# With SNMP backoff cap and per-tick OLT batch limits:
+docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler \
+  --snmp-check-seconds 180 \
+  --snmp-check-max-backoff-seconds 1800 \
+  --max-poll-olts-per-tick 20 \
+  --max-discovery-olts-per-tick 10 \
+  --max-power-olts-per-tick 10
 ```
 
 Monitor scheduler logs:
@@ -178,6 +192,11 @@ docker compose -f docker-compose.dev.yml exec backend python manage.py poll_onu_
 ```
 
 The polling command enforces a `max_runtime_seconds` budget (default 180s) to prevent long-running jobs from blocking subsequent cycles. Configure via `SystemSettings.MAX_POLL_RUNTIME_SECONDS` (range 30-1800s).
+
+SNMP check behavior is adaptive:
+- Reachable OLTs are checked on the base `--snmp-check-seconds` cadence.
+- Repeatedly unreachable OLTs are checked less frequently (exponential backoff) up to `--snmp-check-max-backoff-seconds`.
+- Scheduler logs include SNMP summary lines (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed) for tuning verification.
 
 ## Validation
 Backend tests:

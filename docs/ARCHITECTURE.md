@@ -81,6 +81,7 @@ When to split into dedicated `discovery` and `poller` workers:
 ## Unreachable OLT Behavior
 - Backend persists SNMP availability (`snmp_reachable`, `last_snmp_check_at`, `snmp_failure_count`, `last_snmp_error`).
 - The backend scheduler runs SNMP reachability checks **before** dispatching any collection jobs (every 180s by default). This SNMP-first design prevents wasted time and log noise from unreachable OLTs.
+- SNMP reachability checks are due-aware per OLT and use adaptive backoff for repeatedly unreachable OLTs (capped by scheduler config), reducing redundant timeout probes when fleets grow.
 - Polling, discovery, and power collection skip OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
 - Frontend derives OLT health from backend fields (`snmp_reachable`, `snmp_failure_count >= 2`) and renders unreachable OLT nodes as gray.
 - ONU state is preserved during hard SNMP outages to avoid false state corruption.
@@ -95,6 +96,8 @@ When to split into dedicated `discovery` and `poller` workers:
 ## Background Collection Scheduling
 - The `run_scheduler` management command is the primary scheduler. It runs as a long-lived background process alongside the Django server and dispatches polling, discovery, power collection, and SNMP reachability checks on configurable tick intervals.
 - Discovery and polling commands support due-awareness: they skip OLTs that are not yet due based on `next_*_at` timestamps or computed intervals.
+- Discovery and polling commands can be capped per run (`--max-olts`) so large fleets can be processed in controlled batches (oldest due first).
+- Scheduler supports per-tick OLT caps (`max-poll`, `max-discovery`, `max-power`) for load shaping during high-scale deployments.
 - `--force` flag bypasses due checks for manual/emergency runs.
 - Polling command enforces a runtime budget (`max_runtime_seconds`, default 180s) to prevent long-running jobs.
 - Power service pre-fetches cached values, skips cache writes for empty reads, and retains cached snapshots when forced refresh fails.

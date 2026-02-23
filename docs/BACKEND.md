@@ -96,6 +96,8 @@ SNMP walks include a configurable iteration cap (`max_walk_rows`, default `20000
 
 Walk operations use a dedicated timeout (default 30s, `retries=0`) separate from the short GET timeout (2s, `retries=1`). This prevents walk timeouts on slow OLTs (e.g. MAXPRINT) where string-valued OID walks take 3-5s per bulk batch. The walk timeout is configurable per vendor via `discovery.walk_timeout_seconds`.
 
+SNMP transport logs apply per-error throttling (default 30s window per OLT/error signature) to reduce log flood during sustained outages while keeping recurring failures visible.
+
 ## ONU Lifecycle
 `ONU.is_active` is used to keep history without polluting live topology.
 - Seen in discovery: `is_active=True`.
@@ -128,6 +130,7 @@ Default global policy (any OLT/vendor profile):
     - `disconnect_window_end` = current poll timestamp (first observed offline);
   - if previous poll trust is not available (no prior trusted snapshot), the window fields remain empty.
 - Polling command output now includes `failed_chunks` and `missing_preserved` counters for operational visibility.
+- Polling command accepts optional `--max-olts <N>` to cap due OLTs processed in one run (oldest due first).
 
 ## OLT Deletion Contract
 `DELETE /api/olts/{id}/` is a soft-deactivation flow:
@@ -266,12 +269,20 @@ When `disconnect_reason_oid` is configured (Huawei), both status and disconnect 
 
 ## Backend Scheduler
 The `run_scheduler` management command (`backend/topology/management/commands/run_scheduler.py`) is a long-lived process that periodically dispatches:
-- **SNMP reachability checks** (run first): every `--snmp-check-seconds` (default 180s), queries `sysDescr.0` per OLT and calls `mark_olt_reachable`/`mark_olt_unreachable`. Runs before poll/discover/power so that unreachable OLTs are flagged before any data collection attempt.
-- **Polling**: `call_command('poll_onu_status')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
-- **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
-- **Power collection**: checks `next_power_at` per OLT and collects via `power_service` for due OLTs; skips SNMP-unreachable OLTs.
+- **SNMP reachability checks** (run first): every `--snmp-check-seconds` (default 180s), queries `sysDescr.0` per OLT and calls `mark_olt_reachable`/`mark_olt_unreachable`.
+  - checks are due-aware per OLT (`last_snmp_check_at`) with adaptive exponential backoff for unreachable OLTs (`snmp_reachable=False`) capped by `--snmp-check-max-backoff-seconds` (default 1800s);
+  - scheduler emits per-cycle summary (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed time).
+- **Polling**: `call_command('poll_onu_status')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-poll-olts-per-tick`.
+- **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-discovery-olts-per-tick`.
+- **Power collection**: checks `next_power_at` per OLT and collects via `power_service` for due OLTs; skips SNMP-unreachable OLTs; supports scheduler cap `--max-power-olts-per-tick`.
 
-Arguments: `--tick-seconds` (default 30), `--snmp-check-seconds` (default 180).
+Arguments:
+- `--tick-seconds` (default 30)
+- `--snmp-check-seconds` (default 180)
+- `--snmp-check-max-backoff-seconds` (default 1800)
+- optional per-tick caps: `--max-poll-olts-per-tick`, `--max-discovery-olts-per-tick`, `--max-power-olts-per-tick`
+
+Scheduler writes operational timing lines to stdout for each cycle (`poll_onu_status`, `discover_onus`, SNMP summary, power summary) so Docker logs can be used directly for tuning.
 Each tick calls `close_old_connections()` and wraps work in try/except for resilience.
 
 **SNMP-first design**: The scheduler checks SNMP reachability before dispatching any collection jobs. This prevents wasted time and log spam from unreachable OLTs. When an OLT comes back online, the next SNMP check (every 180s) detects it and re-enables collection automatically.
@@ -286,6 +297,7 @@ python manage.py runserver 0.0.0.0:8000
 Discovery and polling commands support due-awareness scheduling:
 - Each command has a `_is_due(olt, now)` method that checks `next_discovery_at`/`next_poll_at` or computes due time from `last_discovery_at`/`last_poll_at` + interval.
 - When run without `--force` and no specific `--olt-id`, commands filter to only due OLTs.
+- Optional `--max-olts` cap limits how many due OLTs are processed in one command run (oldest due first).
 - `--force` bypasses due checks and processes all active OLTs.
 - The polling command includes a `max_runtime_seconds` budget (default 180s, configurable 30-1800s via `SystemSettings.MAX_POLL_RUNTIME_SECONDS`). If the budget is exhausted mid-run, remaining OLTs are skipped.
 
@@ -329,7 +341,9 @@ Current tests validate:
 - authentication API contract (login payload, invalid creds, me, logout, change-password, token rotation),
 - `ensure_auth_user` management command (create with profile, superuser promotion, force-password),
 - polling command scheduling (due-only, force overrides, runtime budget stops),
+- polling command `--max-olts` cap (oldest due first),
 - discovery command scheduling (due-only, force overrides),
+- discovery command `--max-olts` cap (oldest due first),
 - Huawei index parsing (`pon_resolve: interface_map`, unknown ifindex, backward compat with ZTE, empty/missing pon_map),
 - disconnect reason mapping (`map_disconnect_reason` for dying_gasp, link_loss, unknown, None),
 - power formula registry (hundredths_dbm, huawei_olt_rx, resolve by name/default/unknown),
@@ -337,6 +351,7 @@ Current tests validate:
 - polling disconnect reason second-pass (fetched for offline only, skipped for online, absent for ZTE),
 - scheduler power due logic (`_is_power_due`),
 - scheduler SNMP check reachable/unreachable paths,
+- scheduler SNMP check backoff due logic (`_is_snmp_check_due`),
 - scheduler dispatches polling and discovery commands,
 - serializer returns `unknown` disconnect reason for offline ONUs without active log,
 - Fiberhome OID-column index parsing (`index_from: oid_columns` with `column_map` and byte2 onu_id extraction), status mapping (0-3), unmapped status defaults, nameless discovery (empty `onu_name_oid`), OLT Rx index translation (`olt_rx_index_formula: fiberhome_pon_onu`), and total index-parse failure guard (all-skipped preserves existing ONUs).

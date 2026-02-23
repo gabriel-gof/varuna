@@ -86,6 +86,11 @@ class Command(BaseCommand):
         parser.add_argument("--olt-id", type=int, help="Run polling for a specific OLT id")
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore polling_enabled for the selected OLT(s)")
+        parser.add_argument(
+            "--max-olts",
+            type=int,
+            help="Process at most this many eligible OLTs in one command run",
+        )
 
     def _is_due(self, olt: OLT, now) -> bool:
         if olt.next_poll_at:
@@ -94,6 +99,15 @@ class Command(BaseCommand):
             interval_seconds = max(int(olt.polling_interval_seconds or 0), 1)
             return (olt.last_poll_at + timedelta(seconds=interval_seconds)) <= now
         return True
+
+    def _due_at(self, olt: OLT, now):
+        if olt.next_poll_at:
+            return olt.next_poll_at
+        if olt.last_poll_at:
+            interval_seconds = max(int(olt.polling_interval_seconds or 0), 1)
+            return olt.last_poll_at + timedelta(seconds=interval_seconds)
+        # Never-polled OLTs should be considered oldest-due.
+        return now - timedelta(days=36500)
 
     def _snmp_get_with_attempts(
         self,
@@ -209,12 +223,12 @@ class Command(BaseCommand):
         if olt_id:
             olt_qs = olt_qs.filter(id=olt_id)
 
-        if not olt_qs.exists():
+        now = timezone.now()
+        olts = list(olt_qs)
+        if not olts:
             self.stdout.write("No OLTs eligible for polling.")
             return
 
-        now = timezone.now()
-        olts = list(olt_qs)
         if not force and not olt_id:
             due_olts = [
                 olt for olt in olts
@@ -227,6 +241,14 @@ class Command(BaseCommand):
         if not due_olts:
             self.stdout.write("No OLTs due for polling.")
             return
+
+        due_olts.sort(key=lambda candidate: self._due_at(candidate, now))
+        max_olts = options.get("max_olts")
+        if max_olts is not None and int(max_olts) > 0 and len(due_olts) > int(max_olts):
+            self.stdout.write(
+                f"Capping polling run to {int(max_olts)} OLTs out of {len(due_olts)} due."
+            )
+            due_olts = due_olts[: int(max_olts)]
 
         for olt in due_olts:
             self._poll_for_olt(olt, dry_run=options.get("dry_run", False))

@@ -2625,6 +2625,20 @@ class PollingCommandSchedulingTests(TestCase):
         called_olt = poll_mock.call_args[0][0]
         self.assertEqual(called_olt.id, self.olt_not_due.id)
 
+    @patch('topology.management.commands.poll_onu_status.Command._poll_for_olt')
+    def test_poll_command_respects_max_olts_cap(self, poll_mock):
+        now = timezone.now()
+        self.olt_due.next_poll_at = now - timedelta(minutes=5)
+        self.olt_due.save(update_fields=['next_poll_at'])
+        self.olt_not_due.next_poll_at = now - timedelta(minutes=1)
+        self.olt_not_due.save(update_fields=['next_poll_at'])
+
+        call_command('poll_onu_status', max_olts=1)
+
+        self.assertEqual(poll_mock.call_count, 1)
+        called_olt = poll_mock.call_args[0][0]
+        self.assertEqual(called_olt.id, self.olt_due.id)
+
     @patch('topology.management.commands.poll_onu_status.mark_olt_unreachable')
     @patch('topology.management.commands.poll_onu_status.Command._fetch_status_chunk_resilient')
     def test_poll_runtime_budget_stops_before_snmp_fetch(self, fetch_mock, mark_unreachable_mock):
@@ -2688,6 +2702,20 @@ class DiscoveryCommandSchedulingTests(TestCase):
         self.olt_not_due.save(update_fields=['next_discovery_at'])
 
         call_command('discover_onus')
+
+        self.assertEqual(discover_mock.call_count, 1)
+        called_olt = discover_mock.call_args[0][0]
+        self.assertEqual(called_olt.id, self.olt_due.id)
+
+    @patch('topology.management.commands.discover_onus.Command._discover_for_olt')
+    def test_discovery_command_respects_max_olts_cap(self, discover_mock):
+        now = timezone.now()
+        self.olt_due.next_discovery_at = now - timedelta(minutes=8)
+        self.olt_due.save(update_fields=['next_discovery_at'])
+        self.olt_not_due.next_discovery_at = now - timedelta(minutes=2)
+        self.olt_not_due.save(update_fields=['next_discovery_at'])
+
+        call_command('discover_onus', max_olts=1)
 
         self.assertEqual(discover_mock.call_count, 1)
         called_olt = discover_mock.call_args[0][0]
@@ -3133,6 +3161,92 @@ class SchedulerPowerDueTests(TestCase):
         self.olt.next_power_at = None
         self.olt.last_power_at = timezone.now() - timedelta(seconds=100)
         self.assertFalse(_is_power_due(self.olt, timezone.now()))
+
+
+class SchedulerSnmpBackoffTests(TestCase):
+    def setUp(self):
+        self.vp = build_vendor_profile('SchedSnmpBackoffVP')
+        self.olt = OLT.objects.create(
+            name='SchedSnmpBackoffOLT',
+            ip_address='10.0.0.250',
+            vendor_profile=self.vp,
+            snmp_community='public',
+            is_active=True,
+        )
+
+    def test_snmp_check_due_without_last_check(self):
+        from topology.management.commands.run_scheduler import _is_snmp_check_due
+        self.assertTrue(
+            _is_snmp_check_due(
+                self.olt,
+                timezone.now(),
+                base_interval_seconds=180,
+                max_backoff_seconds=1800,
+            )
+        )
+
+    def test_snmp_check_uses_base_interval_for_reachable_olt(self):
+        from topology.management.commands.run_scheduler import _is_snmp_check_due
+        now = timezone.now()
+        self.olt.last_snmp_check_at = now - timedelta(seconds=120)
+        self.olt.snmp_reachable = True
+        self.olt.snmp_failure_count = 0
+        self.assertFalse(
+            _is_snmp_check_due(
+                self.olt,
+                now,
+                base_interval_seconds=180,
+                max_backoff_seconds=1800,
+            )
+        )
+
+    def test_snmp_check_backoff_for_unreachable_olt(self):
+        from topology.management.commands.run_scheduler import _is_snmp_check_due
+        now = timezone.now()
+        self.olt.snmp_reachable = False
+        self.olt.snmp_failure_count = 4  # base * 8
+        self.olt.last_snmp_check_at = now - timedelta(seconds=600)
+        self.assertFalse(
+            _is_snmp_check_due(
+                self.olt,
+                now,
+                base_interval_seconds=180,
+                max_backoff_seconds=1800,
+            )
+        )
+        self.olt.last_snmp_check_at = now - timedelta(seconds=1500)
+        self.assertTrue(
+            _is_snmp_check_due(
+                self.olt,
+                now,
+                base_interval_seconds=180,
+                max_backoff_seconds=1800,
+            )
+        )
+
+    def test_snmp_check_backoff_respects_max_cap(self):
+        from topology.management.commands.run_scheduler import _is_snmp_check_due
+        now = timezone.now()
+        self.olt.snmp_reachable = False
+        self.olt.snmp_failure_count = 10
+        self.olt.last_snmp_check_at = now - timedelta(seconds=500)
+        self.assertFalse(
+            _is_snmp_check_due(
+                self.olt,
+                now,
+                base_interval_seconds=180,
+                max_backoff_seconds=600,
+            )
+        )
+        self.olt.last_snmp_check_at = now - timedelta(seconds=700)
+        self.assertTrue(
+            _is_snmp_check_due(
+                self.olt,
+                now,
+                base_interval_seconds=180,
+                max_backoff_seconds=600,
+            )
+        )
 
 
 class SchedulerSnmpCheckTests(TestCase):

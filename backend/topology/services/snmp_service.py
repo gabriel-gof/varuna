@@ -4,6 +4,8 @@ SNMP Service for OLT communication
 """
 import logging
 import asyncio
+import threading
+import time
 from typing import List, Dict, Any, Optional
 
 # Use explicit imports inside methods to avoid asyncio loop conflicts with mod_wsgi
@@ -20,7 +22,40 @@ class SNMPService:
     def __init__(self):
         self.timeout = 2.0
         self.retries = 1
+        self.error_log_throttle_seconds = 30.0
         self._pysnmp = None
+        self._error_log_lock = threading.Lock()
+        self._last_error_log_at: Dict[str, float] = {}
+
+    def _build_error_key(self, op: str, olt: Any, reason: str) -> str:
+        olt_id = getattr(olt, 'id', None)
+        identifier = f"id:{olt_id}" if olt_id is not None else f"name:{getattr(olt, 'name', '<unknown>')}"
+        normalized_reason = str(reason or '').strip()[:160]
+        return f"{op}:{identifier}:{normalized_reason}"
+
+    def _log_error_throttled(self, level: str, key: str, message: str, *args) -> None:
+        throttle_seconds = max(float(self.error_log_throttle_seconds or 0.0), 0.0)
+        should_log = True
+        if throttle_seconds > 0:
+            now = time.monotonic()
+            with self._error_log_lock:
+                last = self._last_error_log_at.get(key)
+                if last is not None and (now - last) < throttle_seconds:
+                    should_log = False
+                else:
+                    self._last_error_log_at[key] = now
+                    # Bound the in-memory map so long-lived processes do not accumulate stale keys.
+                    if len(self._last_error_log_at) > 4096:
+                        cutoff = now - (throttle_seconds * 2)
+                        self._last_error_log_at = {
+                            error_key: ts
+                            for error_key, ts in self._last_error_log_at.items()
+                            if ts >= cutoff
+                        }
+        if should_log:
+            getattr(logger, level)(message, *args)
+        else:
+            logger.debug(message, *args)
 
     @property
     def pysnmp_modules(self):
@@ -144,9 +179,13 @@ class SNMPService:
                 )
 
                 if errorIndication or errorStatus:
-                    logger.warning(
-                        f"SNMP GET error em {olt.name}: "
-                        f"{errorIndication or errorStatus.prettyPrint()}"
+                    reason = errorIndication or errorStatus.prettyPrint()
+                    self._log_error_throttled(
+                        "warning",
+                        self._build_error_key("get", olt, reason),
+                        "SNMP GET error em %s: %s",
+                        getattr(olt, 'name', '<unknown>'),
+                        reason,
                     )
                     return None
 
@@ -158,7 +197,13 @@ class SNMPService:
 
                 return results
             except Exception as e:
-                logger.error(f"SNMP GET exception em {olt.name}: {e}")
+                self._log_error_throttled(
+                    "error",
+                    self._build_error_key("get_exception", olt, str(e)),
+                    "SNMP GET exception em %s: %s",
+                    getattr(olt, 'name', '<unknown>'),
+                    e,
+                )
                 return None
 
         return self._run(_get())
@@ -226,14 +271,33 @@ class SNMPService:
                             lexicographicMode=False
                         )
                 except Exception as e:
-                    logger.error(f"SNMP WALK exception em {olt.name}: {e}")
+                    self._log_error_throttled(
+                        "error",
+                        self._build_error_key("walk_exception", olt, str(e)),
+                        "SNMP WALK exception em %s: %s",
+                        getattr(olt, 'name', '<unknown>'),
+                        e,
+                    )
                     break
 
                 if errorIndication:
-                    logger.error(f"SNMP WALK error em {olt.name}: {errorIndication}")
+                    self._log_error_throttled(
+                        "warning",
+                        self._build_error_key("walk", olt, str(errorIndication)),
+                        "SNMP WALK error em %s: %s",
+                        getattr(olt, 'name', '<unknown>'),
+                        errorIndication,
+                    )
                     break
                 elif errorStatus:
-                    logger.error(f"SNMP WALK error em {olt.name}: {errorStatus.prettyPrint()}")
+                    reason = errorStatus.prettyPrint()
+                    self._log_error_throttled(
+                        "warning",
+                        self._build_error_key("walk", olt, reason),
+                        "SNMP WALK error em %s: %s",
+                        getattr(olt, 'name', '<unknown>'),
+                        reason,
+                    )
                     break
 
                 if not varBinds:
