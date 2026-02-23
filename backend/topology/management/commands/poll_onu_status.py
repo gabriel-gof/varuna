@@ -14,7 +14,7 @@ from topology.models import OLT, ONU, ONULog
 from topology.services.cache_service import cache_service
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.snmp_service import snmp_service
-from topology.services.vendor_profile import map_status_code
+from topology.services.vendor_profile import map_disconnect_reason, map_status_code
 
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,14 @@ class Command(BaseCommand):
         parser.add_argument("--olt-id", type=int, help="Run polling for a specific OLT id")
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore polling_enabled for the selected OLT(s)")
+
+    def _is_due(self, olt: OLT, now) -> bool:
+        if olt.next_poll_at:
+            return olt.next_poll_at <= now
+        if olt.last_poll_at:
+            interval_seconds = max(int(olt.polling_interval_seconds or 0), 1)
+            return (olt.last_poll_at + timedelta(seconds=interval_seconds)) <= now
+        return True
 
     def _snmp_get_with_attempts(
         self,
@@ -205,7 +213,18 @@ class Command(BaseCommand):
             self.stdout.write("No OLTs eligible for polling.")
             return
 
-        for olt in olt_qs:
+        now = timezone.now()
+        olts = list(olt_qs)
+        if not force and not olt_id:
+            due_olts = [olt for olt in olts if self._is_due(olt, now)]
+        else:
+            due_olts = olts
+
+        if not due_olts:
+            self.stdout.write("No OLTs due for polling.")
+            return
+
+        for olt in due_olts:
             self._poll_for_olt(olt, dry_run=options.get("dry_run", False))
 
     def _poll_for_olt(self, olt: OLT, dry_run: bool = False) -> None:
@@ -265,6 +284,10 @@ class Command(BaseCommand):
         if pause_between_pon_batches_seconds is None:
             pause_between_pon_batches_seconds = self.pause_between_pon_batches_seconds
         pause_between_pon_batches_seconds = max(0.0, min(pause_between_pon_batches_seconds, 5.0))
+        max_runtime_seconds = _to_float(status_cfg.get("max_runtime_seconds"))
+        if max_runtime_seconds is None:
+            max_runtime_seconds = 180.0
+        max_runtime_seconds = max(30.0, min(max_runtime_seconds, 1800.0))
         failed_chunks = 0
         estimated_calls = max(1, math.ceil(len(status_oids) / chunk_size))
         call_budget = {
@@ -289,6 +312,8 @@ class Command(BaseCommand):
         )
 
         budget_exhausted = False
+        runtime_exhausted = False
+        poll_started_at = time.monotonic()
         for pon_index, pon_key in enumerate(ordered_pon_keys):
             pon_onus = sorted(pon_groups[pon_key], key=lambda item: int(item.onu_id or 0))
             pon_oids = [
@@ -297,6 +322,15 @@ class Command(BaseCommand):
                 if onu.id in onu_index_map
             ]
             for chunk in _chunked(pon_oids, chunk_size):
+                if (time.monotonic() - poll_started_at) >= max_runtime_seconds:
+                    runtime_exhausted = True
+                    budget_exhausted = True
+                    logger.warning(
+                        "Status polling OLT %s: runtime budget exhausted (max_runtime_seconds=%s); keeping partial status snapshot.",
+                        olt.id,
+                        max_runtime_seconds,
+                    )
+                    break
                 if call_budget["remaining"] <= 0:
                     budget_exhausted = True
                     logger.warning(
@@ -331,6 +365,45 @@ class Command(BaseCommand):
             ):
                 time.sleep(pause_between_pon_batches_seconds)
 
+        # Second-pass: fetch disconnect reason for offline ONUs (Huawei-style split OIDs)
+        disconnect_reasons: Dict[str, str] = {}
+        disconnect_reason_oid = status_cfg.get("disconnect_reason_oid")
+        disconnect_reason_map = status_cfg.get("disconnect_reason_map", {})
+        if disconnect_reason_oid and statuses and not budget_exhausted:
+            offline_indices = []
+            for onu in onus:
+                normalized_index = onu_index_map.get(onu.id)
+                if not normalized_index:
+                    continue
+                status_code = statuses.get(normalized_index)
+                if status_code is None:
+                    continue
+                mapped = map_status_code(status_code, status_map)
+                if mapped["status"] == ONU.STATUS_OFFLINE:
+                    offline_indices.append(normalized_index)
+
+            if offline_indices:
+                reason_oids = [f"{disconnect_reason_oid}.{idx}" for idx in offline_indices]
+                for chunk in _chunked(reason_oids, chunk_size):
+                    if call_budget["remaining"] <= 0:
+                        break
+                    response = self._fetch_status_chunk_resilient(
+                        olt,
+                        chunk,
+                        call_budget=call_budget,
+                        chunk_retry_attempts=chunk_retry_attempts,
+                        single_oid_retry_attempts=single_oid_retry_attempts,
+                        timeout_seconds=snmp_timeout_seconds,
+                        retries=snmp_retries,
+                        retry_backoff_seconds=retry_backoff_seconds,
+                    )
+                    if not response:
+                        continue
+                    for oid, value in response.items():
+                        index = _extract_index(oid, disconnect_reason_oid)
+                        if index:
+                            disconnect_reasons[index] = "" if value is None else str(value).strip()
+
         now = timezone.now()
         ttl = getattr(settings, "STATUS_CACHE_TTL", 180)
 
@@ -338,7 +411,11 @@ class Command(BaseCommand):
             if not dry_run:
                 mark_olt_unreachable(
                     olt,
-                    error=f"No status data returned (failed_chunks={failed_chunks}, requested={len(status_oids)})",
+                    error=(
+                        "No status data returned "
+                        f"(failed_chunks={failed_chunks}, requested={len(status_oids)}, "
+                        f"runtime_exhausted={runtime_exhausted})"
+                    ),
                 )
                 self._mark_poll_result(olt, now)
             self.stdout.write(f"OLT {olt.id}: no status data returned.")
@@ -417,6 +494,11 @@ class Command(BaseCommand):
             mapped = map_status_code(status_code, status_map)
             new_status = mapped["status"]
             reason = mapped["reason"] if new_status != ONU.STATUS_ONLINE else ""
+
+            if new_status == ONU.STATUS_OFFLINE and disconnect_reason_oid and normalized_index:
+                raw_reason = disconnect_reasons.get(normalized_index)
+                if raw_reason is not None:
+                    reason = map_disconnect_reason(raw_reason, disconnect_reason_map)
 
             if new_status == ONU.STATUS_ONLINE:
                 online += 1

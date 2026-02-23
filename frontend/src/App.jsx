@@ -61,6 +61,7 @@ const BACKEND_MESSAGE_MAP = {
   'Discovery interval must be greater than 0 minutes.': 'Discovery interval must be greater than 0 minutes.',
   'Polling interval must be greater than 0 seconds.': 'Polling interval must be greater than 0 seconds.',
   'Power interval must be greater than 0 seconds.': 'Power interval must be greater than 0 seconds.',
+  'Insufficient permissions for this action.': 'Insufficient permissions for this action.',
 }
 
 const BACKEND_PREFIX_PATTERNS = [
@@ -112,6 +113,7 @@ const ALARM_REASON_TO_STATUS_KEY = {
 }
 const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
 const SEARCH_MATCH_STORAGE_KEY = 'varuna.searchMatch'
+const FRONTEND_AUTO_MAINTENANCE_ENABLED = false
 
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
@@ -209,6 +211,7 @@ const MAINTENANCE_PENDING_WINDOW_MS = {
   power: 45 * 60 * 1000,
   discovery: 30 * 60 * 1000
 }
+const RESUME_REFRESH_THROTTLE_MS = 4000
 const SEARCH_ROW_HIGHLIGHT_STYLE = {
   boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)'
 }
@@ -398,6 +401,7 @@ const App = () => {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth_token'))
   const [authUser, setAuthUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
+  const canManageSettings = Boolean(authUser?.can_modify_settings)
 
   useEffect(() => {
     if (!authToken) {
@@ -476,6 +480,12 @@ const App = () => {
   }, [activeNav])
 
   useEffect(() => {
+    if (!canManageSettings && activeNav === 'settings') {
+      setActiveNav('topology')
+    }
+  }, [canManageSettings, activeNav])
+
+  useEffect(() => {
     try {
       if (typeof window === 'undefined') return
       if (selectedPonId) {
@@ -534,6 +544,7 @@ const App = () => {
   const selectedPonDataRef = useRef(null)
   const wasAlarmEnabledRef = useRef(false)
   const mainLayoutRef = useRef(null)
+  const lastResumeRefreshAtRef = useRef(0)
   const resizePointerIdRef = useRef(null)
   const previousBodyCursorRef = useRef('')
   const previousBodyUserSelectRef = useRef('')
@@ -685,10 +696,14 @@ const App = () => {
   useEffect(() => {
     if (!authToken) return
     fetchOlts()
-    fetchVendorProfiles()
+    if (canManageSettings) {
+      fetchVendorProfiles()
+    } else {
+      setVendorProfiles([])
+    }
     const interval = setInterval(fetchOlts, 30000)
     return () => clearInterval(interval)
-  }, [authToken, fetchOlts, fetchVendorProfiles])
+  }, [authToken, canManageSettings, fetchOlts, fetchVendorProfiles])
 
   useEffect(() => {
     oltsRef.current = olts
@@ -698,6 +713,43 @@ const App = () => {
     const timer = setInterval(() => setHealthTick(Date.now()), 30_000)
     return () => clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (!authToken) return
+
+    const refreshAfterResume = () => {
+      const now = Date.now()
+      if (now - lastResumeRefreshAtRef.current < RESUME_REFRESH_THROTTLE_MS) return
+      lastResumeRefreshAtRef.current = now
+      setHealthTick(now)
+      void fetchOlts()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      refreshAfterResume()
+    }
+
+    const handleWindowFocus = () => {
+      refreshAfterResume()
+    }
+
+    const handlePageShow = (event) => {
+      if (event.persisted || document.visibilityState === 'visible') {
+        refreshAfterResume()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', handleWindowFocus)
+    window.addEventListener('pageshow', handlePageShow)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleWindowFocus)
+      window.removeEventListener('pageshow', handlePageShow)
+    }
+  }, [authToken, fetchOlts])
 
   const runDueMaintenance = useCallback(async (oltList) => {
     if (!Array.isArray(oltList) || !oltList.length) return
@@ -824,9 +876,11 @@ const App = () => {
   }, [fetchOlts])
 
   useEffect(() => {
+    if (!FRONTEND_AUTO_MAINTENANCE_ENABLED) return
+    if (!canManageSettings) return
     if (!olts.length) return
     runDueMaintenance(olts)
-  }, [olts, runDueMaintenance])
+  }, [canManageSettings, olts, runDueMaintenance])
 
   const oltIdsSignature = useMemo(
     () => [...olts.map((olt) => String(olt?.id)).filter(Boolean)].sort().join(','),
@@ -835,16 +889,18 @@ const App = () => {
 
   // Run SNMP checks when the OLT set changes.
   useEffect(() => {
+    if (!canManageSettings) return
     if (!olts?.length) return
     runSnmpChecks(olts)
-  }, [oltIdsSignature, runSnmpChecks])
+  }, [canManageSettings, oltIdsSignature, runSnmpChecks])
 
   // Keep checks periodic without recreating timers on every topology refresh payload.
   useEffect(() => {
     if (!authToken) return
+    if (!canManageSettings) return
     const timer = setInterval(() => runSnmpChecks(oltsRef.current), 180_000)
     return () => clearInterval(timer)
-  }, [authToken, runSnmpChecks])
+  }, [authToken, canManageSettings, runSnmpChecks])
 
   const runSettingsAction = async (key, request, successMessage = '') => {
     setSettingsActionError(null)
@@ -1008,13 +1064,15 @@ const App = () => {
     setPonPanelError('')
     setIsRefreshingPonPanel(true)
     try {
-      const selectedOltId = toIntOrNull(selectedPonData?.olt?.id)
-      if (selectedOltId && activeTab === 'status') {
-        await api.post(`/olts/${selectedOltId}/run_polling/`, {}, { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS })
-      } else if (activeTab === 'power') {
-        const powerResult = await collectPowerForSelectedPon()
-        if (!powerResult?.ok) {
-          showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
+      if (canManageSettings) {
+        const selectedOltId = toIntOrNull(selectedPonData?.olt?.id)
+        if (selectedOltId && activeTab === 'status') {
+          await api.post(`/olts/${selectedOltId}/run_polling/`, {}, { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS })
+        } else if (activeTab === 'power') {
+          const powerResult = await collectPowerForSelectedPon()
+          if (!powerResult?.ok) {
+            showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
+          }
         }
       }
 
@@ -1030,7 +1088,7 @@ const App = () => {
     } finally {
       setIsRefreshingPonPanel(false)
     }
-  }, [activeTab, collectPowerForSelectedPon, fetchOlts, isRefreshingPonPanel, selectedPonData, showPonPanelError, t])
+  }, [activeTab, canManageSettings, collectPowerForSelectedPon, fetchOlts, isRefreshingPonPanel, selectedPonData, showPonPanelError, t])
 
   useEffect(() => {
     if (!selectedPonId) {
@@ -1441,7 +1499,7 @@ const App = () => {
   }, [])
 
   if (!authChecked) {
-    return <div className="h-screen bg-white dark:bg-slate-950" />
+    return <div className="h-[100dvh] min-h-[100dvh] bg-white dark:bg-slate-950" />
   }
 
   if (!authToken || !authUser) {
@@ -1449,7 +1507,7 @@ const App = () => {
   }
 
   return (
-    <div className="h-screen bg-white dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
+    <div className="h-[100dvh] min-h-[100dvh] bg-white dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
       <nav className="h-16 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-700/50 flex items-center px-6 sticky top-0 z-[100] transition-colors shadow-sm">
         <div className="flex items-center gap-3 mr-4 sm:mr-10">
           <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20">
@@ -1467,14 +1525,16 @@ const App = () => {
             <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
             {activeNav === 'topology' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
-          <button
-            onClick={() => setActiveNav('settings')}
-            className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
-          >
-            <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
-            <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Settings')}</span>
-            {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
-          </button>
+          {canManageSettings && (
+            <button
+              onClick={() => setActiveNav('settings')}
+              className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            >
+              <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
+              <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Settings')}</span>
+              {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+            </button>
+          )}
         </div>
 
         <div className="ml-auto flex items-center gap-3">
@@ -1568,7 +1628,7 @@ const App = () => {
               : 'flex-1'}
           `}
         >
-          {activeNav === 'topology' ? (
+          {activeNav === 'topology' || !canManageSettings ? (
             <NetworkTopology
               olts={olts}
               loading={loading}
@@ -1837,7 +1897,12 @@ const App = () => {
                   )}
 
                   {activeTab === 'status' ? (
-                    <>
+                    <div className="relative flex flex-col w-full max-h-full min-h-0">
+                    {isRefreshingPonPanel && (
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
+                        <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
+                      </div>
+                    )}
                     {/* Desktop status table */}
                     <div className="hidden lg:flex flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
@@ -1882,6 +1947,7 @@ const App = () => {
                                       : t('Offline')
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
+                              const hasSerial = serialValue !== '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const disconnectWindow = statusKey === 'online'
                                 ? '—'
@@ -1914,7 +1980,7 @@ const App = () => {
                                       {clientLabel}
                                     </span>
                                   </td>
-                                  <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
                                     {serialValue}
                                   </td>
                                   <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
@@ -1957,6 +2023,7 @@ const App = () => {
                                   : t('Offline')
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                           const serialValue = onu.serial_number || onu.serial || '—'
+                          const hasSerial = serialValue !== '—'
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                           const disconnectWindow = statusKey === 'online'
                             ? '—'
@@ -1981,7 +2048,7 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
-                                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
+                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}>
@@ -2000,7 +2067,7 @@ const App = () => {
                         )}
                       </div>
                     </div>
-                    </>
+                    </div>
 
                   ) : (
                     <div className="relative flex flex-col w-full max-h-full min-h-0">
@@ -2044,6 +2111,7 @@ const App = () => {
                             {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
+                              const hasSerial = serialValue !== '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const hasOnuRx = onuRx !== null
                               const hasOltRx = oltRx !== null
@@ -2078,7 +2146,7 @@ const App = () => {
                                       {clientLabel}
                                     </span>
                                   </td>
-                                  <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
                                     {serialValue}
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
@@ -2122,6 +2190,7 @@ const App = () => {
                         {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                           const serialValue = onu.serial_number || onu.serial || '—'
+                          const hasSerial = serialValue !== '—'
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                           const hasOnuRx = onuRx !== null
                           const hasOltRx = oltRx !== null
@@ -2148,7 +2217,7 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
-                                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
+                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 {hasAnyPower ? (
@@ -2188,7 +2257,7 @@ const App = () => {
           </aside>
         )}
       </main>
-      <footer className="shrink-0 flex items-center justify-between px-4 py-1.5 text-[11px] font-medium text-slate-400 dark:text-slate-400 border-t border-slate-100 dark:border-slate-700/50 bg-white dark:bg-slate-900 transition-colors">
+      <footer className="shrink-0 flex items-center justify-between px-4 pt-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] text-[11px] font-medium text-slate-400 dark:text-slate-400 border-t border-slate-100 dark:border-slate-700/50 bg-white dark:bg-slate-900 transition-colors">
         <span>{t('Version')} {__APP_VERSION__}</span>
         <span>{lastCollectionAt ? `${t('Last update')}: ${formatReadingAt(lastCollectionAt, i18n.language)}` : ''}</span>
       </footer>

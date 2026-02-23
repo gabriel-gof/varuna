@@ -55,3 +55,11 @@
 .custom-scrollbar::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+@media (max-width: 1023px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

@@ -14,6 +14,23 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 - `db`: PostgreSQL
 - `redis`: Redis
 
+## Multi-Client Direction (Future-Ready)
+- Current codebase is single-tenant at application level (no tenant isolation in backend models/API).
+- Current dev default is still one local stack from `docker-compose.dev.yml`; this section defines expansion direction.
+- Recommended growth path is one isolated Varuna stack per client:
+  - `frontend + backend + db + redis` per client
+  - isolated Docker Compose project name per client (`-p`)
+  - isolated database/Redis data and credentials per client
+- Multiple stacks can run on the same host when host port bindings are unique per stack.
+- In production, place one reverse proxy in front and route by subdomain (`client-a.varuna.example`, `client-b.varuna.example`).
+- Keep PostgreSQL/Redis internal-only for each stack (no public exposure unless explicitly required).
+
+Example (same machine, two client stacks):
+```bash
+docker compose -p varuna_client_a -f docker-compose.dev.yml up -d --build
+docker compose -p varuna_client_b -f docker-compose.dev.yml -f docker-compose.client-b.dev.yml up -d --build
+```
+
 ## Naming
 - Database (PostgreSQL) can be `varuna_dev` / `varuna_prod` (configured by `POSTGRES_DB`).
 - Backend monitoring domain app is `topology` (no `dashboard` backend app/module).
@@ -52,6 +69,21 @@ docker compose -f docker-compose.dev.yml down -v
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
+## Authentication Bootstrap
+Create the initial admin user (Docker):
+```bash
+docker compose -f docker-compose.dev.yml exec backend python manage.py ensure_auth_user --username admin --password changeme --role admin --superuser
+```
+
+Local:
+```bash
+backend/venv/bin/python backend/manage.py ensure_auth_user --username admin --password changeme --role admin --superuser
+```
+
+The command also reads `VARUNA_AUTH_USERNAME`, `VARUNA_AUTH_PASSWORD`, `VARUNA_AUTH_ROLE` environment variables as defaults. Use `--force-password` to update an existing user's password.
+
+Roles: `admin` (full access), `operator` (full access), `viewer` (read-only, no settings changes or maintenance actions).
+
 ## Main API Endpoints
 - `GET /api/olts/`
 - `GET /api/olts/?include_topology=true`
@@ -64,13 +96,17 @@ docker compose -f docker-compose.dev.yml up -d --build
 - `GET /api/onu/`
 - `GET /api/onu/{id}/power/`
 - `POST /api/onu/batch-power/`
+- `POST /api/auth/login/`
+- `POST /api/auth/logout/`
+- `GET /api/auth/me/`
+- `POST /api/auth/change-password/`
 
 ## Documentation
-- `/Users/gabriel/Documents/varuna/docs/ARCHITECTURE.md`
-- `/Users/gabriel/Documents/varuna/docs/BACKEND.md`
-- `/Users/gabriel/Documents/varuna/docs/FRONTEND.md`
-- `/Users/gabriel/Documents/varuna/docs/OPERATIONS.md`
-- `/Users/gabriel/Documents/varuna/docs/LLM_CONTEXT.md`
+- `docs/ARCHITECTURE.md`
+- `docs/BACKEND.md`
+- `docs/FRONTEND.md`
+- `docs/OPERATIONS.md`
+- `docs/LLM_CONTEXT.md`
 
 ## Validation
 ```bash

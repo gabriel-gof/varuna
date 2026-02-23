@@ -25,14 +25,16 @@ export const isStatusStale = (olt, nowMs = Date.now()) => {
   const lastPollMs = parseTimestampMs(olt?.last_poll_at)
   const staleAfterMs = getPollingIntervalSeconds(olt) * 1000
   const graceMs = Math.max(90_000, Math.round(staleAfterMs * 0.5))
+  const minimumToleranceMs = 10 * 60 * 1000
+  const staleWindowMs = Math.max(staleAfterMs + graceMs, minimumToleranceMs)
 
   if (!lastPollMs) {
     const lastDiscoveryMs = parseTimestampMs(olt?.last_discovery_at)
     if (!lastDiscoveryMs) return false
-    return nowMs - lastDiscoveryMs > staleAfterMs + graceMs
+    return nowMs - lastDiscoveryMs > staleWindowMs
   }
 
-  return nowMs - lastPollMs > staleAfterMs + graceMs
+  return nowMs - lastPollMs > staleWindowMs
 }
 
 const getPonHealthState = (pon) => {

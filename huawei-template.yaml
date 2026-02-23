@@ -1,0 +1,1028 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 7ce101c017d4450dacb7f17772131c06
+      name: Templates/OLT
+  templates:
+    - uuid: ca71f9718693459496b50d02efdc812f
+      template: 'Template OLT Huawei'
+      name: 'Template OLT Huawei'
+      groups:
+        - name: Templates/OLT
+      items:
+        - uuid: 243318ab538f490a85e755c148c9fb5d
+          name: 'OLT: ONUs authorized'
+          type: DEPENDENT
+          key: oltOnusAuthorized
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.authorized
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatusCollection
+          tags:
+            - tag: onu_count
+              value: authorized
+        - uuid: 4a1c8e2f6b3d47a5902e7f1c8d4b6a3e
+          name: 'OLT: ONUs dying gasp'
+          type: DEPENDENT
+          key: oltOnusDyingGasp
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.dying_gasp
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatusCollection
+          tags:
+            - tag: onu_count
+              value: dying_gasp
+        - uuid: be79c0bdbbaf43fcbf006f26c8fe7478
+          name: 'OLT: ONUs link loss'
+          type: DEPENDENT
+          key: oltOnusLinkLoss
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.link_loss
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatusCollection
+          tags:
+            - tag: onu_count
+              value: link_loss
+        - uuid: df08e11c027241058e3e1aeff2e996fc
+          name: 'OLT: ONUs offline'
+          type: DEPENDENT
+          key: oltOnusOffline
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.offline
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatusCollection
+          tags:
+            - tag: onu_count
+              value: offline
+        - uuid: b9aecf8e86a743b199cc8b9f01d06428
+          name: 'OLT: ONUs online'
+          type: DEPENDENT
+          key: oltOnusOnline
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.online
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatusCollection
+          tags:
+            - tag: onu_count
+              value: online
+        - uuid: a996747323bc46a8b5b69301401e2161
+          name: 'OLT: ONUs with poor OLT rx signal'
+          type: DEPENDENT
+          key: oltOnusPoorOltRxSignal
+          delay: '0'
+          history: 7d
+          trends: 180d
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.signal_quality.bad_olt_rx
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: oltRxPowerCollection
+          tags:
+            - tag: onu_count
+              value: bad_olt_rx
+        - uuid: a32af7fa56384f51b5cc2e3a5ce8ab02
+          name: 'OLT: ONUs with poor ONU rx signal'
+          type: DEPENDENT
+          key: oltOnusPoorOnuRxSignal
+          delay: '0'
+          history: 7d
+          trends: 180d
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.signal_quality.bad_onu_rx
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuRxPowerCollection
+          tags:
+            - tag: onu_count
+              value: bad_onu_rx
+        - uuid: 475cd0c7a7d54d2bb6b4f33d5756129b
+          name: 'OLT: ONUs unknown'
+          type: DEPENDENT
+          key: oltOnusUnknown
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.unknown
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatusCollection
+          tags:
+            - tag: onu_count
+              value: unknown
+        - uuid: a3a53f1eab6c487ea27a4609c5a6e63a
+          name: 'OLT: OLT Rx Power Collection'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#OLT_RX_POWER},1.3.6.1.4.1.2011.6.128.1.1.2.51.1.6]'
+          key: oltRxPowerCollection
+          delay: 1d
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  /**
+                   * OLT Rx Power Collection - Huawei
+                   * Walks OLT Rx power OID only
+                   */
+
+                  var raw = JSON.parse(value);
+                  var result = {
+                      power_data: {},
+                      signal_quality: {
+                          good_olt_rx: 0,
+                          bad_olt_rx: 0,
+                          total_discovered_onus: 0
+                      }
+                  };
+
+                  var oltRxThreshold = parseFloat('{$OLT.RX.POWER.THRESHOLD}');
+
+                  var MIN_VALID_POWER = -50;
+                  var MAX_VALID_POWER = 10;
+
+                  function roundTo2Decimals(value) {
+                      return Math.round(value * 100) / 100;
+                  }
+
+                  function isValidPower(powerValue) {
+                      if (powerValue === null || powerValue === undefined) return false;
+                      if (isNaN(powerValue)) return false;
+                      return (powerValue >= MIN_VALID_POWER && powerValue <= MAX_VALID_POWER);
+                  }
+
+                  raw.forEach(function(item) {
+                      var snmpIndex = item['{#SNMPINDEX}'];
+                      var oltRxPowerRaw = item['{#OLT_RX_POWER}'];
+
+                      if (!snmpIndex) return;
+
+                      result.signal_quality.total_discovered_onus++;
+
+                      var oltRxPower = oltRxPowerRaw ? roundTo2Decimals((parseFloat(oltRxPowerRaw) - 10000) / 100) : null;
+
+                      if (!isValidPower(oltRxPower)) oltRxPower = null;
+
+                      if (oltRxPower !== null) {
+                          result.power_data[snmpIndex] = {
+                              olt_rx_power: oltRxPower
+                          };
+
+                          if (oltRxPower < oltRxThreshold) {
+                              result.signal_quality.bad_olt_rx++;
+                          } else {
+                              result.signal_quality.good_olt_rx++;
+                          }
+                      }
+                  });
+
+                  return JSON.stringify(result);
+        - uuid: b7e2f3a4c5d64ef8a9b0c1d2e3f4a5b6
+          name: 'OLT: ONU Rx Power Collection'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#ONU_RX_POWER},1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4]'
+          key: onuRxPowerCollection
+          delay: 1d
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  /**
+                   * ONU Rx Power Collection - Huawei
+                   * Walks ONU Rx power OID only
+                   */
+
+                  var raw = JSON.parse(value);
+                  var result = {
+                      power_data: {},
+                      signal_quality: {
+                          good_onu_rx: 0,
+                          bad_onu_rx: 0,
+                          total_discovered_onus: 0
+                      }
+                  };
+
+                  var onuRxThreshold = parseFloat('{$ONU.RX.POWER.THRESHOLD}');
+
+                  var MIN_VALID_POWER = -50;
+                  var MAX_VALID_POWER = 10;
+
+                  function roundTo2Decimals(value) {
+                      return Math.round(value * 100) / 100;
+                  }
+
+                  function isValidPower(powerValue) {
+                      if (powerValue === null || powerValue === undefined) return false;
+                      if (isNaN(powerValue)) return false;
+                      return (powerValue >= MIN_VALID_POWER && powerValue <= MAX_VALID_POWER);
+                  }
+
+                  raw.forEach(function(item) {
+                      var snmpIndex = item['{#SNMPINDEX}'];
+                      var onuRxPowerRaw = item['{#ONU_RX_POWER}'];
+
+                      if (!snmpIndex) return;
+
+                      result.signal_quality.total_discovered_onus++;
+
+                      var onuRxPower = onuRxPowerRaw ? roundTo2Decimals(parseFloat(onuRxPowerRaw) * 0.01) : null;
+
+                      if (!isValidPower(onuRxPower)) onuRxPower = null;
+
+                      if (onuRxPower !== null) {
+                          result.power_data[snmpIndex] = {
+                              onu_rx_power: onuRxPower
+                          };
+
+                          if (onuRxPower < onuRxThreshold) {
+                              result.signal_quality.bad_onu_rx++;
+                          } else {
+                              result.signal_quality.good_onu_rx++;
+                          }
+                      }
+                  });
+
+                  return JSON.stringify(result);
+        - uuid: bbefafc39a2a42cea26f90c17b214c35
+          name: 'OLT: ONU Status Collection'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#INTERFACE_NAME},1.3.6.1.2.1.31.1.1.1.1, {#ONU_STATUS},1.3.6.1.4.1.2011.6.128.1.1.2.46.1.15, {#ONU_LAST_DOWN_CAUSE},1.3.6.1.4.1.2011.6.128.1.1.2.46.1.24]'
+          key: onuStatusCollection
+          delay: 10m
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  /**
+                   * ONU Status Collection for Huawei OLT
+                   * Provides OLT-wide and per-GPON aggregation
+                   * Simplified: dying_gasp, link_loss, unknown categories only
+                   */
+
+                  var raw = JSON.parse(value);
+
+                  // Build GPON interface mapping
+                  var gponInterfaces = {};
+                  raw.forEach(function(item) {
+                      var interfaceName = item['{#INTERFACE_NAME}'];
+                      var snmpIndex = item['{#SNMPINDEX}'];
+
+                      if (interfaceName && interfaceName.match(/^GPON\s+\d+\/\d+\/\d+$/) && !item['{#ONU_STATUS}']) {
+                          gponInterfaces[snmpIndex] = interfaceName;
+                      }
+                  });
+
+                  // Counter factory
+                  function newCounters() {
+                      return {
+                          online: 0,
+                          offline: 0,
+                          authorized: 0,
+                          dying_gasp: 0,
+                          link_loss: 0,
+                          unknown: 0
+                      };
+                  }
+
+                  function getStatusKey(status) {
+                      switch(status) {
+                          case '1': return 'online';
+                          case '2': return 'offline';
+                          default: return 'unknown';
+                      }
+                  }
+
+                  function getCauseKey(cause) {
+                      switch(cause) {
+                          case '13': return 'dying_gasp';
+                          case '1':
+                          case '2':
+                          case '3':
+                          case '4':
+                          case '5':
+                          case '6':
+                          case '15': return 'link_loss';
+                          default: return 'unknown';
+                      }
+                  }
+
+                  var oltTotal = newCounters();
+                  var perGpon = {};
+
+                  // Initialize ALL discovered GPON interfaces with zero counters
+                  for (var snmpIndex in gponInterfaces) {
+                      var gponInterface = gponInterfaces[snmpIndex];
+                      perGpon[gponInterface] = newCounters();
+                  }
+
+                  // Process ONU entries
+                  raw.forEach(function(item) {
+                      var onuStatus = item['{#ONU_STATUS}'];
+                      var lastDownCause = item['{#ONU_LAST_DOWN_CAUSE}'];
+                      var snmpIndex = item['{#SNMPINDEX}'];
+
+                      if (!onuStatus || !snmpIndex) return;
+
+                      var ponIndex = snmpIndex.split('.')[0];
+                      var gponInterface = gponInterfaces[ponIndex];
+
+                      if (!gponInterface) return;
+
+                      var statusKey = getStatusKey(onuStatus);
+                      var causeKey = getCauseKey(lastDownCause);
+
+                      // Count status
+                      oltTotal[statusKey]++;
+                      perGpon[gponInterface][statusKey]++;
+
+                      // Count authorized (total)
+                      oltTotal.authorized++;
+                      perGpon[gponInterface].authorized++;
+
+                      // Count offline details
+                      if (statusKey !== 'online') {
+                          if (causeKey) {
+                              oltTotal[causeKey]++;
+                              perGpon[gponInterface][causeKey]++;
+                          }
+                      }
+                  });
+
+                  return JSON.stringify({
+                      total: oltTotal,
+                      by_pon: perGpon
+                  });
+        - uuid: 59158f10c087411e89c0a1562f93b8fe
+          name: 'OLT: Uptime'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.2.1.1.3.0
+          key: uptime
+          history: 7d
+          trends: 180d
+          units: uptime
+          preprocessing:
+            - type: MULTIPLIER
+              parameters:
+                - '0.01'
+          tags:
+            - tag: health
+              value: uptime
+          triggers:
+            - uuid: 070b18964cca49138c05025646d9bc6c
+              expression: 'last(/Template OLT Huawei/uptime)<5m'
+              name: 'OLT: Reinicialização detectada (uptime < 5m)'
+              priority: WARNING
+              manual_close: 'YES'
+      discovery_rules:
+        - uuid: 3b189be966754038b01bb749b1d2388c
+          name: 'Cards Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#SNMPVALUE},.1.3.6.1.4.1.2011.2.6.7.1.1.2.1.7, {#IFOPERSTATUS},.1.3.6.1.4.1.2011.2.6.7.1.1.2.1.8]'
+          key: cardsDiscovery
+          delay: 1d
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#IFOPERSTATUS}'
+                value: '1'
+                formulaid: A
+              - macro: '{#SNMPVALUE}'
+                value: '(.*PISB$|.*PILA$|.*H801GICF$|.*H801X2CS$|.*H901PISA$)'
+                operator: NOT_MATCHES_REGEX
+                formulaid: B
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: 6f4ae4def89c471797e74965f807a46f
+              name: 'Card {#SNMPINDEX} {#SNMPVALUE}: CPU usage'
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.2011.2.6.7.1.1.2.1.5.{#SNMPINDEX}'
+              key: 'hwMusaBoardCpuRate[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              value_type: FLOAT
+              trends: 180d
+              units: '%'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_{#SNMPVALUE}'
+                - tag: health
+                  value: cpu
+              trigger_prototypes:
+                - uuid: db0fececaf1149d9aac7bfcb583ff773
+                  expression: 'min(/Template OLT Huawei/hwMusaBoardCpuRate[{#SNMPINDEX}],10m) > {$CPU.UTIL.MAX}'
+                  name: 'Placa {#SNMPINDEX} {#SNMPVALUE}: Utilização de CPU acima de {$CPU.UTIL.MAX}%'
+                  opdata: 'Uso de CPU atual: {ITEM.LASTVALUE1}%'
+                  priority: HIGH
+                  manual_close: 'YES'
+            - uuid: 434dc7ca0315467580ada4389b6cd65d
+              name: 'Card {#SNMPINDEX} {#SNMPVALUE}: Status'
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.2011.2.6.7.1.1.2.1.8.{#SNMPINDEX}'
+              key: 'hwMusaBoardOnlineState[{#SNMPINDEX}]'
+              history: 7d
+              trends: 180d
+              valuemap:
+                name: Card Status
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_{#SNMPVALUE}'
+                - tag: health
+                  value: status
+              trigger_prototypes:
+                - uuid: 58228af00101494eac3b1365c45d6acc
+                  expression: 'last(/Template OLT Huawei/hwMusaBoardOnlineState[{#SNMPINDEX}])<>1 and (last(/Template OLT Huawei/hwMusaBoardOnlineState[{#SNMPINDEX}],#1)<>last(/Template OLT Huawei/hwMusaBoardOnlineState[{#SNMPINDEX}],#2))'
+                  name: 'Placa {#SNMPINDEX} {#SNMPVALUE}: Indisponível'
+                  priority: DISASTER
+                  manual_close: 'YES'
+            - uuid: 72aee5ef1bf74fdcb5fd6c7e82254381
+              name: 'Card {#SNMPINDEX} {#SNMPVALUE}: Memory usage'
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.2011.2.6.7.1.1.2.1.6.{#SNMPINDEX}'
+              key: 'hwMusaBoardRamUseRate[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              value_type: FLOAT
+              trends: 180d
+              units: '%'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_{#SNMPVALUE}'
+                - tag: health
+                  value: memory
+              trigger_prototypes:
+                - uuid: 08c5bcab6f1a4724be0b263a5637aa39
+                  expression: 'min(/Template OLT Huawei/hwMusaBoardRamUseRate[{#SNMPINDEX}],10m) > {$MEM.UTIL.MAX}'
+                  name: 'Placa {#SNMPINDEX} {#SNMPVALUE}: Utilização de memória acima de {$MEM.UTIL.MAX}%'
+                  opdata: 'Uso de memória atual: {ITEM.LASTVALUE1}%'
+                  priority: HIGH
+                  manual_close: 'YES'
+            - uuid: ea166ca5a801488184983c083b310246
+              name: 'Card {#SNMPINDEX} {#SNMPVALUE}: Temperature'
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.2011.6.3.3.2.1.13.{#SNMPINDEX}'
+              key: 'hwSlotTemperature[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: ºC
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_{#SNMPVALUE}'
+                - tag: health
+                  value: temp
+              trigger_prototypes:
+                - uuid: ae70126240c246159819b71841ce0349
+                  expression: 'min(/Template OLT Huawei/hwSlotTemperature[{#SNMPINDEX}],5m) > {$TEMP.HIGH.THRESHOLD}'
+                  name: 'Placa {#SNMPINDEX} {#SNMPVALUE}: Temperatura acima de {$TEMP.HIGH.THRESHOLD}°C'
+                  opdata: 'Temperatura atual: {ITEM.LASTVALUE1} °C'
+                  priority: HIGH
+                  manual_close: 'YES'
+        - uuid: 47c321b33eb842fb80a530be1af1701c
+          name: 'GPON Interfaces Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#SNMPVALUE},1.3.6.1.2.1.31.1.1.1.1]'
+          key: gponInterfacesDiscovery
+          delay: 1d;wd2-7h4
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#SNMPVALUE}'
+                value: (GPON)
+                formulaid: A
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: 864d4f6c41f64e67aef0884b53963cad
+              name: 'Interface {#SNMPVALUE}: Operational status'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}'
+              key: 'gponIfOperStatus[{#SNMPINDEX}]'
+              history: 7d
+              trends: 180d
+              valuemap:
+                name: 'Link Status'
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: health
+                  value: status
+            - uuid: 36b6b9aa4f9a4d7ba632307df12a3a2e
+              name: 'Interface {#SNMPVALUE}: Bits received'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.2011.6.128.1.1.4.21.1.15.{#SNMPINDEX}'
+              key: 'hwGponOltEthernetStatisticReceivedBytes[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: traffic
+                  value: in
+            - uuid: c828122b0981465d96f42fc985cb821e
+              name: 'Interface {#SNMPVALUE}: Bits sent'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.2011.6.128.1.1.4.21.1.30.{#SNMPINDEX}'
+              key: 'hwGponOltEthernetStatisticSendBytes[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: traffic
+                  value: out
+            - uuid: 8be447824fce43648abf94f318c9c1ca
+              name: 'Interface {#SNMPVALUE}: Tx power'
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.2011.6.128.1.1.2.23.1.4.{#SNMPINDEX}'
+              key: 'hwGponOltOpticsDdmInfoTxPower[{#SNMPINDEX}]'
+              delay: 1h
+              history: 7d
+              value_type: FLOAT
+              trends: 180d
+              units: dBm
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '0.01'
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_power
+                  value: tx_power
+            - uuid: 848f71c90a084f4c912d1ad9c6fd2096
+              name: 'Interface {#SNMPVALUE}: ONUs authorized'
+              type: DEPENDENT
+              key: 'onusAuthorized[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].authorized'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatusCollection
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: authorized
+              trigger_prototypes:
+                - uuid: dcae0808f2904ffcbbb1e5c1299aef0a
+                  expression: 'last(/Template OLT Huawei/onusAuthorized[{#SNMPVALUE}])>{$GPON.ONU.AUTH.THRESHOLD}'
+                  name: 'Interface {#SNMPVALUE}: ONUs autorizadas acima do limite (>{$GPON.ONU.AUTH.THRESHOLD})'
+                  opdata: 'ONUs autorizadas: {ITEM.LASTVALUE1}'
+                  priority: WARNING
+                  manual_close: 'YES'
+            - uuid: 965f0556e49c48a18ef7a8258851c03d
+              name: 'Interface {#SNMPVALUE}: ONUs dying gasp'
+              type: DEPENDENT
+              key: 'onuDyingGasp[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].dying_gasp'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatusCollection
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: dying_gasp
+            - uuid: 36a58a9d106a4745a165bd4df4cb4fe0
+              name: 'Interface {#SNMPVALUE}: ONUs link loss'
+              type: DEPENDENT
+              key: 'onuLinkLoss[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].link_loss'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatusCollection
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: link_loss
+            - uuid: 2206929f00fa4cd797ba0d0e0293e49d
+              name: 'Interface {#SNMPVALUE}: ONUs offline'
+              type: DEPENDENT
+              key: 'onusOffline[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].offline'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatusCollection
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: offline
+            - uuid: bd2fad3a14cc4a609ff592722d73fadd
+              name: 'Interface {#SNMPVALUE}: ONUs online'
+              type: DEPENDENT
+              key: 'onusOnline[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].online'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatusCollection
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: online
+            - uuid: 9f6a3b7c1d2e4f58a03c6e8d5b4a7f2c
+              name: 'Interface {#SNMPVALUE}: ONUs unknown'
+              type: DEPENDENT
+              key: 'onuUnknown[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].unknown'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatusCollection
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: unknown
+          trigger_prototypes:
+            - uuid: b0ebd55f6dbf4906bea8e4c2f94a1685
+              expression: 'last(/Template OLT Huawei/onuLinkLoss[{#SNMPVALUE}])>{$GPON.ONU.LOSS.THRESHOLD}'
+              recovery_mode: NONE
+              name: 'Interface {#SNMPVALUE}: Possível rompimento'
+              opdata: 'ONUs com perda de link: {ITEM.LASTVALUE1}'
+              priority: AVERAGE
+              manual_close: 'YES'
+        - uuid: cf384773779b4812bd03562189484d84
+          name: 'ONUs Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#INTERFACE_NAME},1.3.6.1.2.1.31.1.1.1.1, {#ONU_NAME},1.3.6.1.4.1.2011.6.128.1.1.2.43.1.9]'
+          key: onuDiscovery
+          delay: 1d
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: 245de2c014504a868e0229d906cbc4ca
+              name: 'ONU {#CHASSI}/{#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME}: OLT Rx power'
+              type: DEPENDENT
+              key: 'oltRxPower[{#PON_ID}.{#ONU_ID}]'
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              trends: 180d
+              units: dBm
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.power_data["{#PON_ID}.{#ONU_ID}"].olt_rx_power'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: oltRxPowerCollection
+              tags:
+                - tag: onu_power
+                  value: olt_rx
+            - uuid: 4634ee9918cc4ee2b89a04525285144c
+              name: 'ONU {#CHASSI}/{#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME}: ONU Rx power'
+              type: DEPENDENT
+              key: 'onuRxPower[{#PON_ID}.{#ONU_ID}]'
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              trends: 180d
+              units: dBm
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.power_data["{#PON_ID}.{#ONU_ID}"].onu_rx_power'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuRxPowerCollection
+              tags:
+                - tag: onu_power
+                  value: onu_rx
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  /**
+                   * Huawei ONU Discovery - Fixed for actual SNMP data structure
+                   * Handles real Huawei interface naming: "GPON 0/1/0" format
+                   * Replicates discovery_huawei_onu_gpon.py logic exactly
+                   */
+
+                  var raw = JSON.parse(value);
+
+                  /* 1. Build GPON port mapping (mimics get_gpon_port_name_and_port_id_list) */
+                  var gponPortList = [];
+
+                  raw.forEach(function(item) {
+                      var interfaceName = item['{#INTERFACE_NAME}'];
+                      var snmpIndex = item['{#SNMPINDEX}'];
+
+                      // Only process GPON interface entries (no ONU_NAME field)
+                      if (interfaceName && interfaceName.match(/^GPON\s+\d+\/\d+\/\d+$/) && !item['{#ONU_NAME}']) {
+                          gponPortList.push({
+                              portId: snmpIndex,
+                              portName: interfaceName.replace('GPON ', '') // Remove "GPON " prefix to get "0/1/0"
+                          });
+                      }
+                  });
+
+                  /* 2. Process ONUs and correlate (mimics get_onus_info_detail) */
+                  var onuList = [];
+
+                  raw.forEach(function(item) {
+                      var onuName = item['{#ONU_NAME}'];
+                      var snmpIndex = item['{#SNMPINDEX}'];
+
+                      // Process only ONU entries (have ONU_NAME)
+                      if (!onuName || !snmpIndex) return;
+
+                      // Extract ONU ID from SNMP index (last part after dot)
+                      var onuId = snmpIndex.split('.').pop();
+
+                      // Extract PON port index (part before the dot)
+                      var ponIndex = snmpIndex.split('.')[0];
+
+                      // Find matching GPON port by comparing port IDs
+                      var matchedPort = null;
+                      for (var i = 0; i < gponPortList.length; i++) {
+                          var gponPort = gponPortList[i];
+                          if (ponIndex === gponPort.portId) {
+                              matchedPort = gponPort;
+                              break;
+                          }
+                      }
+
+                      if (!matchedPort) return;
+
+                      // Parse port details: "0/1/0" -> chassi=0, slot=1, pon=0
+                      var portDetail = matchedPort.portName.split("/");
+                      if (portDetail.length !== 3) return;
+
+                      var chassi = portDetail[0];
+                      var slot = portDetail[1];
+                      var pon = portDetail[2];
+
+                      // Create ONU entry (exactly matching Python script output)
+                      onuList.push({
+                          "{#ONU_NAME}": onuName,
+                          "{#CHASSI}": chassi,
+                          "{#SLOT}": slot,
+                          "{#PON}": pon,
+                          "{#ONU_ID}": onuId,
+                          "{#PON_ID}": ponIndex
+                      });
+                  });
+
+                  /* 3. Return raw array for discovery rule */
+                  return JSON.stringify(onuList);
+        - uuid: f56a0687a3af4ad59fe333a3fc9501bb
+          name: 'Uplink Interfaces Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#SNMPVALUE},1.3.6.1.2.1.31.1.1.1.1,{#OPERSTATUS},1.3.6.1.2.1.2.2.1.8]'
+          key: uplinkInterfacesDiscovery
+          delay: 1d;wd2-7h4
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#OPERSTATUS}'
+                value: '1'
+                formulaid: A
+              - macro: '{#SNMPVALUE}'
+                value: (ethernet)
+                formulaid: B
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: 1c8fe3788d4f4ceca41813be39ffa45a
+              name: 'Interface {#SNMPVALUE}: Bits received'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.6.{#SNMPINDEX}'
+              key: 'ifHCInOctets[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: uplink
+                - tag: traffic
+                  value: in
+            - uuid: 67e5697f833f4556ae0614ae9b1bc4a0
+              name: 'Interface {#SNMPVALUE}: Bits sent'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.10.{#SNMPINDEX}'
+              key: 'ifHCOutOctets[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: uplink
+                - tag: traffic
+                  value: out
+            - uuid: 8730e9439bbe4e149b299d05b6cff15a
+              name: 'Interface {#SNMPVALUE}: Speed'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.15.{#SNMPINDEX}'
+              key: 'ifHighSpeed[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '1000000'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              tags:
+                - tag: interface
+                  value: uplink
+            - uuid: 1cfc1d43048f467886eae1f833de3d9f
+              name: 'Interface {#SNMPVALUE}: Operational status'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}'
+              key: 'ifOperStatus[{#SNMPINDEX}]'
+              history: 7d
+              trends: 180d
+              tags:
+                - tag: interface
+                  value: uplink
+                - tag: health
+                  value: status
+              trigger_prototypes:
+                - uuid: a256d17bbd1649e18540102908993876
+                  expression: 'last(/Template OLT Huawei/ifOperStatus[{#SNMPINDEX}])=2 and (last(/Template OLT Huawei/ifOperStatus[{#SNMPINDEX}],#1)<>last(/Template OLT Huawei/ifOperStatus[{#SNMPINDEX}],#2))=1'
+                  name: 'Interface {#SNMPVALUE}: Link inativo'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+          trigger_prototypes:
+            - uuid: 9f39ec148dfe4e87b305192ce7084adb
+              expression: |
+                (avg(/Template OLT Huawei/ifHCInOctets[{#SNMPINDEX}],15m)>({$IF.UTIL.MAX}/100)*last(/Template OLT Huawei/ifHighSpeed[{#SNMPINDEX}]) or
+                avg(/Template OLT Huawei/ifHCOutOctets[{#SNMPINDEX}],15m)>({$IF.UTIL.MAX}/100)*last(/Template OLT Huawei/ifHighSpeed[{#SNMPINDEX}])) and
+                last(/Template OLT Huawei/ifHighSpeed[{#SNMPINDEX}])>0
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: |
+                avg(/Template OLT Huawei/ifHCInOctets[{#SNMPINDEX}],15m)<(({$IF.UTIL.MAX}-3)/100)*last(/Template OLT Huawei/ifHighSpeed[{#SNMPINDEX}]) and
+                avg(/Template OLT Huawei/ifHCOutOctets[{#SNMPINDEX}],15m)<(({$IF.UTIL.MAX}-3)/100)*last(/Template OLT Huawei/ifHighSpeed[{#SNMPINDEX}])
+              name: 'Interface {#SNMPVALUE}: Utilização de banda acima de {$IF.UTIL.MAX}%'
+              opdata: 'Entrada: {ITEM.LASTVALUE1}, Saída: {ITEM.LASTVALUE3}, Velocidade da porta: {ITEM.LASTVALUE2}'
+              priority: WARNING
+              manual_close: 'YES'
+      macros:
+        - macro: '{$CPU.UTIL.MAX}'
+          value: '90'
+        - macro: '{$GPON.ONU.AUTH.THRESHOLD}'
+          value: '100'
+        - macro: '{$GPON.ONU.LOSS.THRESHOLD}'
+          value: '4'
+        - macro: '{$IF.UTIL.MAX}'
+          value: '90'
+        - macro: '{$MEM.UTIL.MAX}'
+          value: '90'
+        - macro: '{$OLT.RX.POWER.THRESHOLD}'
+          value: '-30'
+        - macro: '{$ONU.RX.POWER.THRESHOLD}'
+          value: '-28'
+        - macro: '{$TEMP.HIGH.THRESHOLD}'
+          value: '60'
+      valuemaps:
+        - uuid: 67a3f2ed1466413bb15acfa00dfe039b
+          name: Card Status
+          mappings:
+            - value: '1'
+              newvalue: online
+            - value: '2'
+              newvalue: offline
+            - value: '3'
+              newvalue: unmanageable
+            - value: '-1'
+              newvalue: invalid
+        - uuid: 26b0b64cdcca44c7b64f773011da33c1
+          name: 'Link Status'
+          mappings:
+            - value: '-1'
+              newvalue: invalid
+            - value: '1'
+              newvalue: up
+            - value: '2'
+              newvalue: down

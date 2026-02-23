@@ -19,12 +19,23 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Authentication
 - App checks for stored token on mount by calling `GET /api/auth/me/`. If valid, user proceeds to the main app. If invalid/missing, the login page is shown.
-- Login page sends `POST /api/auth/login/` with username/password, receives a token, stores it in `localStorage` as `auth_token`.
+- Login page sends `POST /api/auth/login/` with username/password, receives a token and user info (including `role` and `can_modify_settings`), stores token in `localStorage` as `auth_token`.
 - Logout calls `POST /api/auth/logout/`, clears the token from `localStorage`, and returns to the login page.
 - Axios request interceptor attaches `Authorization: Token <key>` header on every request.
 - Axios response interceptor clears the stored token on 401 responses (no page reload — React state handles the transition).
 - Data-fetching effects (`fetchOlts`, `fetchVendorProfiles`, SNMP checks) are guarded with `if (!authToken) return` to prevent 401 loops on unauthenticated state.
 - Login page uses the same design language as the main app: emerald accent, VarunaIcon with "VARUNA" text matching the nav header proportions.
+
+### Role-Aware UX
+- `canManageSettings` is derived from `authUser?.can_modify_settings` after login/me response.
+- Viewers (`can_modify_settings=false`):
+  - Settings tab is hidden from nav; if accessed directly, redirected to topology view.
+  - Vendor profile fetch is skipped.
+  - SNMP checks are not triggered automatically.
+  - Auto-maintenance (discovery/polling/power) is not submitted.
+  - PON sidebar refresh buttons are hidden.
+  - OLT creation/editing/deletion is blocked.
+- Permission error responses from the backend (`'Insufficient permissions for this action.'`) are translated through `BACKEND_MESSAGE_MAP` and displayed as contextual errors.
 
 ## Threshold Control Logic
 - The **Threshold Control** uses a single input for the "Normal Limit" (Good -> Warning boundary).
@@ -48,10 +59,15 @@ The UI remains topology-first. No dashboard page is required for current product
 - Desktop table ONU highlight uses a single inset stroke (`inset 0 0 0 2px`) so all four border edges render with uniform thickness.
 - Alarm mode state propagation from topology to app shell uses a stable callback and no-op equality guard to avoid render loops (`Maximum update depth exceeded`) during topology view startup.
 
+## Resume-on-Focus Refresh
+- When the browser tab regains visibility (via `visibilitychange`, `focus`, or `pageshow` events), the app triggers a topology refresh if the tab was hidden for longer than `RESUME_REFRESH_THROTTLE_MS` (4 seconds).
+- This keeps displayed data current after the user switches away from and back to the Varuna tab without requiring manual refresh.
+
 ## Freshness and Coherence Rules
 - OLT health color is shared between topology and settings views.
 - Stale status data is considered unreliable and forced to gray:
   - if `now - last_poll_at > polling_interval_seconds` plus an additional grace window.
+  - A minimum tolerance of 10 minutes is enforced so short polling intervals do not cause premature gray state.
 - OLT color semantics follow slot health:
   - `red` when all active slots are offline (`red`),
   - `yellow` when at least one slot is offline (`red`) and at least one other slot is not offline,
@@ -193,6 +209,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - The timestamp is the latest `last_poll_at` across all OLTs, formatted with `formatReadingAt` for locale awareness.
 - The right side is empty when no poll has occurred yet.
 - Footer respects dark mode and does not collapse in the flex layout (`shrink-0`).
+- Footer includes safe-area bottom padding (`pb-[calc(0.375rem+env(safe-area-inset-bottom))]`) for notched mobile devices.
 
 ## Internationalization (i18n)
 - Translation is handled by `react-i18next` configured in `frontend/src/i18n.js`.
@@ -204,6 +221,22 @@ The UI remains topology-first. No dashboard page is required for current product
   - Unknown backend messages pass through untranslated for operator visibility.
 - `getApiErrorMessage()` accepts a `t` function and runs all extracted backend messages through `translateBackendMessage()` before returning.
 - Queued settings actions (`runQueuedSettingsAction`) prefer frontend-translated messages over raw backend `detail` strings.
+
+## Missing Serial Highlighting
+- ONUs with missing or empty serial numbers are highlighted with a red background in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
+- This draws attention to ONUs that may need re-registration or have incomplete SNMP discovery data.
+
+## Mobile UX
+- Viewport meta includes `viewport-fit=cover, maximum-scale=1.0, user-scalable=no` to prevent zoom and handle safe areas on notched devices.
+- Input, select, and textarea elements are forced to 16px font on mobile (`max-width: 1023px`) to prevent iOS Safari auto-zoom on focus.
+- Search input uses `text-base md:text-[11px]` for readable font on mobile while keeping compact desktop sizing.
+- Layout uses `h-[100dvh] min-h-[100dvh]` instead of `h-screen` for correct mobile viewport height on Safari.
+
+## Status Tab Refresh
+- When a status refresh is triggered from the PON sidebar, a translucent overlay with a centered spinner covers the status content area during the operation. Existing data stays visible underneath.
+
+## Auto-Maintenance Control
+- `FRONTEND_AUTO_MAINTENANCE_ENABLED` flag (default `false`) controls whether the frontend submits automatic background maintenance requests. When disabled, only manual interval actions and resume-on-focus refreshes run.
 
 ## Frontend Invariants
 - Do not change visual identity without explicit product request.

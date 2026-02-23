@@ -20,6 +20,7 @@ from topology.api.serializers import (
     ONUSerializer,
     VendorProfileSerializer,
 )
+from topology.api.auth_utils import can_modify_settings
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, VendorProfile
 from topology.services.cache_service import cache_service
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
@@ -42,7 +43,14 @@ def _is_true(value: str | None) -> bool:
     return str(value or '').lower() in {'1', 'true', 'yes', 'on'}
 
 
-class VendorProfileViewSet(viewsets.ModelViewSet):
+def _settings_forbidden_response():
+    return Response(
+        {'detail': 'Insufficient permissions for this action.'},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
+class VendorProfileViewSet(viewsets.ReadOnlyModelViewSet):
     """
     ViewSet for Vendor Profiles
     """
@@ -58,6 +66,23 @@ class OLTViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = OLTSerializer
+
+    def _ensure_settings_write_access(self, request):
+        if can_modify_settings(request.user):
+            return None
+        return _settings_forbidden_response()
+
+    def create(self, request, *args, **kwargs):
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+        return super().update(request, *args, **kwargs)
 
     def get_queryset(self):
         include_topology = _is_true(self.request.query_params.get('include_topology', 'false'))
@@ -186,6 +211,10 @@ class OLTViewSet(viewsets.ModelViewSet):
         """
         Soft-delete OLT and deactivate discovered topology to preserve history.
         """
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+
         olt = self.get_object()
         if not olt.is_active:
             return Response(status=status.HTTP_204_NO_CONTENT)
@@ -431,6 +460,10 @@ class OLTViewSet(viewsets.ModelViewSet):
         """
         Triggers power refresh for all ONUs in this OLT
         """
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
         validation_error = self._validate_vendor_action(
             olt,
@@ -477,6 +510,10 @@ class OLTViewSet(viewsets.ModelViewSet):
         """
         Triggers power refresh for every active OLT and stores a fresh batch snapshot.
         """
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+
         force_refresh = _is_true(request.data.get('force_refresh', True))
         olts = list(
             OLT.objects.filter(is_active=True, vendor_profile__is_active=True)
@@ -556,6 +593,10 @@ class OLTViewSet(viewsets.ModelViewSet):
         """
         Run ONU discovery immediately for one OLT.
         """
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
         validation_error = self._validate_vendor_action(
             olt,
@@ -607,6 +648,10 @@ class OLTViewSet(viewsets.ModelViewSet):
         Quick SNMP connectivity check — queries sysDescr.0 to verify the OLT is reachable.
         Returns { reachable: bool, sys_descr: str|null, olt_id: int }
         """
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
         if str(olt.snmp_version).lower() != 'v2c':
             detail = 'SNMP v3 is not yet supported by backend runtime credentials.'
@@ -673,6 +718,10 @@ class OLTViewSet(viewsets.ModelViewSet):
         """
         Run ONU status polling immediately for one OLT.
         """
+        access_error = self._ensure_settings_write_access(request)
+        if access_error is not None:
+            return access_error
+
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
         validation_error = self._validate_vendor_action(
             olt,
@@ -785,6 +834,8 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         """
         onu = self.get_object()
         refresh = _is_true(request.query_params.get('refresh', 'true'))
+        if refresh and not can_modify_settings(request.user):
+            return _settings_forbidden_response()
         if refresh:
             self._ensure_status_snapshot_for_power(onu.olt)
         result_map = power_service.refresh_for_onus([onu], force_refresh=refresh)
@@ -811,6 +862,8 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         - or olt_id + slot_id + pon_id to refresh one PON quickly
         """
         refresh = _is_true(request.data.get('refresh', True))
+        if refresh and not can_modify_settings(request.user):
+            return _settings_forbidden_response()
         onu_ids = request.data.get('onu_ids') or []
         olt_id = request.data.get('olt_id')
         slot_id = request.data.get('slot_id')
@@ -868,3 +921,8 @@ class OLTPONViewSet(viewsets.ModelViewSet):
     queryset = OLTPON.objects.filter(olt__is_active=True, is_active=True).select_related('olt', 'slot')
     serializer_class = OLTPONSerializer
     filterset_fields = ['olt', 'slot', 'pon_id', 'pon_key', 'is_active']
+
+    def partial_update(self, request, *args, **kwargs):
+        if not can_modify_settings(request.user):
+            return _settings_forbidden_response()
+        return super().partial_update(request, *args, **kwargs)

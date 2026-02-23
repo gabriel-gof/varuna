@@ -9,7 +9,7 @@ import math
 import re
 import time
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from django.conf import settings
 from django.utils import timezone
@@ -109,6 +109,55 @@ def _normalize_onu_rx(raw_value) -> Optional[float]:
     if value < -50 or value > 10:
         return None
     return round(value, 2)
+
+
+def _formula_hundredths_dbm(raw_value) -> Optional[float]:
+    """Huawei ONU Rx: raw * 0.01, range [-50, 10]."""
+    parsed_dbm = _extract_dbm_value(raw_value)
+    if parsed_dbm is not None:
+        return parsed_dbm
+    raw = _to_int(raw_value)
+    if raw is None:
+        return None
+    value = raw * 0.01
+    if value < -50 or value > 10:
+        return None
+    return round(value, 2)
+
+
+def _formula_huawei_olt_rx(raw_value) -> Optional[float]:
+    """Huawei OLT Rx: (raw - 10000) / 100, range [-50, 10]."""
+    parsed_dbm = _extract_dbm_value(raw_value)
+    if parsed_dbm is not None:
+        return parsed_dbm
+    raw = _to_int(raw_value)
+    if raw is None:
+        return None
+    value = (raw - 10000) / 100
+    if value < -50 or value > 10:
+        return None
+    return round(value, 2)
+
+
+def _formula_dbm_string(raw_value) -> Optional[float]:
+    """String-only dBm parser (e.g. '-27.214(dBm)')."""
+    return _extract_dbm_value(raw_value)
+
+
+POWER_FORMULA_REGISTRY: Dict[str, Callable] = {
+    'zte_onu_rx': _normalize_onu_rx,
+    'zte_olt_rx': _normalize_olt_rx,
+    'hundredths_dbm': _formula_hundredths_dbm,
+    'huawei_olt_rx': _formula_huawei_olt_rx,
+    'dbm_string': _formula_dbm_string,
+}
+
+
+def resolve_power_formula(name: Optional[str], default_fn: Callable) -> Callable:
+    """Resolve a formula name from vendor config, falling back to default."""
+    if not name:
+        return default_fn
+    return POWER_FORMULA_REGISTRY.get(str(name).strip(), default_fn)
 
 
 class PowerService:
@@ -358,6 +407,8 @@ class PowerService:
             onu_rx_oid = str(power_cfg.get("onu_rx_oid") or "").strip(".")
             olt_rx_oid = str(power_cfg.get("olt_rx_oid") or "").strip(".")
             onu_rx_suffix = str(power_cfg.get("onu_rx_suffix") or "").strip(".")
+            normalize_onu_rx = resolve_power_formula(power_cfg.get("onu_rx_formula"), _normalize_onu_rx)
+            normalize_olt_rx = resolve_power_formula(power_cfg.get("olt_rx_formula"), _normalize_olt_rx)
             chunk_size = self._resolve_int(
                 power_cfg.get("get_chunk_size"),
                 self.chunk_size,
@@ -445,6 +496,10 @@ class PowerService:
 
             supports_olt_rx = bool(olt_rx_oid)
             power_cache_batch: Dict[int, Dict] = {}
+            cached_power_by_onu = cache_service.get_many_onu_power(
+                olt.id,
+                [onu.id for onu in olt_onus],
+            )
 
             if not onu_rx_oid:
                 for onu in olt_onus:
@@ -464,7 +519,7 @@ class PowerService:
                 pending_oids: List[str] = []
 
                 for onu in pon_onus:
-                    cached = cache_service.get_onu_power(onu.olt_id, onu.id)
+                    cached = cached_power_by_onu.get(onu.id)
                     if cached and not force_refresh:
                         cached_onu_rx = cached.get("onu_rx_power")
                         cached_olt_rx = cached.get("olt_rx_power") if supports_olt_rx else None
@@ -528,8 +583,8 @@ class PowerService:
                         continue
 
                     raw_values = target_to_raw.get(onu.id, {})
-                    onu_rx = _normalize_onu_rx(raw_values.get("onu_raw"))
-                    olt_rx = _normalize_olt_rx(raw_values.get("olt_raw")) if supports_olt_rx else None
+                    onu_rx = normalize_onu_rx(raw_values.get("onu_raw"))
+                    olt_rx = normalize_olt_rx(raw_values.get("olt_raw")) if supports_olt_rx else None
                     read_at = now_iso if (onu_rx is not None or olt_rx is not None) else None
 
                     payload = {
@@ -541,7 +596,8 @@ class PowerService:
                         "olt_rx_power": olt_rx,
                         "power_read_at": read_at,
                     }
-                    power_cache_batch[onu.id] = payload
+                    if read_at is not None:
+                        power_cache_batch[onu.id] = payload
                     results[onu.id] = payload
 
                 if (
@@ -594,8 +650,8 @@ class PowerService:
                         elif supports_olt_rx and oid.startswith(f"{olt_rx_oid}."):
                             raw_olt = raw
 
-                    onu_rx = _normalize_onu_rx(raw_onu)
-                    olt_rx = _normalize_olt_rx(raw_olt) if supports_olt_rx else None
+                    onu_rx = normalize_onu_rx(raw_onu)
+                    olt_rx = normalize_olt_rx(raw_olt) if supports_olt_rx else None
                     if onu_rx is None and olt_rx is None:
                         continue
 
@@ -616,6 +672,33 @@ class PowerService:
                         and retry_index < len(retry_candidates) - 1
                     ):
                         time.sleep(pause_between_single_retries_seconds)
+
+            # Do not regress to empty power snapshots: retain last known cache values
+            # when a forced refresh cannot produce fresh readings.
+            if force_refresh:
+                for onu in olt_onus:
+                    current = results.get(onu.id) or {}
+                    if current.get("power_read_at") is not None:
+                        continue
+
+                    cached = cached_power_by_onu.get(onu.id) or {}
+                    cached_onu_rx = cached.get("onu_rx_power")
+                    cached_olt_rx = cached.get("olt_rx_power") if supports_olt_rx else None
+                    cached_read_at = cached.get("power_read_at")
+                    if cached_onu_rx is None and cached_olt_rx is None:
+                        continue
+
+                    cached_payload = {
+                        "onu_id": onu.id,
+                        "slot_id": onu.slot_id,
+                        "pon_id": onu.pon_id,
+                        "onu_number": onu.onu_id,
+                        "onu_rx_power": cached_onu_rx,
+                        "olt_rx_power": cached_olt_rx,
+                        "power_read_at": cached_read_at,
+                    }
+                    results[onu.id] = cached_payload
+                    power_cache_batch[onu.id] = cached_payload
 
             if power_cache_batch:
                 cache_service.set_many_onu_power(olt.id, power_cache_batch, ttl=ttl)

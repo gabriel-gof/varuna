@@ -221,6 +221,7 @@ const resources = {
       'Discovery interval must be greater than 0 minutes.': 'Discovery interval must be greater than 0',
       'Polling interval must be greater than 0 seconds.': 'Polling interval must be greater than 0',
       'Power interval must be greater than 0 seconds.': 'Power interval must be greater than 0',
+      'Insufficient permissions for this action.': 'You do not have permission for this action',
       'Discovery interval exceeds maximum': 'Discovery interval exceeds the maximum',
       'Polling interval exceeds maximum': 'Polling interval exceeds the maximum',
       'Power interval exceeds maximum': 'Power interval exceeds the maximum'
@@ -445,6 +446,7 @@ const resources = {
       'Discovery interval must be greater than 0 minutes.': 'Intervalo de descoberta deve ser maior que 0',
       'Polling interval must be greater than 0 seconds.': 'Intervalo de polling deve ser maior que 0',
       'Power interval must be greater than 0 seconds.': 'Intervalo de potência deve ser maior que 0',
+      'Insufficient permissions for this action.': 'Você não tem permissão para esta ação',
       'Discovery interval exceeds maximum': 'Intervalo de descoberta excede o máximo permitido',
       'Polling interval exceeds maximum': 'Intervalo de polling excede o máximo permitido',
       'Power interval exceeds maximum': 'Intervalo de potência excede o máximo permitido'

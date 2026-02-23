@@ -42,6 +42,26 @@ def _rows_to_index_map(rows: list, base_oid: str) -> Dict[str, str]:
 _SERIAL_SENTINEL_VALUES = frozenset({"N/A", "NA", "NONE", "NULL", "--", "-"})
 
 
+def _decode_hex_serial(hex_str: str) -> Optional[str]:
+    """Decode hex-encoded serial (e.g. '0X434D535A3B0699E9' → 'CMSZ3B0699E9').
+
+    Huawei returns ONU serials as raw hex where the first 4 bytes are the
+    ASCII vendor ID and the remaining bytes are the serial number.
+    """
+    body = hex_str[2:]  # strip '0X'
+    if len(body) < 10 or len(body) % 2 != 0:
+        return None
+    if not all(c in '0123456789ABCDEF' for c in body):
+        return None
+    try:
+        vendor_bytes = bytes.fromhex(body[:8])
+        if all(0x20 <= b <= 0x7E for b in vendor_bytes):
+            return vendor_bytes.decode('ascii') + body[8:].upper()
+    except (ValueError, UnicodeDecodeError):
+        pass
+    return None
+
+
 def _normalize_serial(raw: str) -> str:
     if not raw:
         return ""
@@ -50,6 +70,10 @@ def _normalize_serial(raw: str) -> str:
     normalized = raw.strip().upper()
     if normalized in _SERIAL_SENTINEL_VALUES:
         return ""
+    if normalized.startswith('0X'):
+        decoded = _decode_hex_serial(normalized)
+        if decoded:
+            return decoded
     return normalized
 
 
@@ -96,6 +120,14 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore discovery_enabled for the selected OLT(s)")
 
+    def _is_due(self, olt: OLT, now) -> bool:
+        if olt.next_discovery_at:
+            return olt.next_discovery_at <= now
+        if olt.last_discovery_at:
+            interval_minutes = max(int(olt.discovery_interval_minutes or 0), 1)
+            return (olt.last_discovery_at + timedelta(minutes=interval_minutes)) <= now
+        return True
+
     def handle(self, *args, **options):
         force = bool(options.get("force", False))
         if force:
@@ -118,7 +150,18 @@ class Command(BaseCommand):
             self.stdout.write("No OLTs eligible for discovery.")
             return
 
-        for olt in olt_qs:
+        now = timezone.now()
+        olts = list(olt_qs)
+        if not force and not olt_id:
+            due_olts = [olt for olt in olts if self._is_due(olt, now)]
+        else:
+            due_olts = olts
+
+        if not due_olts:
+            self.stdout.write("No OLTs due for discovery.")
+            return
+
+        for olt in due_olts:
             self._discover_for_olt(olt, dry_run=options.get("dry_run", False))
 
     def _discover_for_olt(self, olt: OLT, dry_run: bool = False) -> None:
@@ -217,6 +260,7 @@ class Command(BaseCommand):
 
         interfaces_cfg = oid_templates.get("pon_interfaces", {})
         iface_rows_total = 0
+        pon_map: Dict[int, Dict[str, Any]] = {}
 
         if interfaces_cfg and not dry_run:
             iface_name_oid = interfaces_cfg.get("name_oid")
@@ -256,6 +300,13 @@ class Command(BaseCommand):
                         "rack_id": rack_id,
                         "shelf_id": shelf_id,
                         "port_id": port_id,
+                    }
+                    pon_map[int(index)] = {
+                        'slot_id': location.get(slot_from, shelf_id),
+                        'pon_id': location.get(pon_from, port_id),
+                        'rack_id': rack_id,
+                        'shelf_id': shelf_id,
+                        'port_id': port_id,
                     }
                     slot = ensure_slot(identity)
                     ensure_pon(identity, slot, pon_name=iface_name)
@@ -323,7 +374,7 @@ class Command(BaseCommand):
         # Parse all discovered ONUs into a list
         parsed_onus: List[Dict[str, Any]] = []
         for index in sorted(indices):
-            identity = parse_onu_index(index, indexing_cfg)
+            identity = parse_onu_index(index, indexing_cfg, pon_map=pon_map)
             if not identity:
                 skipped += 1
                 continue

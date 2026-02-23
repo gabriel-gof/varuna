@@ -34,7 +34,25 @@ def decode_pon_numeric(pon_numeric: int, encoding: str) -> Optional[Dict[str, in
     return None
 
 
-def parse_onu_index(index_str: str, indexing_cfg: Dict[str, Any]) -> Optional[Dict[str, int]]:
+def map_disconnect_reason(
+    reason_code: Optional[str],
+    disconnect_reason_map: Dict[str, str],
+) -> str:
+    """Map a raw disconnect reason SNMP code to a canonical reason string."""
+    if reason_code is None:
+        return ONULog.REASON_UNKNOWN
+    reason = disconnect_reason_map.get(str(reason_code), ONULog.REASON_UNKNOWN)
+    if reason not in VALID_REASONS or reason == '':
+        return ONULog.REASON_UNKNOWN
+    return reason
+
+
+def parse_onu_index(
+    index_str: str,
+    indexing_cfg: Dict[str, Any],
+    *,
+    pon_map: Optional[Dict[int, Dict[str, int]]] = None,
+) -> Optional[Dict[str, int]]:
     """
     Parse ONU index using a vendor profile indexing strategy.
     Supports:
@@ -99,6 +117,17 @@ def parse_onu_index(index_str: str, indexing_cfg: Dict[str, Any]) -> Optional[Di
             decoded = decode_pon_numeric(values['pon_numeric'], pon_encoding)
             if decoded:
                 location.update(decoded)
+
+    pon_resolve = str(indexing_cfg.get('pon_resolve') or '').strip()
+    if pon_resolve == 'interface_map' and pon_map and values['pon_numeric'] is not None:
+        map_entry = pon_map.get(values['pon_numeric'])
+        if map_entry:
+            for key in ('slot_id', 'pon_id', 'rack_id', 'shelf_id', 'port_id'):
+                if values.get(key) is None and key in map_entry:
+                    values[key] = map_entry[key]
+            location.setdefault('rack', map_entry.get('rack_id'))
+            location.setdefault('shelf', map_entry.get('shelf_id'))
+            location.setdefault('port', map_entry.get('port_id'))
 
     if values['rack_id'] is not None:
         location['rack'] = values['rack_id']

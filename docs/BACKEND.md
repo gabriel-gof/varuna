@@ -10,16 +10,21 @@
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
 - Backend monitoring domain app is `topology` (models, migrations, API routes).
 - `dashboard` is not a backend app/module in current architecture.
+- Backend runtime is currently single-tenant (no tenant_id partitioning across topology models/APIs).
+- Multi-client isolation strategy is stack-level deployment (one backend+db+redis per client), not shared-database tenancy.
 
 ## Backend Layout
 - `backend/topology/models/models.py`: domain models.
 - `backend/topology/api/views.py`: REST endpoints/actions.
 - `backend/topology/api/serializers.py`: API serialization.
+- `backend/topology/api/auth_views.py`: auth endpoints (login, logout, me, change-password).
+- `backend/topology/api/auth_utils.py`: role resolution and permission helpers.
 - `backend/topology/services/snmp_service.py`: SNMP transport.
 - `backend/topology/services/vendor_profile.py`: vendor index/status parsing helpers.
 - `backend/topology/services/olt_health_service.py`: OLT SNMP health persistence.
 - `backend/topology/management/commands/discover_onus.py`: topology discovery.
 - `backend/topology/management/commands/poll_onu_status.py`: status polling.
+- `backend/topology/management/commands/ensure_auth_user.py`: auth user bootstrap.
 
 ## Vendor Extensibility Contract
 Vendor behavior is controlled by `VendorProfile.oid_templates`:
@@ -28,8 +33,8 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
   - `pause_between_walks_seconds` (default `0.5`, range `0.0-5.0`): delay between the main discovery walks (name, serial, status) to reduce burst SNMP load on the OLT.
   - `walk_timeout_seconds` (default `30`, range `5-120`): per-request timeout for SNMP walk operations during discovery. Walks use a generous timeout (separate from the short 2s GET timeout) because slow OLTs may need several seconds per bulk batch. Healthy OLTs respond in <100ms (zero impact); slow OLTs with 3-5s responses complete fine; dead OLTs timeout after one request and existing `mark_olt_unreachable` handles it.
   - `min_safe_ratio` (default `0.3`, range `0.0-1.0`): minimum ratio of discovered ONUs to existing active ONUs. If the walk returns fewer ONUs than `active_count * min_safe_ratio`, deactivation is skipped and a critical log is emitted. Guard only applies when `active_count > 0` (first discovery always proceeds). ONU upserts still run.
-- `status`: status OID, `status_map`, and optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause).
-- `power`: OIDs/suffix for RX reads plus optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause, bounded online retry pass).
+- `status`: status OID, `status_map`, and optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause). Optional `disconnect_reason_oid` and `disconnect_reason_map` enable a second-pass fetch of disconnect reasons for offline ONUs (used by Huawei where status and disconnect cause are separate OIDs).
+- `power`: OIDs/suffix for RX reads plus optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause, bounded online retry pass). Optional `onu_rx_formula` and `olt_rx_formula` select named formulas from the power formula registry (e.g. `hundredths_dbm`, `huawei_olt_rx`); defaults to ZTE normalization when absent.
 
 Default seed migrations:
 - `topology.0002_seed_zte_vendor_profile`: baseline `ZTE / C300`.
@@ -38,12 +43,14 @@ Default seed migrations:
 - `topology.0009_fix_vsol_like_status_map_phase_state`: adjusts VSOL-like phase-state mapping so observed OLT values map correctly (`1/2 -> link_loss`, `4/5 -> dying_gasp`, `3 -> online`), avoiding false `unknown` status for LOS/DyingGasp ONUs.
 - `topology.0010_set_immediate_discovery_deactivation`: sets seeded profile discovery policy to deactivate missing ONUs immediately (`disable_lost_after_minutes=0`) while keeping inactive-history retention.
 - `topology.0011_set_global_immediate_discovery_deactivation`: normalizes discovery policy for all vendor profiles to immediate missing-ONU deactivation.
+- `topology.0012_seed_huawei_vendor_profile`: `Huawei / MA5680T` with interface-map indexing, split disconnect reason OID, and config-driven power formulas.
 
 Parser supports:
 - regex-based index extraction,
 - explicit part-position mapping,
 - fixed index values (for single-slot models, e.g. `fixed.slot_id=1`),
-- legacy ZTE fallback (`pon_numeric.onu_id` with `0x11rrsspp`).
+- legacy ZTE fallback (`pon_numeric.onu_id` with `0x11rrsspp`),
+- `pon_resolve: interface_map` — resolves `pon_numeric` (opaque ifIndex) to slot/pon via a PON interface name map built during discovery (used by Huawei, where ONU SNMP index is `{pon_ifindex}.{onu_id}`).
 
 ## OLT Availability State
 `OLT` now tracks runtime connectivity:
@@ -149,14 +156,49 @@ Background queue contract for OLT-scoped manual actions:
 API uses Django REST Framework `TokenAuthentication`. All endpoints require authentication by default (`DEFAULT_PERMISSION_CLASSES = [IsAuthenticated]`).
 
 Auth endpoints (all under `/api/`):
-- `POST /api/auth/login/` — accepts `{username, password}`, returns `{token, user: {id, username}}`. Public (AllowAny).
+- `POST /api/auth/login/` — accepts `{username, password}`, returns `{token, user: {id, username, role, can_modify_settings}}`. Public (AllowAny).
 - `POST /api/auth/logout/` — deletes the user's token. Requires auth.
-- `GET /api/auth/me/` — returns `{id, username}` for the authenticated user.
+- `GET /api/auth/me/` — returns `{id, username, role, can_modify_settings}` for the authenticated user.
+- `POST /api/auth/change-password/` — accepts `{current_password, new_password}`, validates current password, enforces Django password policy, rotates token. Returns new `{token}`.
 
 Frontend stores the token in `localStorage` as `auth_token` and sends it as `Authorization: Token <key>` on every request via an Axios interceptor. On 401 responses, the interceptor clears the stored token and the app returns to the login screen.
 
 Auth views: `backend/topology/api/auth_views.py`.
+Auth helpers: `backend/topology/api/auth_utils.py` (`resolve_user_role`, `can_modify_settings`).
 URL routing: `backend/topology/urls.py` (auth paths registered before API includes).
+
+### Role-Based Access Control
+Users have roles via `UserProfile.role`: `admin`, `operator`, `viewer`.
+- `admin` and `operator`: full read/write access to settings, maintenance actions, and power refresh.
+- `viewer`: read-only access to topology/status/power data; cannot create/update/delete OLTs, run maintenance actions, refresh power, or patch PON descriptions.
+
+Role resolution (`resolve_user_role`):
+1. Superusers always resolve to `admin`.
+2. Users with a `UserProfile` use their stored role.
+3. Users without a profile default to `viewer`.
+
+Permission enforcement:
+- `VendorProfileViewSet` is `ReadOnlyModelViewSet` (no create/update/delete).
+- `OLTViewSet` guards `create`, `update`, `destroy`, and all maintenance actions (`run_discovery`, `run_polling`, `snmp_check`, `refresh_power`, `refresh_power_all`) with `can_modify_settings`.
+- ONU power refresh (single and batch) requires `can_modify_settings`.
+- PON `partial_update` (description editing) requires `can_modify_settings`.
+- Read operations (list, retrieve, topology) remain accessible to all authenticated users.
+
+### Auth Bootstrap
+Bootstrap command: `backend/topology/management/commands/ensure_auth_user.py`
+
+```bash
+# Docker
+docker compose -f docker-compose.dev.yml exec backend python manage.py ensure_auth_user \
+  --username admin --password changeme --role admin --superuser
+
+# Local
+backend/venv/bin/python backend/manage.py ensure_auth_user \
+  --username admin --password changeme --role admin --superuser
+```
+
+Flags: `--username`, `--password`, `--role` (admin/operator/viewer), `--superuser`, `--force-password`.
+Environment variable fallbacks: `VARUNA_AUTH_USERNAME`, `VARUNA_AUTH_PASSWORD`, `VARUNA_AUTH_ROLE`.
 
 ## API Notes
 Main endpoints:
@@ -214,6 +256,31 @@ Power refresh contract:
   - `olt_rx_power` is returned as `null` and no OLT RX SNMP requests are executed;
   - ONU RX parser supports both legacy integer formats and string values like `-27.214(dBm)`.
 
+## Background Collection Scheduling
+Discovery and polling commands support due-awareness scheduling:
+- Each command has a `_is_due(olt, now)` method that checks `next_discovery_at`/`next_poll_at` or computes due time from `last_discovery_at`/`last_poll_at` + interval.
+- When run without `--force` and no specific `--olt-id`, commands filter to only due OLTs.
+- `--force` bypasses due checks and processes all active OLTs.
+- The polling command includes a `max_runtime_seconds` budget (default 180s, configurable 30-1800s via `SystemSettings.MAX_POLL_RUNTIME_SECONDS`). If the budget is exhausted mid-run, remaining OLTs are skipped.
+
+Run background collection via Docker:
+```bash
+# Discovery
+docker compose -f docker-compose.dev.yml exec backend python manage.py discover_onus
+
+# Polling
+docker compose -f docker-compose.dev.yml exec backend python manage.py poll_onu_status
+
+# Force all (ignores due checks)
+docker compose -f docker-compose.dev.yml exec backend python manage.py poll_onu_status --force
+```
+
+## Power Service Resilience
+Power collection (`backend/topology/services/power_service.py`) includes:
+- Pre-fetches cached power via `cache_service.get_many_onu_power()` to reduce per-ONU Redis lookups.
+- Skips cache writes for empty reads (`read_at is None`), preventing overwriting good cached data with empty SNMP responses.
+- Retains last known cached power values when a forced refresh fails to produce readings: if the new pass returns empty but the cache had valid data, the cached snapshot is preserved instead of being cleared.
+
 ## Test Coverage
 Current tests validate:
 - vendor index/status mapping behavior,
@@ -229,6 +296,17 @@ Current tests validate:
 - discovery ghost index filtering (empty name+serial excluded),
 - discovery default `min_safe_ratio` (0.3),
 - discovery `walk_timeout_seconds` vendor config integration,
-- serial normalization (uppercase, sentinel stripping, vendor prefix handling, empty preservation).
+- serial normalization (uppercase, sentinel stripping, vendor prefix handling, empty preservation),
+- cached power retention on failed forced refresh,
+- reader/viewer role permission enforcement (read allowed, write/actions denied),
+- authentication API contract (login payload, invalid creds, me, logout, change-password, token rotation),
+- `ensure_auth_user` management command (create with profile, superuser promotion, force-password),
+- polling command scheduling (due-only, force overrides, runtime budget stops),
+- discovery command scheduling (due-only, force overrides),
+- Huawei index parsing (`pon_resolve: interface_map`, unknown ifindex, backward compat with ZTE, empty/missing pon_map),
+- disconnect reason mapping (`map_disconnect_reason` for dying_gasp, link_loss, unknown, None),
+- power formula registry (hundredths_dbm, huawei_olt_rx, resolve by name/default/unknown),
+- Huawei power collection end-to-end (mock SNMP with raw values, correct dBm conversion),
+- polling disconnect reason second-pass (fetched for offline only, skipped for online, absent for ZTE).
 
 File: `backend/topology/tests.py`
