@@ -153,7 +153,11 @@ class Command(BaseCommand):
         now = timezone.now()
         olts = list(olt_qs)
         if not force and not olt_id:
-            due_olts = [olt for olt in olts if self._is_due(olt, now)]
+            due_olts = [
+                olt for olt in olts
+                if self._is_due(olt, now)
+                and not (olt.snmp_reachable is False and (olt.snmp_failure_count or 0) >= 2)
+            ]
         else:
             due_olts = olts
 
@@ -201,7 +205,7 @@ class Command(BaseCommand):
         status_oid = discovery_cfg.get("onu_status_oid") or status_cfg.get("onu_status_oid")
         status_map = status_cfg.get("status_map", {})
 
-        if not name_oid or not serial_oid:
+        if not serial_oid:
             self._mark_discovery_result(olt, success=False, dry_run=dry_run)
             logger.warning("OLT %s missing discovery OIDs", olt.id)
             self.stdout.write(f"OLT {olt.id} missing discovery OIDs, skipping.")
@@ -317,15 +321,41 @@ class Command(BaseCommand):
         walk_timeout = float(discovery_cfg.get('walk_timeout_seconds', 30.0))
         walk_timeout = max(5.0, min(walk_timeout, 120.0))
 
-        name_rows = snmp_service.walk(olt, name_oid, timeout=walk_timeout)
-        if pause_between_walks > 0:
+        name_rows = snmp_service.walk(olt, name_oid, timeout=walk_timeout) if name_oid else []
+        if pause_between_walks > 0 and name_oid:
             time.sleep(pause_between_walks)
         serial_rows = snmp_service.walk(olt, serial_oid, timeout=walk_timeout)
         if pause_between_walks > 0 and status_oid:
             time.sleep(pause_between_walks)
         status_rows = snmp_service.walk(olt, status_oid, timeout=walk_timeout) if status_oid else []
 
-        snmp_returned = bool(name_rows or serial_rows or status_rows or iface_rows_total)
+        # OID-column-based slot/pon resolution (e.g. Fiberhome flat integer index)
+        slot_column_oid = discovery_cfg.get("onu_slot_oid")
+        pon_column_oid = discovery_cfg.get("onu_pon_oid")
+        column_map: Optional[Dict[str, Dict]] = None
+        if slot_column_oid or pon_column_oid:
+            slot_col_rows = snmp_service.walk(olt, slot_column_oid, timeout=walk_timeout) if slot_column_oid else []
+            if pause_between_walks > 0 and slot_column_oid:
+                time.sleep(pause_between_walks)
+            pon_col_rows = snmp_service.walk(olt, pon_column_oid, timeout=walk_timeout) if pon_column_oid else []
+            slot_values = _rows_to_index_map(slot_col_rows, slot_column_oid) if slot_column_oid else {}
+            pon_values = _rows_to_index_map(pon_col_rows, pon_column_oid) if pon_column_oid else {}
+            column_map = {}
+            for idx in set(slot_values.keys()) | set(pon_values.keys()):
+                s = slot_values.get(idx)
+                p = pon_values.get(idx)
+                try:
+                    entry: Dict[str, int] = {}
+                    if s is not None and s != '':
+                        entry['slot_id'] = int(s)
+                    if p is not None and p != '':
+                        entry['pon_id'] = int(p)
+                    if 'slot_id' in entry and 'pon_id' in entry:
+                        column_map[idx] = entry
+                except (TypeError, ValueError):
+                    continue
+
+        snmp_returned = bool(name_rows or serial_rows or status_rows or iface_rows_total or column_map)
         if not snmp_returned:
             if not dry_run:
                 mark_olt_unreachable(olt, error='No SNMP discovery data returned')
@@ -374,7 +404,7 @@ class Command(BaseCommand):
         # Parse all discovered ONUs into a list
         parsed_onus: List[Dict[str, Any]] = []
         for index in sorted(indices):
-            identity = parse_onu_index(index, indexing_cfg, pon_map=pon_map)
+            identity = parse_onu_index(index, indexing_cfg, pon_map=pon_map, column_map=column_map)
             if not identity:
                 skipped += 1
                 continue
@@ -389,6 +419,19 @@ class Command(BaseCommand):
                 "serial": serial,
                 "status": mapped["status"],
             })
+
+        # Total index-parse failure guard: SNMP returned ONUs but none could be
+        # parsed — likely a vendor profile indexing misconfiguration, not real
+        # absence.  Skip deactivation and mark discovery unhealthy so the
+        # operator is alerted without destroying existing topology.
+        if indices and skipped == len(indices):
+            logger.critical(
+                "OLT %s discovery: all %s SNMP indices failed parse_onu_index — "
+                "possible indexing misconfiguration.  Skipping deactivation.",
+                olt.id,
+                len(indices),
+            )
+            skip_deactivation = True
 
         write_context = transaction.atomic() if not dry_run else nullcontext()
         with write_context:
@@ -530,7 +573,9 @@ class Command(BaseCommand):
         if not dry_run:
             mark_olt_reachable(olt)
 
-        self._mark_discovery_result(olt, success=True, dry_run=dry_run)
+        # Discovery is unhealthy when SNMP returned indices but none parsed
+        all_skipped = indices and skipped == len(indices)
+        self._mark_discovery_result(olt, success=not all_skipped, dry_run=dry_run)
         self.stdout.write(
             f"OLT {olt.id}: discovered {len(indices)} ONUs "
             f"(created={created}, updated={updated}, skipped={skipped})."

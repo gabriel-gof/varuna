@@ -329,6 +329,7 @@ class PowerService:
         onu_rx_suffix: str,
         olt_rx_oid: str,
         supports_olt_rx: bool,
+        olt_rx_index_formula: str = '',
     ) -> List[str]:
         index = str(onu.snmp_index).strip(".")
         onu_oid = f"{onu_rx_oid}.{index}"
@@ -337,7 +338,16 @@ class PowerService:
 
         oids = [onu_oid]
         if supports_olt_rx:
-            oids.append(f"{olt_rx_oid}.{index}")
+            if olt_rx_index_formula == 'fiberhome_pon_onu':
+                try:
+                    idx = int(index)
+                    pon_base = idx & 0xFFFF0000
+                    onu_id = (idx >> 8) & 0xFF
+                    oids.append(f"{olt_rx_oid}.{pon_base}.{onu_id}")
+                except (TypeError, ValueError):
+                    oids.append(f"{olt_rx_oid}.{index}")
+            else:
+                oids.append(f"{olt_rx_oid}.{index}")
         return oids
 
     def refresh_for_onus(
@@ -407,6 +417,7 @@ class PowerService:
             onu_rx_oid = str(power_cfg.get("onu_rx_oid") or "").strip(".")
             olt_rx_oid = str(power_cfg.get("olt_rx_oid") or "").strip(".")
             onu_rx_suffix = str(power_cfg.get("onu_rx_suffix") or "").strip(".")
+            olt_rx_index_formula = str(power_cfg.get("olt_rx_index_formula") or "").strip()
             normalize_onu_rx = resolve_power_formula(power_cfg.get("onu_rx_formula"), _normalize_onu_rx)
             normalize_olt_rx = resolve_power_formula(power_cfg.get("olt_rx_formula"), _normalize_olt_rx)
             chunk_size = self._resolve_int(
@@ -541,6 +552,7 @@ class PowerService:
                         onu_rx_suffix=onu_rx_suffix,
                         olt_rx_oid=olt_rx_oid,
                         supports_olt_rx=supports_olt_rx,
+                        olt_rx_index_formula=olt_rx_index_formula,
                     )
                     onu_oid = onu_oids[0]
                     oid_to_target[onu_oid] = (onu.id, "onu_raw")
@@ -630,6 +642,7 @@ class PowerService:
                             onu_rx_suffix=onu_rx_suffix,
                             olt_rx_oid=olt_rx_oid,
                             supports_olt_rx=supports_olt_rx,
+                            olt_rx_index_formula=olt_rx_index_formula,
                         ),
                         call_budget=call_budget,
                         chunk_retry_attempts=chunk_retry_attempts,

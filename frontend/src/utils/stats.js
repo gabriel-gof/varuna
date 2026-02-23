@@ -22,6 +22,10 @@ export const classifyOnu = (onu) => {
     return { status: 'unknown', label: 'UNKNOWN' }
   }
 
+  if (status === 'offline') {
+    return { status: 'unknown', label: 'UNKNOWN' }
+  }
+
   return { status: status || 'offline', label: (status || 'OFFLINE').toUpperCase() }
 }
 

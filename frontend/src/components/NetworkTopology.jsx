@@ -276,8 +276,9 @@ export const NetworkTopology = ({
   onPonSelect,
   onSearchMatchSelect,
   onAlarmModeChange,
-  snmpStatus = {},
-  oltHealthById = {}
+  oltHealthById = {},
+  selectedOltIds = [],
+  onSelectedOltIdsChange
 }) => {
   const { t } = useTranslation()
   const [searchTerm, setSearchTerm] = useState(() => selectedSearchMatch?.searchTerm || '')
@@ -289,7 +290,6 @@ export const NetworkTopology = ({
     return initial
   })
   const [oltFilterOpen, setOltFilterOpen] = useState(false)
-  const [selectedOltIds, setSelectedOltIds] = useState([])
   const [alarmMenuOpen, setAlarmMenuOpen] = useState(false)
   const [alarmEnabled, setAlarmEnabled] = useState(() => {
     try {
@@ -313,20 +313,7 @@ export const NetworkTopology = ({
   const searchContainerRef = useRef(null)
   const oltFilterContainerRef = useRef(null)
   const alarmMenuContainerRef = useRef(null)
-  const oltFilterInitializedRef = useRef(false)
   const normalizedSearchTerm = normalizeSearch(searchTerm)
-
-  useEffect(() => {
-    const allIds = olts.map((olt) => String(olt.id))
-    setSelectedOltIds((prev) => {
-      if (!oltFilterInitializedRef.current) {
-        if (!allIds.length) return prev
-        oltFilterInitializedRef.current = true
-        return allIds
-      }
-      return prev.filter((id) => allIds.includes(id))
-    })
-  }, [olts])
 
   useEffect(() => {
     if (!olts.length) return
@@ -497,7 +484,7 @@ export const NetworkTopology = ({
   const handleSearchSuggestionSelect = (suggestion) => {
     setSearchTerm(suggestion.matchType === 'serial' ? suggestion.serial : suggestion.clientName)
     setSearchFocused(false)
-    setSelectedOltIds((prev) => (prev.includes(String(suggestion.oltId)) ? prev : [...prev, String(suggestion.oltId)]))
+    onSelectedOltIdsChange((prev) => (prev.includes(String(suggestion.oltId)) ? prev : [...prev, String(suggestion.oltId)]))
     setOpenNodes((prev) => ({
       ...prev,
       [`olt-${suggestion.oltId}`]: true,
@@ -626,9 +613,7 @@ export const NetworkTopology = ({
     const sourceOlt = searchedOltMap.get(String(olt.id)) || olt
     const oltId = `olt-${olt.id}`
     const derivedHealth = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
-    const snmpSt = snmpStatus?.[olt.id]
-    const fallbackUnreachable = snmpSt?.status === 'unreachable'
-    const oltHealthState = derivedHealth?.state || (fallbackUnreachable ? 'gray' : getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount))
+    const oltHealthState = derivedHealth?.state || getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount)
     const isGrayTree = oltHealthState === 'gray'
     const slotCount = olt.slot_count ?? olt.slots?.length ?? 0
     const sourceSlotMap = new Map(
@@ -714,10 +699,10 @@ export const NetworkTopology = ({
               setOltFilterOpen((prev) => !prev)
               setAlarmMenuOpen(false)
             }}
-            className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all ${
+            className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 hover:text-emerald-600 ${
               selectedOltIds.length < olts.length
-                ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-400 hover:text-emerald-600'
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : 'text-slate-400 dark:text-slate-400'
             }`}
           >
             <Filter className="w-3.5 h-3.5" />
@@ -739,13 +724,13 @@ export const NetworkTopology = ({
 
               <div className="flex items-center gap-1.5 mb-2.5">
                 <button
-                  onClick={() => setSelectedOltIds(olts.map((olt) => String(olt.id)))}
+                  onClick={() => onSelectedOltIdsChange(olts.map((olt) => String(olt.id)))}
                   className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[9px] font-black uppercase tracking-wide text-slate-600 dark:text-slate-300"
                 >
                   {t('All')}
                 </button>
                 <button
-                  onClick={() => setSelectedOltIds([])}
+                  onClick={() => onSelectedOltIdsChange([])}
                   className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[9px] font-black uppercase tracking-wide text-slate-600 dark:text-slate-300"
                 >
                   {t('Clear')}
@@ -769,7 +754,7 @@ export const NetworkTopology = ({
                         type="checkbox"
                         checked={isChecked}
                         onChange={(e) => {
-                          setSelectedOltIds((prev) => {
+                          onSelectedOltIdsChange((prev) => {
                             const id = String(olt.id)
                             if (e.target.checked) {
                               return prev.includes(id) ? prev : [...prev, id]
@@ -802,14 +787,14 @@ export const NetworkTopology = ({
         </div>
 
         <div ref={searchContainerRef} className="relative flex-1 min-w-0 max-w-[260px] lg:max-w-[268px]">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300" />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 dark:text-slate-500" />
           <input
             type="text"
             placeholder={t('Search')}
             value={searchTerm}
             onFocus={() => setSearchFocused(true)}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl pl-9 pr-8 text-base md:text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl pl-9 pr-8 text-base md:text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
           />
 
           {searchTerm && (
@@ -856,7 +841,7 @@ export const NetworkTopology = ({
           <button
             title={t('Collapse')}
             onClick={collapseAllNodes}
-            className="h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-500 shadow-sm hover:text-emerald-600 transition-all shrink-0"
+            className="h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-500 dark:text-slate-400 shadow-sm hover:text-emerald-600 transition-all shrink-0"
           >
             <svg className="w-4 h-4 shrink-0" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
             <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Collapse')}</span>
@@ -872,7 +857,7 @@ export const NetworkTopology = ({
               className={`h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all shrink-0 ${
                 alarmEnabled
                   ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
-                  : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 hover:text-rose-600'
+                  : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 dark:text-slate-400 hover:text-rose-600'
               }`}
             >
               <Bell className="w-3.5 h-3.5" />

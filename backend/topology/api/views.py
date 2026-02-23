@@ -601,7 +601,7 @@ class OLTViewSet(viewsets.ModelViewSet):
         validation_error = self._validate_vendor_action(
             olt,
             capability_field='supports_onu_discovery',
-            required_template_paths=[('discovery', 'onu_name_oid'), ('discovery', 'onu_serial_oid')],
+            required_template_paths=[('discovery', 'onu_serial_oid')],
             action_name='ONU discovery',
         )
         if validation_error is not None:

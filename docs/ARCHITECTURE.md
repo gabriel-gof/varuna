@@ -8,7 +8,7 @@
 
 ## Runtime Services
 - `frontend`: React + Vite (dev) or Nginx static app (prod).
-- `backend`: Django + DRF API, discovery and polling orchestration.
+- `backend`: Django + DRF API, discovery and polling orchestration, built-in scheduler (`run_scheduler`).
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
@@ -80,7 +80,9 @@ When to split into dedicated `discovery` and `poller` workers:
 
 ## Unreachable OLT Behavior
 - Backend persists SNMP availability (`snmp_reachable`, `last_snmp_check_at`, `snmp_failure_count`, `last_snmp_error`).
-- Frontend also runs `snmp_check` and renders unreachable OLT nodes as gray.
+- The backend scheduler runs SNMP reachability checks **before** dispatching any collection jobs (every 180s by default). This SNMP-first design prevents wasted time and log noise from unreachable OLTs.
+- Polling, discovery, and power collection skip OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
+- Frontend derives OLT health from backend fields (`snmp_reachable`, `snmp_failure_count >= 2`) and renders unreachable OLT nodes as gray.
 - ONU state is preserved during hard SNMP outages to avoid false state corruption.
 
 ## Role-Based Access Control
@@ -91,6 +93,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - Frontend hides settings tab and action buttons for viewers via `canManageSettings` derived state.
 
 ## Background Collection Scheduling
+- The `run_scheduler` management command is the primary scheduler. It runs as a long-lived background process alongside the Django server and dispatches polling, discovery, power collection, and SNMP reachability checks on configurable tick intervals.
 - Discovery and polling commands support due-awareness: they skip OLTs that are not yet due based on `next_*_at` timestamps or computed intervals.
 - `--force` flag bypasses due checks for manual/emergency runs.
 - Polling command enforces a runtime budget (`max_runtime_seconds`, default 180s) to prevent long-running jobs.

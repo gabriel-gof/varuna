@@ -78,8 +78,8 @@ export const InlineEditableText = ({ value, placeholder, onSave }) => {
       <span
         className={`text-[12px] font-semibold truncate leading-none ${
           value
-            ? 'text-slate-400 dark:text-slate-500'
-            : 'text-slate-400/50 dark:text-slate-500/50'
+            ? 'text-slate-500 dark:text-slate-400'
+            : 'text-slate-400/60 dark:text-slate-500/70'
         }`}
       >
         {value || placeholder}

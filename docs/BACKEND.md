@@ -25,6 +25,7 @@
 - `backend/topology/management/commands/discover_onus.py`: topology discovery.
 - `backend/topology/management/commands/poll_onu_status.py`: status polling.
 - `backend/topology/management/commands/ensure_auth_user.py`: auth user bootstrap.
+- `backend/topology/management/commands/run_scheduler.py`: long-lived scheduler for periodic polling, discovery, power collection, and SNMP checks.
 
 ## Vendor Extensibility Contract
 Vendor behavior is controlled by `VendorProfile.oid_templates`:
@@ -44,13 +45,16 @@ Default seed migrations:
 - `topology.0010_set_immediate_discovery_deactivation`: sets seeded profile discovery policy to deactivate missing ONUs immediately (`disable_lost_after_minutes=0`) while keeping inactive-history retention.
 - `topology.0011_set_global_immediate_discovery_deactivation`: normalizes discovery policy for all vendor profiles to immediate missing-ONU deactivation.
 - `topology.0012_seed_huawei_vendor_profile`: `Huawei / MA5680T` with interface-map indexing, split disconnect reason OID, and config-driven power formulas.
+- `topology.0013_seed_fiberhome_vendor_profile`: initial `Fiberhome / AN5516` seed (superseded by `0014`).
+- `topology.0014_update_fiberhome_oid_columns`: updates Fiberhome to flat integer SNMP index with OID-column-based slot/pon resolution (`onu_slot_oid`/`onu_pon_oid`), byte2 onu_id extraction, enterprise OID prefix `1.3.6.1.4.1.5875`, ONU Rx/OLT Rx power using `hundredths_dbm`, and OLT Rx index translation via `olt_rx_index_formula: fiberhome_pon_onu`.
 
 Parser supports:
 - regex-based index extraction,
 - explicit part-position mapping,
 - fixed index values (for single-slot models, e.g. `fixed.slot_id=1`),
 - legacy ZTE fallback (`pon_numeric.onu_id` with `0x11rrsspp`),
-- `pon_resolve: interface_map` — resolves `pon_numeric` (opaque ifIndex) to slot/pon via a PON interface name map built during discovery (used by Huawei, where ONU SNMP index is `{pon_ifindex}.{onu_id}`).
+- `pon_resolve: interface_map` — resolves `pon_numeric` (opaque ifIndex) to slot/pon via a PON interface name map built during discovery (used by Huawei, where ONU SNMP index is `{pon_ifindex}.{onu_id}`),
+- `index_from: oid_columns` — slot/pon resolved from separate SNMP OID columns (`discovery.onu_slot_oid`/`discovery.onu_pon_oid`), onu_id extracted from flat integer index via configurable method (`onu_id_extract: byte2`). Used by Fiberhome where the SNMP index is a flat integer with byte layout `[slot_enc, pon_enc, onu_id, 0]`.
 
 ## OLT Availability State
 `OLT` now tracks runtime connectivity:
@@ -67,7 +71,8 @@ Parser supports:
 Updated from:
 - `snmp_check` API action,
 - discovery command,
-- polling command.
+- polling command,
+- `run_scheduler` periodic SNMP checks.
 
 `snmp_check` is maintenance-aware: if a background job (discovery/polling/power) is in-flight for the OLT when the SNMP check times out, the check returns `reachable: true, busy: true` instead of marking the OLT unreachable. This prevents false gray-state on slower OLTs (e.g. VSOL-like) whose SNMP agent cannot serve concurrent requests during heavy power collection.
 
@@ -136,7 +141,7 @@ This preserves topology/history data while removing the OLT from active runtime 
 
 ## Action Preflight Validation
 Settings actions now validate vendor capability/template prerequisites before running commands:
-- `run_discovery`: requires `supports_onu_discovery` and discovery OIDs (`discovery.onu_name_oid`, `discovery.onu_serial_oid`).
+- `run_discovery`: requires `supports_onu_discovery` and `discovery.onu_serial_oid` (`discovery.onu_name_oid` is optional — Fiberhome has no ONU name OID).
 - `run_polling`: requires `supports_onu_status` and `status.onu_status_oid`.
 - `refresh_power`: requires `supports_power_monitoring` and `power.onu_rx_oid`.
 - `refresh_power` (bulk/all OLTs) applies the same preflight per OLT and skips invalid OLTs with explicit status/details.
@@ -256,6 +261,27 @@ Power refresh contract:
   - `olt_rx_power` is returned as `null` and no OLT RX SNMP requests are executed;
   - ONU RX parser supports both legacy integer formats and string values like `-27.214(dBm)`.
 
+## Polling Atomicity (Huawei)
+When `disconnect_reason_oid` is configured (Huawei), both status and disconnect reason are collected before any writes. Cache and DB writes include all ONU data in single atomic operations. The serializer also ensures offline ONUs without an active `ONULog` return `disconnect_reason='unknown'` instead of `null`, preventing the frontend from showing a bare "Offline" label.
+
+## Backend Scheduler
+The `run_scheduler` management command (`backend/topology/management/commands/run_scheduler.py`) is a long-lived process that periodically dispatches:
+- **SNMP reachability checks** (run first): every `--snmp-check-seconds` (default 180s), queries `sysDescr.0` per OLT and calls `mark_olt_reachable`/`mark_olt_unreachable`. Runs before poll/discover/power so that unreachable OLTs are flagged before any data collection attempt.
+- **Polling**: `call_command('poll_onu_status')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
+- **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
+- **Power collection**: checks `next_power_at` per OLT and collects via `power_service` for due OLTs; skips SNMP-unreachable OLTs.
+
+Arguments: `--tick-seconds` (default 30), `--snmp-check-seconds` (default 180).
+Each tick calls `close_old_connections()` and wraps work in try/except for resilience.
+
+**SNMP-first design**: The scheduler checks SNMP reachability before dispatching any collection jobs. This prevents wasted time and log spam from unreachable OLTs. When an OLT comes back online, the next SNMP check (every 180s) detects it and re-enables collection automatically.
+
+In Docker dev, the scheduler runs as a background process alongside the Django runserver:
+```bash
+python manage.py run_scheduler &
+python manage.py runserver 0.0.0.0:8000
+```
+
 ## Background Collection Scheduling
 Discovery and polling commands support due-awareness scheduling:
 - Each command has a `_is_due(olt, now)` method that checks `next_discovery_at`/`next_poll_at` or computes due time from `last_discovery_at`/`last_poll_at` + interval.
@@ -286,6 +312,7 @@ Current tests validate:
 - vendor index/status mapping behavior,
 - discovery stale deactivation,
 - discovery partial walk guard (skips deactivation when walk returns too few ONUs),
+- discovery total index-parse failure guard (when all SNMP indices fail `parse_onu_index`, deactivation is skipped, `discovery_healthy` is set to `False`, and OLT stays `snmp_reachable` since SNMP itself worked),
 - polling unreachable handling,
 - polling online/offline transition logs,
 - settings API validation guardrails,
@@ -307,6 +334,11 @@ Current tests validate:
 - disconnect reason mapping (`map_disconnect_reason` for dying_gasp, link_loss, unknown, None),
 - power formula registry (hundredths_dbm, huawei_olt_rx, resolve by name/default/unknown),
 - Huawei power collection end-to-end (mock SNMP with raw values, correct dBm conversion),
-- polling disconnect reason second-pass (fetched for offline only, skipped for online, absent for ZTE).
+- polling disconnect reason second-pass (fetched for offline only, skipped for online, absent for ZTE),
+- scheduler power due logic (`_is_power_due`),
+- scheduler SNMP check reachable/unreachable paths,
+- scheduler dispatches polling and discovery commands,
+- serializer returns `unknown` disconnect reason for offline ONUs without active log,
+- Fiberhome OID-column index parsing (`index_from: oid_columns` with `column_map` and byte2 onu_id extraction), status mapping (0-3), unmapped status defaults, nameless discovery (empty `onu_name_oid`), OLT Rx index translation (`olt_rx_index_formula: fiberhome_pon_onu`), and total index-parse failure guard (all-skipped preserves existing ONUs).
 
 File: `backend/topology/tests.py`

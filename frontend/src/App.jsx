@@ -37,12 +37,6 @@ const parseTimestampMs = (value) => {
   const ms = Date.parse(value)
   return Number.isFinite(ms) ? ms : null
 }
-const toPositiveInt = (value, fallback) => {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
-  return Math.round(parsed)
-}
-
 const BACKEND_MESSAGE_MAP = {
   'Power refresh scheduled in background.': 'Power refresh scheduled in background.',
   'Discovery scheduled in background.': 'Discovery scheduled in background.',
@@ -113,7 +107,7 @@ const ALARM_REASON_TO_STATUS_KEY = {
 }
 const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
 const SEARCH_MATCH_STORAGE_KEY = 'varuna.searchMatch'
-const FRONTEND_AUTO_MAINTENANCE_ENABLED = false
+const SELECTED_OLT_IDS_STORAGE_KEY = 'varuna.selectedOltIds'
 
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
@@ -205,12 +199,6 @@ const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
 }
 
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
-const BACKGROUND_ACTION_TIMEOUT_MS = 20_000
-const MAINTENANCE_PENDING_WINDOW_MS = {
-  polling: 15 * 60 * 1000,
-  power: 45 * 60 * 1000,
-  discovery: 30 * 60 * 1000
-}
 const RESUME_REFRESH_THROTTLE_MS = 4000
 const SEARCH_ROW_HIGHLIGHT_STYLE = {
   boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)'
@@ -518,6 +506,16 @@ const App = () => {
       return 42
     }
   })
+  const [selectedOltIds, setSelectedOltIds] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return []
+      const saved = window.localStorage.getItem(SELECTED_OLT_IDS_STORAGE_KEY)
+      return saved ? JSON.parse(saved) : []
+    } catch (_err) {
+      return []
+    }
+  })
+  const selectedOltIdsInitializedRef = useRef(false)
   const [olts, setOlts] = useState([])
   const [vendorProfiles, setVendorProfiles] = useState([])
   const [loading, setLoading] = useState(false)
@@ -525,22 +523,15 @@ const App = () => {
   const [error, setError] = useState(null)
   const [vendorError, setVendorError] = useState(null)
   const [settingsActionError, setSettingsActionError] = useState(null)
-  const [settingsActionMessage, setSettingsActionMessage] = useState('')
+  const [settingsActionMessage, setSettingsActionMessage] = useState(null)
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
   const [isRefreshingPonPanel, setIsRefreshingPonPanel] = useState(false)
   const [ponPanelError, setPonPanelError] = useState('')
   const ponPanelErrorTimerRef = useRef(null)
   useEffect(() => () => clearTimeout(ponPanelErrorTimerRef.current), [])
   const [healthTick, setHealthTick] = useState(() => Date.now())
-  const [snmpStatus, setSnmpStatus] = useState({}) // { [oltId]: { status: 'pending'|'reachable'|'unreachable', sysDescr } }
-  const snmpInFlightRef = useRef(false)
   const oltsRef = useRef([])
   const selectedPonMissingCyclesRef = useRef(0)
-  const maintenanceLocksRef = useRef({
-    polling: new Map(),
-    discovery: new Map(),
-    power: new Map()
-  })
   const selectedPonDataRef = useRef(null)
   const wasAlarmEnabledRef = useRef(false)
   const mainLayoutRef = useRef(null)
@@ -614,85 +605,6 @@ const App = () => {
     }
   }, [])
 
-  // ─── SNMP connectivity checks (shared across Settings + Topology) ───
-  const runSnmpChecks = useCallback(async (oltList) => {
-    const targets = Array.isArray(oltList) ? oltList.filter((olt) => olt?.id) : []
-    if (!targets.length || snmpInFlightRef.current) return
-
-    snmpInFlightRef.current = true
-    try {
-      setSnmpStatus((prev) => {
-        const next = { ...prev }
-        targets.forEach((olt) => {
-          if (!next[olt.id]) {
-            next[olt.id] = {
-              status: 'pending',
-              sysDescr: '',
-              failureStreak: 0,
-            }
-          }
-        })
-        return next
-      })
-
-      const results = await Promise.allSettled(
-        targets.map(async (olt) => {
-          try {
-            const res = await api.post(`/olts/${olt.id}/snmp_check/`)
-            return {
-              id: olt.id,
-              reachable: Boolean(res.data?.reachable),
-              sysDescr: res.data?.sys_descr || '',
-            }
-          } catch {
-            return {
-              id: olt.id,
-              reachable: false,
-              sysDescr: '',
-            }
-          }
-        })
-      )
-
-      setSnmpStatus((prev) => {
-        const next = { ...prev }
-        const activeIds = new Set(targets.map((olt) => String(olt.id)))
-
-        Object.keys(next).forEach((id) => {
-          if (!activeIds.has(String(id))) delete next[id]
-        })
-
-        results.forEach((result) => {
-          if (result.status !== 'fulfilled') return
-          const { id, reachable, sysDescr } = result.value
-          const prevEntry = next[id] || {}
-
-          if (reachable) {
-            next[id] = {
-              status: 'reachable',
-              sysDescr,
-              failureStreak: 0,
-              checkedAt: Date.now(),
-            }
-            return
-          }
-
-          const failureStreak = Number(prevEntry.failureStreak || 0) + 1
-          next[id] = {
-            status: failureStreak >= 2 ? 'unreachable' : (prevEntry.status || 'pending'),
-            sysDescr: prevEntry.sysDescr || '',
-            failureStreak,
-            checkedAt: Date.now(),
-          }
-        })
-
-        return next
-      })
-    } finally {
-      snmpInFlightRef.current = false
-    }
-  }, [])
-
   useEffect(() => {
     if (!authToken) return
     fetchOlts()
@@ -708,6 +620,27 @@ const App = () => {
   useEffect(() => {
     oltsRef.current = olts
   }, [olts])
+
+  useEffect(() => {
+    const allIds = olts.map((olt) => String(olt.id))
+    setSelectedOltIds((prev) => {
+      if (!selectedOltIdsInitializedRef.current) {
+        if (!allIds.length) return prev
+        selectedOltIdsInitializedRef.current = true
+        return prev.length ? prev.filter((id) => allIds.includes(id)) : allIds
+      }
+      return prev.filter((id) => allIds.includes(id))
+    })
+  }, [olts])
+
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return
+      window.localStorage.setItem(SELECTED_OLT_IDS_STORAGE_KEY, JSON.stringify(selectedOltIds))
+    } catch (_err) {
+      // noop
+    }
+  }, [selectedOltIds])
 
   useEffect(() => {
     const timer = setInterval(() => setHealthTick(Date.now()), 30_000)
@@ -751,167 +684,16 @@ const App = () => {
     }
   }, [authToken, fetchOlts])
 
-  const runDueMaintenance = useCallback(async (oltList) => {
-    if (!Array.isArray(oltList) || !oltList.length) return
-
-    const nowMs = Date.now()
-    const requests = []
-    const pollLocks = maintenanceLocksRef.current.polling
-    const discoveryLocks = maintenanceLocksRef.current.discovery
-    const powerLocks = maintenanceLocksRef.current.power
-
-    const isPending = (lockMap, oltId, latestMetricMs) => {
-      const pending = lockMap.get(oltId)
-      if (!pending) return false
-
-      const completed = Number.isFinite(latestMetricMs) && (
-        (Number.isFinite(pending.lastMetricMs) && latestMetricMs > pending.lastMetricMs) ||
-        (!Number.isFinite(pending.lastMetricMs) && latestMetricMs >= pending.startedAt - 1000)
-      )
-      const expired = nowMs >= pending.expiresAt
-      if (completed || expired) {
-        lockMap.delete(oltId)
-        return false
-      }
-      return true
-    }
-
-    const queueBackgroundMaintenance = ({
-      lockMap,
-      oltId,
-      endpoint,
-      lastMetricMs,
-      pendingWindowMs
-    }) => {
-      lockMap.set(oltId, {
-        startedAt: nowMs,
-        lastMetricMs,
-        expiresAt: nowMs + pendingWindowMs
-      })
-
-      requests.push(
-        api.post(
-          endpoint,
-          { background: true },
-          { timeout: BACKGROUND_ACTION_TIMEOUT_MS }
-        )
-          .then((response) => {
-            const queuedStatus = String(response?.data?.status || '').toLowerCase()
-            if (!['accepted', 'already_running', 'completed'].includes(queuedStatus)) {
-              lockMap.delete(oltId)
-            }
-          })
-          .catch(() => {
-            lockMap.delete(oltId)
-          })
-      )
-    }
-
-    oltList.forEach((olt) => {
-      const oltId = olt?.id
-      if (!oltId) return
-
-      const lastPollMs = parseTimestampMs(olt.last_poll_at)
-      const lastDiscoveryMs = parseTimestampMs(olt.last_discovery_at)
-      const lastPowerMs = parseTimestampMs(olt.last_power_at)
-
-      if (
-        isPending(pollLocks, oltId, lastPollMs) ||
-        isPending(discoveryLocks, oltId, lastDiscoveryMs) ||
-        isPending(powerLocks, oltId, lastPowerMs)
-      ) {
-        return
-      }
-
-      if (olt.polling_enabled !== false) {
-        const pollIntervalMs = toPositiveInt(olt.polling_interval_seconds, 300) * 1000
-        const pollDue = !lastPollMs || nowMs - lastPollMs >= pollIntervalMs
-        if (pollDue) {
-          queueBackgroundMaintenance({
-            lockMap: pollLocks,
-            oltId,
-            endpoint: `/olts/${oltId}/run_polling/`,
-            lastMetricMs: lastPollMs,
-            pendingWindowMs: MAINTENANCE_PENDING_WINDOW_MS.polling
-          })
-          return
-        }
-      }
-
-      const onuCount = Number(olt?.onu_count ?? 0)
-      if (onuCount > 0) {
-        const powerIntervalMs = toPositiveInt(olt.power_interval_seconds, 300) * 1000
-        const powerDue = !lastPowerMs || nowMs - lastPowerMs >= powerIntervalMs
-
-        if (powerDue) {
-          queueBackgroundMaintenance({
-            lockMap: powerLocks,
-            oltId,
-            endpoint: `/olts/${oltId}/refresh_power/`,
-            lastMetricMs: lastPowerMs,
-            pendingWindowMs: MAINTENANCE_PENDING_WINDOW_MS.power
-          })
-          return
-        }
-      }
-
-      if (olt.discovery_enabled !== false) {
-        const discoveryIntervalMs = toPositiveInt(olt.discovery_interval_minutes, 240) * 60 * 1000
-        const discoveryDue = !lastDiscoveryMs || nowMs - lastDiscoveryMs >= discoveryIntervalMs
-        if (discoveryDue) {
-          queueBackgroundMaintenance({
-            lockMap: discoveryLocks,
-            oltId,
-            endpoint: `/olts/${oltId}/run_discovery/`,
-            lastMetricMs: lastDiscoveryMs,
-            pendingWindowMs: MAINTENANCE_PENDING_WINDOW_MS.discovery
-          })
-        }
-      }
-    })
-
-    if (!requests.length) return
-    await Promise.allSettled(requests)
-    await fetchOlts()
-  }, [fetchOlts])
-
-  useEffect(() => {
-    if (!FRONTEND_AUTO_MAINTENANCE_ENABLED) return
-    if (!canManageSettings) return
-    if (!olts.length) return
-    runDueMaintenance(olts)
-  }, [canManageSettings, olts, runDueMaintenance])
-
-  const oltIdsSignature = useMemo(
-    () => [...olts.map((olt) => String(olt?.id)).filter(Boolean)].sort().join(','),
-    [olts]
-  )
-
-  // Run SNMP checks when the OLT set changes.
-  useEffect(() => {
-    if (!canManageSettings) return
-    if (!olts?.length) return
-    runSnmpChecks(olts)
-  }, [canManageSettings, oltIdsSignature, runSnmpChecks])
-
-  // Keep checks periodic without recreating timers on every topology refresh payload.
-  useEffect(() => {
-    if (!authToken) return
-    if (!canManageSettings) return
-    const timer = setInterval(() => runSnmpChecks(oltsRef.current), 180_000)
-    return () => clearInterval(timer)
-  }, [authToken, canManageSettings, runSnmpChecks])
-
-  const runSettingsAction = async (key, request, successMessage = '') => {
+  const runSettingsAction = async (key, request, successMessage = '', { oltId = null } = {}) => {
     setSettingsActionError(null)
-    setSettingsActionMessage('')
+    setSettingsActionMessage(null)
     setSettingsActionBusy((prev) => ({ ...prev, [key]: true }))
 
     try {
       const result = await request()
       if (successMessage) {
-        setSettingsActionMessage(successMessage)
-        setTimeout(() => setSettingsActionMessage(''), 4000)
+        setSettingsActionMessage({ oltId, message: successMessage })
+        setTimeout(() => setSettingsActionMessage(null), 4000)
       }
       return result
     } catch (err) {
@@ -927,19 +709,19 @@ const App = () => {
     }
   }
 
-  const runQueuedSettingsAction = async ({ endpoint, acceptedMessage, alreadyRunningMessage }) => {
+  const runQueuedSettingsAction = async ({ endpoint, acceptedMessage, alreadyRunningMessage, oltId = null }) => {
     setSettingsActionError(null)
-    setSettingsActionMessage('')
+    setSettingsActionMessage(null)
     try {
       const response = await api.post(endpoint, { background: true })
       const queuedStatus = response?.data?.status
       const queuedDetail = response?.data?.detail
       if (queuedStatus === 'already_running') {
-        setSettingsActionMessage(alreadyRunningMessage || acceptedMessage)
+        setSettingsActionMessage({ oltId, message: alreadyRunningMessage || acceptedMessage })
       } else {
-        setSettingsActionMessage(acceptedMessage)
+        setSettingsActionMessage({ oltId, message: acceptedMessage })
       }
-      setTimeout(() => setSettingsActionMessage(''), 4000)
+      setTimeout(() => setSettingsActionMessage(null), 4000)
       return response?.data || null
     } catch (err) {
       setSettingsActionError(getApiErrorMessage(err, t('Failed to execute settings action'), t))
@@ -969,7 +751,8 @@ const App = () => {
         await fetchOlts()
         return response.data
       },
-      t('OLT updated successfully')
+      t('OLT updated successfully'),
+      { oltId }
     )
     return updated
   }
@@ -982,7 +765,8 @@ const App = () => {
         await fetchOlts()
         return true
       },
-      t('OLT removed successfully')
+      t('OLT removed successfully'),
+      { oltId }
     )
     return Boolean(removed)
   }
@@ -991,7 +775,8 @@ const App = () => {
     await runQueuedSettingsAction({
       endpoint: `/olts/${oltId}/run_discovery/`,
       acceptedMessage: t('Discovery queued successfully'),
-      alreadyRunningMessage: t('Discovery already running')
+      alreadyRunningMessage: t('Discovery already running'),
+      oltId,
     })
   }
 
@@ -999,7 +784,8 @@ const App = () => {
     await runQueuedSettingsAction({
       endpoint: `/olts/${oltId}/run_polling/`,
       acceptedMessage: t('Polling queued successfully'),
-      alreadyRunningMessage: t('Polling already running')
+      alreadyRunningMessage: t('Polling already running'),
+      oltId,
     })
   }
 
@@ -1007,7 +793,8 @@ const App = () => {
     await runQueuedSettingsAction({
       endpoint: `/olts/${oltId}/refresh_power/`,
       acceptedMessage: t('Power refresh queued successfully'),
-      alreadyRunningMessage: t('Power refresh already running')
+      alreadyRunningMessage: t('Power refresh already running'),
+      oltId,
     })
   }
 
@@ -1120,10 +907,10 @@ const App = () => {
 
   const oltHealthById = useMemo(() => {
     return olts.reduce((acc, olt) => {
-      acc[String(olt.id)] = deriveOltHealthState(olt, snmpStatus?.[olt.id], healthTick)
+      acc[String(olt.id)] = deriveOltHealthState(olt, healthTick)
       return acc
     }, {})
-  }, [olts, snmpStatus, healthTick])
+  }, [olts, healthTick])
 
   const lastCollectionAt = useMemo(() => {
     let latest = null
@@ -1633,8 +1420,9 @@ const App = () => {
               olts={olts}
               loading={loading}
               error={error}
-              snmpStatus={snmpStatus}
               oltHealthById={oltHealthById}
+              selectedOltIds={selectedOltIds}
+              onSelectedOltIdsChange={setSelectedOltIds}
               selectedPonId={selectedPonId}
               selectedSearchMatch={selectedSearchMatch}
               onAlarmModeChange={handleAlarmModeChange}
@@ -1671,7 +1459,6 @@ const App = () => {
               onRunPolling={runPolling}
               onRefreshPower={refreshPower}
               actionBusy={settingsActionBusy}
-              snmpStatus={snmpStatus}
               oltHealthById={oltHealthById}
             />
           )}

@@ -216,7 +216,11 @@ class Command(BaseCommand):
         now = timezone.now()
         olts = list(olt_qs)
         if not force and not olt_id:
-            due_olts = [olt for olt in olts if self._is_due(olt, now)]
+            due_olts = [
+                olt for olt in olts
+                if self._is_due(olt, now)
+                and not (olt.snmp_reachable is False and (olt.snmp_failure_count or 0) >= 2)
+            ]
         else:
             due_olts = olts
 

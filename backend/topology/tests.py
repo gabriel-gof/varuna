@@ -123,6 +123,74 @@ class VendorProfileParserTests(TestCase):
         self.assertEqual(online['status'], ONU.STATUS_ONLINE)
         self.assertEqual(online['reason'], '')
 
+    def test_fiberhome_oid_columns_index_parsing(self):
+        # Fiberhome flat int: 0x04_08_01_00 = 67633408
+        # byte2 onu_id: (67633408 >> 8) & 0xFF = 1
+        column_map = {
+            '67633408': {'slot_id': 2, 'pon_id': 1},
+        }
+        identity = parse_onu_index(
+            '67633408',
+            {'index_from': 'oid_columns', 'onu_id_extract': 'byte2'},
+            column_map=column_map,
+        )
+        self.assertIsNotNone(identity)
+        self.assertEqual(identity['slot_id'], 2)
+        self.assertEqual(identity['pon_id'], 1)
+        self.assertEqual(identity['onu_id'], 1)
+
+    def test_fiberhome_oid_columns_missing_column_map(self):
+        identity = parse_onu_index(
+            '67633408',
+            {'index_from': 'oid_columns', 'onu_id_extract': 'byte2'},
+        )
+        self.assertIsNone(identity)
+
+    def test_fiberhome_oid_columns_unknown_index(self):
+        column_map = {
+            '67633408': {'slot_id': 2, 'pon_id': 1},
+        }
+        identity = parse_onu_index(
+            '99999999',
+            {'index_from': 'oid_columns', 'onu_id_extract': 'byte2'},
+            column_map=column_map,
+        )
+        self.assertIsNone(identity)
+
+    def test_fiberhome_status_mapping(self):
+        status_map = {
+            '0': {'status': 'offline', 'reason': 'link_loss'},
+            '1': {'status': 'online'},
+            '2': {'status': 'offline', 'reason': 'dying_gasp'},
+            '3': {'status': 'unknown', 'reason': 'unknown'},
+        }
+        link_loss = map_status_code(0, status_map)
+        self.assertEqual(link_loss['status'], ONU.STATUS_OFFLINE)
+        self.assertEqual(link_loss['reason'], ONULog.REASON_LINK_LOSS)
+
+        online = map_status_code(1, status_map)
+        self.assertEqual(online['status'], ONU.STATUS_ONLINE)
+        self.assertEqual(online['reason'], '')
+
+        dying_gasp = map_status_code(2, status_map)
+        self.assertEqual(dying_gasp['status'], ONU.STATUS_OFFLINE)
+        self.assertEqual(dying_gasp['reason'], ONULog.REASON_DYING_GASP)
+
+        unknown = map_status_code(3, status_map)
+        self.assertEqual(unknown['status'], ONU.STATUS_UNKNOWN)
+        self.assertEqual(unknown['reason'], ONULog.REASON_UNKNOWN)
+
+    def test_fiberhome_unmapped_status_defaults_unknown(self):
+        status_map = {
+            '0': {'status': 'offline', 'reason': 'link_loss'},
+            '1': {'status': 'online'},
+            '2': {'status': 'offline', 'reason': 'dying_gasp'},
+            '3': {'status': 'unknown', 'reason': 'unknown'},
+        }
+        unmapped = map_status_code(99, status_map)
+        self.assertEqual(unmapped['status'], ONU.STATUS_UNKNOWN)
+        self.assertEqual(unmapped['reason'], ONULog.REASON_UNKNOWN)
+
 
 class DiscoveryCommandTests(TestCase):
     def setUp(self):
@@ -287,6 +355,150 @@ class DiscoveryCommandTests(TestCase):
         self.assertEqual(existing.serial, 'SERIAL-OLD')
         self.assertEqual(existing.name, 'client-a')
         self.assertTrue(existing.is_active)
+
+
+class FiberhomeDiscoveryTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile(
+            name='FH-DISC',
+            oid_templates={
+                'indexing': {
+                    'index_from': 'oid_columns',
+                    'onu_id_extract': 'byte2',
+                },
+                'discovery': {
+                    'onu_name_oid': '',
+                    'onu_serial_oid': '1.3.6.1.4.1.5875.800.3.10.1.1.10',
+                    'onu_status_oid': '1.3.6.1.4.1.5875.800.3.10.1.1.11',
+                    'onu_slot_oid': '1.3.6.1.4.1.5875.800.3.10.1.1.2',
+                    'onu_pon_oid': '1.3.6.1.4.1.5875.800.3.10.1.1.3',
+                    'deactivate_missing': True,
+                },
+                'status': {
+                    'onu_status_oid': '1.3.6.1.4.1.5875.800.3.10.1.1.11',
+                    'status_map': {
+                        '0': {'status': 'offline', 'reason': 'link_loss'},
+                        '1': {'status': 'online'},
+                        '2': {'status': 'offline', 'reason': 'dying_gasp'},
+                        '3': {'status': 'unknown', 'reason': 'unknown'},
+                    },
+                },
+            },
+        )
+        self.olt = OLT.objects.create(
+            name='OLT-FH',
+            vendor_profile=self.vendor,
+            ip_address='10.0.0.5',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            polling_enabled=True,
+            is_active=True,
+        )
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_fiberhome_discovery_without_name_oid(self, mock_walk):
+        serial_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.10'
+        status_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.11'
+        slot_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.2'
+        pon_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.3'
+        # Flat integer index: 0x04_08_01_00 = 67633408 → slot=2(walked), pon=1(walked), onu_id=1(byte2)
+        index = '67633408'
+
+        mock_walk.side_effect = [
+            # name walk is skipped (onu_name_oid is empty)
+            [{'oid': f'{serial_oid}.{index}', 'value': 'FHTT12345678'}],
+            [{'oid': f'{status_oid}.{index}', 'value': '1'}],
+            # slot column walk
+            [{'oid': f'{slot_oid}.{index}', 'value': '2'}],
+            # pon column walk
+            [{'oid': f'{pon_oid}.{index}', 'value': '1'}],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        self.olt.refresh_from_db()
+        self.assertTrue(self.olt.discovery_healthy)
+        self.assertTrue(self.olt.snmp_reachable)
+
+        onu = ONU.objects.get(olt=self.olt, slot_id=2, pon_id=1, onu_id=1)
+        self.assertTrue(onu.is_active)
+        self.assertEqual(onu.serial, 'FHTT12345678')
+        self.assertEqual(onu.name, '')
+        self.assertEqual(onu.status, ONU.STATUS_ONLINE)
+        self.assertEqual(onu.snmp_index, index)
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_all_skipped_indices_preserves_existing_onus(self, mock_walk):
+        """When all SNMP indices fail parsing, existing ONUs must not be deactivated."""
+        # Pre-create an ONU that should survive
+        existing = ONU.objects.create(
+            olt=self.olt, slot_id=2, pon_id=1, onu_id=1,
+            snmp_index='67633408', serial='EXISTING', status=ONU.STATUS_ONLINE, is_active=True,
+        )
+
+        serial_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.10'
+        status_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.11'
+        slot_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.2'
+        pon_oid = '1.3.6.1.4.1.5875.800.3.10.1.1.3'
+
+        mock_walk.side_effect = [
+            # serial walk returns data
+            [{'oid': f'{serial_oid}.67633408', 'value': 'FHTT00000001'}],
+            # status walk
+            [{'oid': f'{status_oid}.67633408', 'value': '1'}],
+            # slot column walk returns EMPTY (simulates column walk failure)
+            [],
+            # pon column walk returns EMPTY
+            [],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        # OLT should still be reachable (SNMP worked) but discovery unhealthy
+        self.olt.refresh_from_db()
+        self.assertTrue(self.olt.snmp_reachable)
+        self.assertFalse(self.olt.discovery_healthy)
+
+        # Existing ONU must still be active (deactivation was skipped)
+        existing.refresh_from_db()
+        self.assertTrue(existing.is_active)
+
+
+class FiberhomeOltRxIndexTests(TestCase):
+    def test_fiberhome_olt_rx_index_formula(self):
+        """OLT Rx OID uses {pon_base}.{onu_id} for fiberhome_pon_onu formula."""
+        from topology.services.power_service import PowerService
+
+        onu = ONU(snmp_index='67633408')  # 0x04_08_01_00
+        oids = PowerService._build_power_oids_for_onu(
+            onu,
+            onu_rx_oid='1.3.6.1.4.1.5875.800.3.9.3.3.1.6',
+            onu_rx_suffix='',
+            olt_rx_oid='1.3.6.1.4.1.5875.800.3.9.3.7.1.2',
+            supports_olt_rx=True,
+            olt_rx_index_formula='fiberhome_pon_onu',
+        )
+        # onu_rx uses flat index directly
+        self.assertEqual(oids[0], '1.3.6.1.4.1.5875.800.3.9.3.3.1.6.67633408')
+        # olt_rx: pon_base = 67633408 & 0xFFFF0000 = 67633152, onu_id = (67633408>>8)&0xFF = 1
+        self.assertEqual(oids[1], '1.3.6.1.4.1.5875.800.3.9.3.7.1.2.67633152.1')
+
+    def test_default_olt_rx_index_no_formula(self):
+        """Without olt_rx_index_formula, OLT Rx OID uses the flat index directly."""
+        from topology.services.power_service import PowerService
+
+        onu = ONU(snmp_index='67633408')
+        oids = PowerService._build_power_oids_for_onu(
+            onu,
+            onu_rx_oid='1.3.6.1.4.1.5875.800.3.9.3.3.1.6',
+            onu_rx_suffix='',
+            olt_rx_oid='1.3.6.1.4.1.5875.800.3.9.3.7.1.2',
+            supports_olt_rx=True,
+            olt_rx_index_formula='',
+        )
+        self.assertEqual(oids[1], '1.3.6.1.4.1.5875.800.3.9.3.7.1.2.67633408')
 
 
 class PollingCommandTests(TestCase):
@@ -2880,3 +3092,190 @@ class PollingDisconnectReasonTests(TestCase):
         # Only status OIDs should be fetched, no separate reason OIDs
         all_oids = [oid for call in calls for oid in call]
         self.assertTrue(all(oid.startswith(f'{status_oid}.') for oid in all_oids))
+
+
+class SchedulerPowerDueTests(TestCase):
+    def setUp(self):
+        self.vp = build_vendor_profile('SchedPowerVP')
+        self.olt = OLT.objects.create(
+            name='SchedOLT',
+            ip_address='10.0.0.1',
+            vendor_profile=self.vp,
+            snmp_community='public',
+            power_interval_seconds=300,
+            is_active=True,
+        )
+
+    def test_power_due_when_no_next_power_at(self):
+        from topology.management.commands.run_scheduler import _is_power_due
+        self.olt.next_power_at = None
+        self.olt.last_power_at = None
+        self.assertTrue(_is_power_due(self.olt, timezone.now()))
+
+    def test_power_due_when_next_power_at_in_past(self):
+        from topology.management.commands.run_scheduler import _is_power_due
+        self.olt.next_power_at = timezone.now() - timedelta(seconds=10)
+        self.assertTrue(_is_power_due(self.olt, timezone.now()))
+
+    def test_power_not_due_when_next_power_at_in_future(self):
+        from topology.management.commands.run_scheduler import _is_power_due
+        self.olt.next_power_at = timezone.now() + timedelta(seconds=300)
+        self.assertFalse(_is_power_due(self.olt, timezone.now()))
+
+    def test_power_due_from_last_power_at_plus_interval(self):
+        from topology.management.commands.run_scheduler import _is_power_due
+        self.olt.next_power_at = None
+        self.olt.last_power_at = timezone.now() - timedelta(seconds=400)
+        self.assertTrue(_is_power_due(self.olt, timezone.now()))
+
+    def test_power_not_due_from_last_power_at_plus_interval(self):
+        from topology.management.commands.run_scheduler import _is_power_due
+        self.olt.next_power_at = None
+        self.olt.last_power_at = timezone.now() - timedelta(seconds=100)
+        self.assertFalse(_is_power_due(self.olt, timezone.now()))
+
+
+class SchedulerSnmpCheckTests(TestCase):
+    def setUp(self):
+        self.vp = build_vendor_profile('SchedSnmpVP')
+        self.olt = OLT.objects.create(
+            name='SnmpCheckOLT',
+            ip_address='10.0.0.2',
+            vendor_profile=self.vp,
+            snmp_community='public',
+            is_active=True,
+        )
+
+    @patch.object(SNMPService, 'get')
+    def test_snmp_check_marks_reachable(self, mock_get):
+        mock_get.return_value = {'1.3.6.1.2.1.1.1.0': 'ZTE C300'}
+        from topology.management.commands.run_scheduler import Command
+        cmd = Command()
+        cmd._run_snmp_checks()
+        self.olt.refresh_from_db()
+        self.assertTrue(self.olt.snmp_reachable)
+        self.assertEqual(self.olt.snmp_failure_count, 0)
+
+    @patch.object(SNMPService, 'get')
+    def test_snmp_check_marks_unreachable_on_none(self, mock_get):
+        mock_get.return_value = None
+        from topology.management.commands.run_scheduler import Command
+        cmd = Command()
+        cmd._run_snmp_checks()
+        self.olt.refresh_from_db()
+        self.assertFalse(self.olt.snmp_reachable)
+        self.assertGreaterEqual(self.olt.snmp_failure_count, 1)
+
+    @patch.object(SNMPService, 'get')
+    def test_snmp_check_marks_unreachable_on_exception(self, mock_get):
+        mock_get.side_effect = Exception('timeout')
+        from topology.management.commands.run_scheduler import Command
+        cmd = Command()
+        cmd._run_snmp_checks()
+        self.olt.refresh_from_db()
+        self.assertFalse(self.olt.snmp_reachable)
+        self.assertIn('timeout', self.olt.last_snmp_error)
+
+
+class SchedulerDispatchTests(TestCase):
+    def setUp(self):
+        self.vp = build_vendor_profile('SchedDispatchVP')
+        self.olt = OLT.objects.create(
+            name='DispatchOLT',
+            ip_address='10.0.0.3',
+            vendor_profile=self.vp,
+            snmp_community='public',
+            polling_enabled=True,
+            discovery_enabled=True,
+            is_active=True,
+        )
+
+    @patch('topology.management.commands.run_scheduler.call_command')
+    @patch.object(SNMPService, 'get')
+    def test_tick_dispatches_poll_and_discovery(self, mock_snmp, mock_call):
+        mock_snmp.return_value = None
+        from topology.management.commands.run_scheduler import Command
+        cmd = Command()
+        cmd.stdout = StringIO()
+        cmd._tick()
+        command_names = [args[0] for args, _kwargs in mock_call.call_args_list]
+        self.assertIn('poll_onu_status', command_names)
+        self.assertIn('discover_onus', command_names)
+
+
+class UnreachableOltSkipTests(TestCase):
+    """Polling and discovery skip OLTs that are SNMP-unreachable (failure_count >= 2)."""
+
+    def setUp(self):
+        self.vp = build_vendor_profile('UnreachSkipVP')
+        self.olt = OLT.objects.create(
+            name='UnreachOLT', ip_address='10.0.0.99',
+            vendor_profile=self.vp, snmp_port=161,
+            snmp_community='public', polling_enabled=True,
+            discovery_enabled=True, is_active=True,
+            snmp_reachable=False, snmp_failure_count=2,
+        )
+        ONU.objects.create(
+            olt=self.olt, name='TestONU', snmp_index='1.1',
+            slot_id=1, pon_id=1, onu_id=1,
+            is_active=True, status='online',
+        )
+
+    @patch.object(SNMPService, 'get', return_value=None)
+    def test_poll_skips_unreachable_olt(self, mock_get):
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('poll_onu_status', stdout=out)
+        mock_get.assert_not_called()
+
+    @patch.object(SNMPService, 'walk', return_value=[])
+    def test_discover_skips_unreachable_olt(self, mock_walk):
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('discover_onus', stdout=out)
+        mock_walk.assert_not_called()
+
+
+class SerializerDisconnectReasonTests(TestCase):
+    def setUp(self):
+        self.vp = build_vendor_profile('SerDisconnectVP')
+        self.olt = OLT.objects.create(
+            name='SerOLT',
+            ip_address='10.0.0.4',
+            vendor_profile=self.vp,
+            snmp_community='public',
+            is_active=True,
+        )
+        self.slot = OLTSlot.objects.create(
+            olt=self.olt, slot_id=1, slot_key='1', is_active=True,
+        )
+        self.pon = OLTPON.objects.create(
+            olt=self.olt, slot=self.slot, pon_id=1, pon_key='1/1',
+            is_active=True,
+        )
+        self.onu = ONU.objects.create(
+            olt=self.olt, slot_ref=self.slot, pon_ref=self.pon,
+            slot_id=1, pon_id=1, onu_id=1, snmp_index='100.1',
+            status='offline', is_active=True,
+        )
+
+    def test_offline_onu_without_log_returns_unknown_reason(self):
+        from topology.api.serializers import ONUNestedSerializer
+        serializer = ONUNestedSerializer(self.onu)
+        self.assertEqual(serializer.data['disconnect_reason'], 'unknown')
+
+    def test_online_onu_without_log_returns_none(self):
+        self.onu.status = 'online'
+        self.onu.save()
+        from topology.api.serializers import ONUNestedSerializer
+        serializer = ONUNestedSerializer(self.onu)
+        self.assertIsNone(serializer.data['disconnect_reason'])
+
+    def test_offline_onu_with_log_returns_log_reason(self):
+        ONULog.objects.create(
+            onu=self.onu, offline_since=timezone.now(),
+            disconnect_reason='dying_gasp',
+        )
+        from topology.api.serializers import ONUNestedSerializer
+        serializer = ONUNestedSerializer(self.onu)
+        self.assertEqual(serializer.data['disconnect_reason'], 'dying_gasp')

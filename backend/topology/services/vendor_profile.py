@@ -47,15 +47,25 @@ def map_disconnect_reason(
     return reason
 
 
+def _extract_onu_id_from_flat(flat_int: int, method: str) -> Optional[int]:
+    """Extract onu_id from a flat integer SNMP index using a named method."""
+    if method == 'byte2':
+        # Fiberhome encoding: flat_index = (slot_enc<<24)|(pon_enc<<16)|(onu_id<<8)|0
+        return (flat_int >> 8) & 0xFF
+    return None
+
+
 def parse_onu_index(
     index_str: str,
     indexing_cfg: Dict[str, Any],
     *,
     pon_map: Optional[Dict[int, Dict[str, int]]] = None,
+    column_map: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> Optional[Dict[str, int]]:
     """
     Parse ONU index using a vendor profile indexing strategy.
     Supports:
+    - `index_from: oid_columns`: slot/pon from column_map, onu_id from flat int via `onu_id_extract`
     - `regex`: named groups (`onu_id`, `slot_id`, `pon_id`, `pon_numeric`, `rack_id`, `shelf_id`, `port_id`)
     - `parts`: mapping field -> split-position (0-based)
     - default fallback: "<pon_numeric>.<onu_id>" (legacy ZTE path)
@@ -66,6 +76,33 @@ def parse_onu_index(
     raw = str(index_str).strip().strip('.')
     if not raw:
         return None
+
+    # --- oid_columns mode: slot/pon from separate SNMP columns, onu_id from flat index ---
+    if indexing_cfg.get('index_from') == 'oid_columns':
+        if not column_map or raw not in column_map:
+            return None
+        entry = column_map[raw]
+        slot_id = entry.get('slot_id')
+        pon_id = entry.get('pon_id')
+        if slot_id is None or pon_id is None:
+            return None
+        try:
+            flat_int = int(raw)
+        except (TypeError, ValueError):
+            return None
+        extract_method = str(indexing_cfg.get('onu_id_extract', 'byte2'))
+        onu_id = _extract_onu_id_from_flat(flat_int, extract_method)
+        if onu_id is None:
+            return None
+        return {
+            'pon_numeric': None,
+            'onu_id': int(onu_id),
+            'slot_id': int(slot_id),
+            'pon_id': int(pon_id),
+            'rack_id': None,
+            'shelf_id': None,
+            'port_id': None,
+        }
 
     values: Dict[str, Optional[int]] = {
         'pon_numeric': None,

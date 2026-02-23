@@ -96,6 +96,8 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         log = self._get_active_log(obj)
         if log:
             return log.disconnect_reason
+        if obj.status == ONU.STATUS_OFFLINE:
+            return ONULog.REASON_UNKNOWN
         return None
 
     def get_offline_since(self, obj):

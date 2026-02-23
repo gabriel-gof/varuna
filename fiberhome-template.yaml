@@ -1,0 +1,1014 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 7ce101c017d4450dacb7f17772131c06
+      name: Templates/OLT
+  templates:
+    - uuid: 25fa3bbe04524542a193fc8b90c5da63
+      template: 'Template OLT Fiberhome'
+      name: 'Template OLT Fiberhome'
+      groups:
+        - name: Templates/OLT
+      items:
+        - uuid: ef554c6c12d149949322368a24e2cbcf
+          name: 'OLT: ONUs authorized'
+          type: DEPENDENT
+          key: oltOnusAuthorized
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.authorized
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatus
+          tags:
+            - tag: onu_count
+              value: authorized
+        - uuid: 1fb4298afbdd4161a387ee32aa914c1e
+          name: 'OLT: ONUs dying gasp'
+          type: DEPENDENT
+          key: oltOnusDyingGasp
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.dying_gasp
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatus
+          tags:
+            - tag: onu_count
+              value: dying_gasp
+        - uuid: 52577793f3f44fe89420c401ddcb4613
+          name: 'OLT: ONUs link loss'
+          type: DEPENDENT
+          key: oltOnusLinkLoss
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.link_loss
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatus
+          tags:
+            - tag: onu_count
+              value: link_loss
+        - uuid: 6b502d3138b3497f905d22113285ed5b
+          name: 'OLT: ONUs offline'
+          type: DEPENDENT
+          key: oltOnusOffline
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.offline
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatus
+          tags:
+            - tag: onu_count
+              value: offline
+        - uuid: acb7bb9432414b58b7b0cd2f276e87ff
+          name: 'OLT: ONUs online'
+          type: DEPENDENT
+          key: oltOnusOnline
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.online
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatus
+          tags:
+            - tag: onu_count
+              value: online
+        - uuid: dead89636ac04a9da0af0bdb231fd8a1
+          name: 'OLT: ONUs with poor OLT rx signal'
+          type: DEPENDENT
+          key: oltOnusPoorOltRxSignal
+          delay: '0'
+          history: 7d
+          trends: 180d
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.signal_quality.bad_olt_rx
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: oltRxPowerCollection
+          tags:
+            - tag: onu_count
+              value: bad_olt_rx
+        - uuid: 3134fd2499b848fc8660d64ad7d294fe
+          name: 'OLT: ONUs with poor ONU rx signal'
+          type: DEPENDENT
+          key: oltOnusPoorOnuRxSignal
+          delay: '0'
+          history: 7d
+          trends: 180d
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.signal_quality.bad_onu_rx
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuRxPowerCollection
+          tags:
+            - tag: onu_count
+              value: bad_onu_rx
+        - uuid: 6854e56c65f14e5bb7a57bc1a0766f67
+          name: 'OLT: ONUs unknown'
+          type: DEPENDENT
+          key: oltOnusUnknown
+          delay: '0'
+          history: 7d
+          trends: 180d
+          units: onu
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.total.unknown
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: onuStatus
+          tags:
+            - tag: onu_count
+              value: unknown
+        - uuid: bbb1c3126084452ba76c2a0f0d7d288c
+          name: 'OLT: OLT Rx Power Collection'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#INTERFACE_NAME},1.3.6.1.4.1.5875.800.3.9.3.4.1.2,{#INTERFACE_INDEX},1.3.6.1.4.1.5875.800.3.9.3.4.1.1,{#OLT_RX_POWER},1.3.6.1.4.1.5875.800.3.9.3.7.1.2]'
+          key: oltRxPowerCollection
+          delay: 1d
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  /**
+                   * OLT Rx Power Collection - Fiberhome
+                   * Walks interface mapping + OLT Rx power OIDs only
+                   */
+
+                  var raw = JSON.parse(value);
+                  var result = {
+                      power_data: {},
+                      signal_quality: {
+                          good_olt_rx: 0,
+                          bad_olt_rx: 0,
+                          total_discovered_onus: 0
+                      }
+                  };
+
+                  var oltRxThreshold = parseFloat('{$OLT.RX.POWER.THRESHOLD}');
+
+                  function roundTo2Decimals(value) {
+                      return Math.round(value * 100) / 100;
+                  }
+
+                  // Build interface mapping
+                  var interfaces = {};
+                  raw.forEach(function(item) {
+                      var interfaceName = item['{#INTERFACE_NAME}'];
+                      var snmpIndex = item['{#SNMPINDEX}'];
+
+                      if (interfaceName && snmpIndex && !item['{#OLT_RX_POWER}']) {
+                          interfaces[snmpIndex] = interfaceName;
+                      }
+                  });
+
+                  // Collect OLT Rx Power data
+                  var MIN_VALID_POWER = -50;
+                  var MAX_VALID_POWER = 10;
+
+                  raw.forEach(function(item) {
+                      var oltRxPowerRaw = item['{#OLT_RX_POWER}'];
+                      var snmpIndex = item['{#SNMPINDEX}'];
+
+                      if (oltRxPowerRaw !== undefined && oltRxPowerRaw !== '' && snmpIndex) {
+                          var indexParts = snmpIndex.split('.');
+                          if (indexParts.length >= 2) {
+                              var interfaceIndex = indexParts[0];
+                              var onuPosition = indexParts.slice(1).join('.');
+
+                              if (interfaces[interfaceIndex]) {
+                                  var interfaceName = interfaces[interfaceIndex];
+                                  var onuKey = interfaceName + "/" + onuPosition;
+                                  var oltRxPower = roundTo2Decimals(parseFloat(oltRxPowerRaw) * 0.01);
+
+                                  result.signal_quality.total_discovered_onus++;
+
+                                  if (!isNaN(oltRxPower) && isFinite(oltRxPower) && oltRxPower >= MIN_VALID_POWER && oltRxPower <= MAX_VALID_POWER) {
+                                      result.power_data[onuKey] = {
+                                          olt_rx_power: oltRxPower
+                                      };
+                                      if (oltRxPower < oltRxThreshold) {
+                                          result.signal_quality.bad_olt_rx++;
+                                      } else {
+                                          result.signal_quality.good_olt_rx++;
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  });
+
+                  return JSON.stringify(result);
+        - uuid: c8d9e0f1a2b34cd586f7a8b9c0d1e2f3
+          name: 'OLT: ONU Rx Power Collection'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#ONU_RX_POWER},1.3.6.1.4.1.5875.800.3.9.3.3.1.6,{#PON_NAME},1.3.6.1.4.1.5875.800.3.9.3.3.1.2]'
+          key: onuRxPowerCollection
+          delay: 1d
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  /**
+                   * ONU Rx Power Collection - Fiberhome
+                   * Walks ONU Rx power + PON name OIDs only
+                   */
+
+                  var raw = JSON.parse(value);
+                  var result = {
+                      power_data: {},
+                      signal_quality: {
+                          good_onu_rx: 0,
+                          bad_onu_rx: 0,
+                          total_discovered_onus: 0
+                      }
+                  };
+
+                  var onuRxThreshold = parseFloat('{$ONU.RX.POWER.THRESHOLD}');
+
+                  function roundTo2Decimals(value) {
+                      return Math.round(value * 100) / 100;
+                  }
+
+                  var MIN_VALID_POWER = -50;
+                  var MAX_VALID_POWER = 10;
+
+                  raw.forEach(function(item) {
+                      var onuRxPowerRaw = item['{#ONU_RX_POWER}'];
+                      var ponName = item['{#PON_NAME}'];
+                      var snmpIndex = item['{#SNMPINDEX}'];
+
+                      if (onuRxPowerRaw !== undefined && onuRxPowerRaw !== '' && ponName && snmpIndex) {
+                          var onuRxPower = roundTo2Decimals(parseFloat(onuRxPowerRaw) * 0.01);
+
+                          result.signal_quality.total_discovered_onus++;
+
+                          if (!isNaN(onuRxPower) && isFinite(onuRxPower) && onuRxPower >= MIN_VALID_POWER && onuRxPower <= MAX_VALID_POWER) {
+                              result.power_data[ponName] = {
+                                  onu_rx_power: onuRxPower
+                              };
+                              if (onuRxPower < onuRxThreshold) {
+                                  result.signal_quality.bad_onu_rx++;
+                              } else {
+                                  result.signal_quality.good_onu_rx++;
+                              }
+                          }
+                      }
+                  });
+
+                  return JSON.stringify(result);
+        - uuid: df0266fae0fc49adb6f694039d38822b
+          name: 'OLT: ONU Status Collection'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#SLOT},1.3.6.1.4.1.5875.800.3.10.1.1.2,{#PON},1.3.6.1.4.1.5875.800.3.10.1.1.3,{#STATUS},1.3.6.1.4.1.5875.800.3.10.1.1.11]'
+          key: onuStatus
+          delay: 10m
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  var summary = {
+                    total: {
+                      authorized: 0,
+                      online: 0,
+                      dying_gasp: 0, 
+                      link_loss: 0,
+                      unknown: 0,
+                      offline: 0  // dying_gasp + link_loss + unknown
+                    },
+                    by_pon: {}
+                  };
+                  
+                  data.forEach(function(onu) {
+                    var slot = onu['{#SLOT}'];
+                    var pon = onu['{#PON}'];
+                    var status = onu['{#STATUS}'];
+                    
+                    // Only process status 0, 1, 2, 3 - discard everything else
+                    if (status !== '0' && status !== '1' && status !== '2' && status !== '3') {
+                      return; // Skip this ONU completely
+                    }
+                    
+                    var statusName;
+                    switch(status) {
+                      case '0': statusName = 'link_loss'; break;
+                      case '1': statusName = 'online'; break;
+                      case '2': statusName = 'dying_gasp'; break;
+                      case '3': statusName = 'unknown'; break;
+                    }
+                    
+                    summary.total.authorized++;
+                    summary.total[statusName]++;
+                    
+                    // Count offline (everything that is NOT online - status 0, 2, 3)
+                    if (status !== '1') {
+                      summary.total.offline++;
+                    }
+                    
+                    var ponKey = 'PON ' + slot + '/' + pon;
+                    if (!summary.by_pon[ponKey]) {
+                      summary.by_pon[ponKey] = {
+                        authorized: 0,
+                        online: 0,
+                        dying_gasp: 0,
+                        link_loss: 0,
+                        unknown: 0,
+                        offline: 0
+                      };
+                    }
+                    
+                    summary.by_pon[ponKey].authorized++;
+                    summary.by_pon[ponKey][statusName]++;
+                    
+                    // Count offline per PON (everything NOT online)
+                    if (status !== '1') {
+                      summary.by_pon[ponKey].offline++;
+                    }
+                  });
+                  
+                  return JSON.stringify(summary);
+        - uuid: 92f4a8ba681542be9b2a2e4902388651
+          name: 'OLT: Temperature'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.4.1.5875.800.3.9.4.5.0
+          key: temperature
+          delay: 5m
+          history: 7d
+          trends: 180d
+          units: ºC
+          tags:
+            - tag: health
+              value: temp
+          triggers:
+            - uuid: 2fd58fd0325f4929b44695673b6450ff
+              expression: 'min(/Template OLT Fiberhome/temperature,5m)>{$TEMP.HIGH.THRESHOLD}'
+              name: 'OLT: Temperatura acima de {$TEMP.HIGH.THRESHOLD}°C'
+              opdata: 'Temperatura atual: {ITEM.LASTVALUE1} °C'
+              priority: HIGH
+              manual_close: 'YES'
+        - uuid: e6b3572cbd634e349240bae047755c20
+          name: 'OLT: Uptime'
+          type: SNMP_AGENT
+          snmp_oid: 1.3.6.1.2.1.1.3.0
+          key: uptime
+          history: 7d
+          trends: 180d
+          units: uptime
+          preprocessing:
+            - type: MULTIPLIER
+              parameters:
+                - '0.01'
+          tags:
+            - tag: health
+              value: uptime
+          triggers:
+            - uuid: 8ae3372146ac458d82d2c2f4809b4462
+              expression: 'last(/Template OLT Fiberhome/uptime)<5m'
+              name: 'OLT: Reinicialização detectada (uptime < 5m)'
+              priority: WARNING
+              manual_close: 'YES'
+      discovery_rules:
+        - uuid: ca4c0f8bf4df4f1eaa38187935f4fab4
+          name: 'GPON Cards Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#CARDTYPE},1.3.6.1.4.1.5875.800.3.9.2.1.1.2,{#CARDSTATUS},.1.3.6.1.4.1.5875.800.3.9.2.1.1.5]'
+          key: gponCardsDiscovery
+          delay: 1d
+          filter:
+            conditions:
+              - macro: '{#CARDSTATUS}'
+                value: '1'
+                formulaid: A
+              - macro: '{#CARDTYPE}'
+                value: '^(514|502|527|550|20.*)$'
+                formulaid: B
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: 24a953c404104547ac4ced766e2e66d6
+              name: 'GPON Card {#SNMPINDEX}: CPU usage'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.2.1.1.8.{#SNMPINDEX}'
+              key: 'cardCpuUtil[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: '%'
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '0.01'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_gpon'
+                - tag: health
+                  value: cpu
+              trigger_prototypes:
+                - uuid: 6b5dbf63a6584bac82dd1fd89dbd6267
+                  expression: 'min(/Template OLT Fiberhome/cardCpuUtil[{#SNMPINDEX}],10m)>{$CPU.UTIL.MAX}'
+                  name: 'Placa GPON {#SNMPINDEX}: Utilização de CPU acima de {$CPU.UTIL.MAX}%'
+                  opdata: 'Uso de CPU atual: {ITEM.LASTVALUE1}%'
+                  priority: HIGH
+                  manual_close: 'YES'
+            - uuid: e223ddc727cd4ad1a90050a4524d8cc0
+              name: 'GPON Card {#SNMPINDEX}: Memory usage'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.2.1.1.9.{#SNMPINDEX}'
+              key: 'cardMemUtil[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: '%'
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '0.01'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_gpon'
+                - tag: health
+                  value: memory
+              trigger_prototypes:
+                - uuid: ff90ba0c4f0f40bbba13a4f7b5bc9229
+                  expression: 'min(/Template OLT Fiberhome/cardMemUtil[{#SNMPINDEX}],10m)>{$MEM.UTIL.MAX}'
+                  name: 'Placa GPON {#SNMPINDEX}: Utilização de memória acima de {$MEM.UTIL.MAX}%'
+                  opdata: 'Uso de memória atual: {ITEM.LASTVALUE1}%'
+                  priority: HIGH
+                  manual_close: 'YES'
+            - uuid: 98e082412f3745beaaef11b47cf7b3dd
+              name: 'GPON Card {#SNMPINDEX}: Status'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.2.1.1.5.{#SNMPINDEX}'
+              key: 'cardStatus[{#SNMPINDEX}]'
+              history: 7d
+              trends: 180d
+              valuemap:
+                name: 'Card Status'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_gpon'
+                - tag: health
+                  value: status
+              trigger_prototypes:
+                - uuid: aa12e8b5dc5641bbad065d1c5629703d
+                  expression: 'last(/Template OLT Fiberhome/cardStatus[{#SNMPINDEX}])<>1 and (last(/Template OLT Fiberhome/cardStatus[{#SNMPINDEX}],#1)<>last(/Template OLT Fiberhome/cardStatus[{#SNMPINDEX}],#2))'
+                  name: 'Placa GPON {#SNMPINDEX}: Indisponível'
+                  priority: DISASTER
+                  manual_close: 'YES'
+        - uuid: 2dbd40f8d1f14ccaac31a296ea977855
+          name: 'GPON Interfaces Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#SNMPVALUE},1.3.6.1.4.1.5875.800.3.9.3.4.1.2,{#ONUAUTH}, 1.3.6.1.4.1.5875.800.3.9.3.4.1.12]'
+          key: gponInterfacesDiscovery
+          delay: 1d;wd2-7h4
+          filter:
+            conditions:
+              - macro: '{#ONUAUTH}'
+                value: ^0$
+                operator: NOT_MATCHES_REGEX
+                formulaid: A
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          description: |
+            Necessario executar este comando para definir o intervalo de coleta das interfaces PON de 15m para 5m e habilitar a leitura de potencia optica na ONU:
+            
+            # cd maintenance 
+            # cd performance
+            # set pon_traffic_sts switch traffic enable 5 1
+            # set mib performance switch enable
+          item_prototypes:
+            - uuid: 7c858226d9d144f4b11ed156297c7f2d
+              name: 'Interface {#SNMPVALUE}: Speed'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.15.{#SNMPINDEX}'
+              key: 'gpon.ifHighSpeed[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '1000000'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              tags:
+                - tag: interface
+                  value: gpon
+            - uuid: 8af7991143be41f1b0f2d6c4dc8dd09c
+              name: 'Interface {#SNMPVALUE}: ONUs authorized'
+              type: DEPENDENT
+              key: 'gponOnusAuthorized[{#SNMPINDEX}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].authorized'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatus
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: authorized
+              trigger_prototypes:
+                - uuid: 8c7d9e2a4b7c4e6b9c3f5e8d2a1b0c9e
+                  expression: 'last(/Template OLT Fiberhome/gponOnusAuthorized[{#SNMPINDEX}])>{$GPON.ONU.AUTH.THRESHOLD}'
+                  name: 'Interface {#SNMPVALUE}: ONUs autorizadas acima do limite (>{$GPON.ONU.AUTH.THRESHOLD})'
+                  opdata: 'ONUs autorizadas: {ITEM.LASTVALUE1}'
+                  priority: WARNING
+                  manual_close: 'YES'
+            - uuid: 7433b480588a4cd0a6f447e7c16fc7e3
+              name: 'Interface {#SNMPVALUE}: Bits received'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.6.{#SNMPINDEX}'
+              key: 'ifHCInOctets[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: traffic
+                  value: in
+            - uuid: be3e911f562c498586f01d20f30c85b8
+              name: 'Interface {#SNMPVALUE}: Bits sent'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.10.{#SNMPINDEX}'
+              key: 'ifHCOutOctets[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: traffic
+                  value: out
+            - uuid: f4b47f5d1a7343f3b797144782120db2
+              name: 'Interface {#SNMPVALUE}: Operational status'
+              type: SNMP_AGENT
+              snmp_oid: '.1.3.6.1.4.1.5875.800.3.9.3.4.1.5.{#SNMPINDEX}'
+              key: 'oltPonOnlineStatus[{#SNMPINDEX}]'
+              history: 7d
+              trends: 180d
+              valuemap:
+                name: 'Link Status'
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: health
+                  value: status
+            - uuid: c1bbed042f7249769ce343b6f02e5371
+              name: 'Interface {#SNMPVALUE}: ONUs dying gasp'
+              type: DEPENDENT
+              key: 'onuDyingGasp[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].dying_gasp'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatus
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: dying_gasp
+            - uuid: a29b93389e174255a38cb22dcd174499
+              name: 'Interface {#SNMPVALUE}: ONUs link loss'
+              type: DEPENDENT
+              key: 'onuLinkLoss[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].link_loss'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatus
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: link_loss
+              trigger_prototypes:
+                - uuid: 3c6f34c023fa4995af61eb4bd5c3fb81
+                  expression: 'last(/Template OLT Fiberhome/onuLinkLoss[{#SNMPVALUE}])>{$GPON.ONU.LOSS.THRESHOLD}'
+                  recovery_mode: NONE
+                  name: 'Interface {#SNMPVALUE}: Possível rompimento'
+                  opdata: 'ONUs com perda de link: {ITEM.LASTVALUE1}'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+            - uuid: 298ef30e23434f4fa982c2e1add6b95e
+              name: 'Interface {#SNMPVALUE}: ONUs offline'
+              type: DEPENDENT
+              key: 'onuOffline[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].offline'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatus
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: offline
+            - uuid: 8b8465d73fcd42bd840c5d47bd3f0b5c
+              name: 'Interface {#SNMPVALUE}: ONUs online'
+              type: DEPENDENT
+              key: 'onuOnline[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].online'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatus
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: online
+            - uuid: 7ec5669dcdea4710af896176a00509a0
+              name: 'Interface {#SNMPVALUE}: ONUs unknown'
+              type: DEPENDENT
+              key: 'onuUnknown[{#SNMPVALUE}]'
+              delay: '0'
+              history: 7d
+              trends: 180d
+              units: onu
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.by_pon["{#SNMPVALUE}"].unknown'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuStatus
+              tags:
+                - tag: interface
+                  value: gpon
+                - tag: onu_count
+                  value: unknown
+        - uuid: 8d377acfbb5344b3b96893a2e1eba460
+          name: 'Control Cards Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#MGRCARDTYPE},1.3.6.1.4.1.5875.800.3.9.8.1.1.1,{#MGRCARDSTATUS},.1.3.6.1.4.1.5875.800.3.9.8.1.1.4]'
+          key: managementCardsDiscovery
+          delay: 1d
+          filter:
+            conditions:
+              - macro: '{#MGRCARDSTATUS}'
+                value: '1'
+                formulaid: A
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: 345bc5d790394227a2f32cc7eea57b89
+              name: 'Control Card {#SNMPINDEX}: CPU usage'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.8.1.1.5.{#SNMPINDEX}'
+              key: 'mgrCardCpuUtil[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: '%'
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '0.01'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_ctrl'
+                - tag: health
+                  value: cpu
+              trigger_prototypes:
+                - uuid: 5ea90c7a86354c659bdef8f14fb2dfac
+                  expression: 'min(/Template OLT Fiberhome/mgrCardCpuUtil[{#SNMPINDEX}],10m)>{$CPU.UTIL.MAX}'
+                  name: 'Placa de Controle {#SNMPINDEX}: Utilização de CPU acima de {$CPU.UTIL.MAX}%'
+                  opdata: 'Uso de CPU atual: {ITEM.LASTVALUE1}%'
+                  priority: HIGH
+                  manual_close: 'YES'
+            - uuid: e63dd738ff964e8a8d3b9a857e0c0145
+              name: 'Control Card {#SNMPINDEX}: Memory usage'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.8.1.1.6.{#SNMPINDEX}'
+              key: 'mgrCardMemUtil[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: '%'
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '0.01'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_ctrl'
+                - tag: health
+                  value: memory
+              trigger_prototypes:
+                - uuid: 74c4b3e0ade34a1e8e92bb1bb99ca42f
+                  expression: 'min(/Template OLT Fiberhome/mgrCardMemUtil[{#SNMPINDEX}],10m)>{$MEM.UTIL.MAX}'
+                  name: 'Placa de Controle {#SNMPINDEX}: Utilização de memória acima de {$MEM.UTIL.MAX}%'
+                  opdata: 'Uso de memória atual: {ITEM.LASTVALUE1}%'
+                  priority: HIGH
+                  manual_close: 'YES'
+            - uuid: 933091c340d741ad8a5f327e8c19a4f5
+              name: 'Control Card {#SNMPINDEX}: Status'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.8.1.1.4.{#SNMPINDEX}'
+              key: 'mgrCardWorkStatus[{#SNMPINDEX}]'
+              history: 7d
+              trends: 180d
+              valuemap:
+                name: 'Card Status'
+              tags:
+                - tag: card
+                  value: '{#SNMPINDEX}_ctrl'
+                - tag: health
+                  value: status
+              trigger_prototypes:
+                - uuid: 7bc712e5a6854aabba78d3111bf88c04
+                  expression: 'last(/Template OLT Fiberhome/mgrCardWorkStatus[{#SNMPINDEX}])<>1 and (last(/Template OLT Fiberhome/mgrCardWorkStatus[{#SNMPINDEX}],#1)<>last(/Template OLT Fiberhome/mgrCardWorkStatus[{#SNMPINDEX}],#2))'
+                  name: 'Placa de Controle {#SNMPINDEX}: Indisponível'
+                  priority: DISASTER
+                  manual_close: 'YES'
+        - uuid: 91e576c9d46c454da03cd58c48d5d281
+          name: 'ONU Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#PON},.1.3.6.1.4.1.5875.800.3.9.3.3.1.2, {#SERIAL}, .1.3.6.1.4.1.5875.800.3.10.1.1.10]'
+          key: onuDiscovery
+          delay: 1d
+          filter:
+            conditions:
+              - macro: '{#SERIAL}'
+                value: '^{#SERIAL}$'
+                operator: NOT_MATCHES_REGEX
+                formulaid: A
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          description: |
+            Necessario executar este comando para definir o intervalo de coleta das interfaces PON de 15m para 5m e habilitar a leitura de potencia optica na ONU:
+            
+            # cd maintenance 
+            # cd performance
+            # set pon_traffic_sts switch traffic enable 5 1
+            # set mib performance switch enable
+          item_prototypes:
+            - uuid: 0fc935a3a1b64773a30b284c6b74ac75
+              name: 'ONU {#PON} {#SERIAL}: OLT Rx power'
+              type: DEPENDENT
+              key: 'onuPonRxOpticalPowerInOlt[{#SNMPINDEX}]'
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              trends: 180d
+              units: dBm
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.power_data["{#PON}"].olt_rx_power'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: oltRxPowerCollection
+              tags:
+                - tag: onu_power
+                  value: olt_rx
+            - uuid: fee71e5691a44122a8bc2039730217be
+              name: 'ONU {#PON} {#SERIAL}: ONU Rx power'
+              type: DEPENDENT
+              key: 'onuPonRxOpticalPower[{#SNMPINDEX}]'
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              trends: 180d
+              units: dBm
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.power_data["{#PON}"].onu_rx_power'
+                  error_handler: DISCARD_VALUE
+              master_item:
+                key: onuRxPowerCollection
+              tags:
+                - tag: onu_power
+                  value: onu_rx
+        - uuid: d4b763df521a487aa443b323cc2b570d
+          name: 'Uplink Interfaces Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#SNMPVALUE},1.3.6.1.4.1.5875.800.3.9.3.5.1.2,{#UPLINKSTATUS},1.3.6.1.4.1.5875.800.3.9.3.5.1.4]'
+          key: uplinkInterfacesDiscovery
+          delay: 1d;wd2-7h4
+          filter:
+            conditions:
+              - macro: '{#UPLINKSTATUS}'
+                value: '1'
+                formulaid: A
+          lifetime: 30d
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - uuid: f9d6ada12f334d86a77499befd5274a9
+              name: 'Interface {#SNMPVALUE}: Bits received'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.6.{#SNMPINDEX}'
+              key: 'uplinkIfHCInOctets[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: uplink
+                - tag: traffic
+                  value: in
+            - uuid: 7612bba1084848b4980d9070e05fe124
+              name: 'Interface {#SNMPVALUE}: Bits sent'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.10.{#SNMPINDEX}'
+              key: 'uplinkIfHCOutOctets[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: CHANGE_PER_SECOND
+                  parameters:
+                    - ''
+                - type: MULTIPLIER
+                  parameters:
+                    - '8'
+              tags:
+                - tag: interface
+                  value: uplink
+                - tag: traffic
+                  value: out
+            - uuid: 7149413f8d9c4adfa66851c4c1ee6e7c
+              name: 'Interface {#SNMPVALUE}: Operational status'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}'
+              key: 'uplinkIfOperStatus[{#SNMPINDEX}]'
+              history: 7d
+              trends: 180d
+              tags:
+                - tag: interface
+                  value: uplink
+                - tag: health
+                  value: status
+              trigger_prototypes:
+                - uuid: 25a51dff0f5b4451bd85a652308427dc
+                  expression: 'last(/Template OLT Fiberhome/uplinkIfOperStatus[{#SNMPINDEX}])=2 and (last(/Template OLT Fiberhome/uplinkIfOperStatus[{#SNMPINDEX}],#1)<>last(/Template OLT Fiberhome/uplinkIfOperStatus[{#SNMPINDEX}],#2))=1'
+                  name: 'Interface {#SNMPVALUE}: Link inativo'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+            - uuid: 4ee07b80c33446478e47a0ed06c37acb
+              name: 'Interface {#SNMPVALUE}: Speed'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.15.{#SNMPINDEX}'
+              key: 'uplinkIfSpeed[{#SNMPINDEX}]'
+              delay: 5m
+              history: 7d
+              trends: 180d
+              units: bps
+              preprocessing:
+                - type: MULTIPLIER
+                  parameters:
+                    - '1000000'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              tags:
+                - tag: interface
+                  value: uplink
+          trigger_prototypes:
+            - uuid: db155775da9e4d54ba3b69d7ccbbdb16
+              expression: |
+                (avg(/Template OLT Fiberhome/uplinkIfHCInOctets[{#SNMPINDEX}],15m)>({$IF.UTIL.MAX}/100)*last(/Template OLT Fiberhome/uplinkIfSpeed[{#SNMPINDEX}]) or
+                avg(/Template OLT Fiberhome/uplinkIfHCOutOctets[{#SNMPINDEX}],15m)>({$IF.UTIL.MAX}/100)*last(/Template OLT Fiberhome/uplinkIfSpeed[{#SNMPINDEX}])) and
+                last(/Template OLT Fiberhome/uplinkIfSpeed[{#SNMPINDEX}])>0
+              recovery_mode: RECOVERY_EXPRESSION
+              recovery_expression: |
+                avg(/Template OLT Fiberhome/uplinkIfHCInOctets[{#SNMPINDEX}],15m)<(({$IF.UTIL.MAX}-3)/100)*last(/Template OLT Fiberhome/uplinkIfSpeed[{#SNMPINDEX}]) and
+                avg(/Template OLT Fiberhome/uplinkIfHCOutOctets[{#SNMPINDEX}],15m)<(({$IF.UTIL.MAX}-3)/100)*last(/Template OLT Fiberhome/uplinkIfSpeed[{#SNMPINDEX}])
+              name: 'Interface {#SNMPVALUE}: Utilização de banda acima de {$IF.UTIL.MAX}%'
+              opdata: 'Entrada: {ITEM.LASTVALUE1}, Saída: {ITEM.LASTVALUE3}, Velocidade da porta: {ITEM.LASTVALUE2}'
+              priority: WARNING
+              manual_close: 'YES'
+      macros:
+        - macro: '{$CPU.UTIL.MAX}'
+          value: '90'
+        - macro: '{$GPON.ONU.AUTH.THRESHOLD}'
+          value: '100'
+        - macro: '{$GPON.ONU.LOSS.THRESHOLD}'
+          value: '4'
+        - macro: '{$IF.UTIL.MAX}'
+          value: '90'
+        - macro: '{$MEM.UTIL.MAX}'
+          value: '90'
+        - macro: '{$OLT.RX.POWER.THRESHOLD}'
+          value: '-30'
+        - macro: '{$ONU.RX.POWER.THRESHOLD}'
+          value: '-28'
+        - macro: '{$TEMP.HIGH.THRESHOLD}'
+          value: '60'
+      valuemaps:
+        - uuid: 67c765c636284c8c9be7e7bf4b1c9fb1
+          name: 'Card Status'
+          mappings:
+            - value: '0'
+              newvalue: down
+            - value: '1'
+              newvalue: up
+        - uuid: 66ebaffab4814240af5691f607a60fdd
+          name: 'Link Status'
+          mappings:
+            - value: '1'
+              newvalue: up
+            - value: '2'
+              newvalue: down

@@ -9,7 +9,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Browser tab title is `Varuna`.
 
 ## Structure
-- `frontend/src/App.jsx`: app shell, auth state, topology/settings tabs, polling refresh, SNMP checks. Nav bar has Topology and Settings buttons grouped on the left; user menu on the right.
+- `frontend/src/App.jsx`: app shell, auth state, topology/settings tabs, OLT filter persistence, polling refresh. Nav bar has Topology and Settings buttons grouped on the left; user menu on the right.
 - `frontend/src/components/LoginPage.jsx`: login page with token-based authentication.
 - `frontend/src/components/VarunaIcon.jsx`: shared Varuna SVG icon component.
 - `frontend/src/components/NetworkTopology.jsx`: topology tree and alarm/search/filter interactions.
@@ -23,7 +23,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Logout calls `POST /api/auth/logout/`, clears the token from `localStorage`, and returns to the login page.
 - Axios request interceptor attaches `Authorization: Token <key>` header on every request.
 - Axios response interceptor clears the stored token on 401 responses (no page reload — React state handles the transition).
-- Data-fetching effects (`fetchOlts`, `fetchVendorProfiles`, SNMP checks) are guarded with `if (!authToken) return` to prevent 401 loops on unauthenticated state.
+- Data-fetching effects (`fetchOlts`, `fetchVendorProfiles`) are guarded with `if (!authToken) return` to prevent 401 loops on unauthenticated state.
 - Login page uses the same design language as the main app: emerald accent, VarunaIcon with "VARUNA" text matching the nav header proportions.
 
 ### Role-Aware UX
@@ -31,8 +31,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Viewers (`can_modify_settings=false`):
   - Settings tab is hidden from nav; if accessed directly, redirected to topology view.
   - Vendor profile fetch is skipped.
-  - SNMP checks are not triggered automatically.
-  - Auto-maintenance (discovery/polling/power) is not submitted.
+  - Auto-maintenance (discovery/polling/power) runs on the backend scheduler.
   - PON sidebar refresh buttons are hidden.
   - OLT creation/editing/deletion is blocked.
 - Permission error responses from the backend (`'Insufficient permissions for this action.'`) are translated through `BACKEND_MESSAGE_MAP` and displayed as contextual errors.
@@ -46,11 +45,11 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Live Data Flow
 - Fetch OLTs with topology (`/api/olts/?include_topology=true`).
 - Refresh periodically.
-- Run `snmp_check` per OLT and map to `reachable/unreachable` with conservative transitions (a single failed check does not immediately flip a previously reachable OLT to unreachable).
+- OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable when `snmp_reachable === false` and `snmp_failure_count >= 2`.
 - Render unreachable or stale OLT nodes in gray.
 - When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and offline red-hyphen indicators are all forced to gray to signal that displayed data may be outdated.
 - `loading` is only `true` during the initial fetch when no OLT data exists. Background refreshes silently update `olts` state without toggling `loading`, keeping the topology tree mounted. If a background refresh fails, existing data is preserved.
-- Topology filter initializes with all OLTs selected only after first non-empty OLT payload (avoids startup state where no OLTs are shown).
+- Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
 - Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads.
 - Topology search suggestions are deduplicated by serial (when present) so the same ONU is shown once even if backend topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
@@ -85,13 +84,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
   - `power_interval_seconds`
-- Frontend runs due discovery/polling/power actions based on configured OLT intervals to keep data current while UI is open.
-- Interval-driven maintenance requests are queued in backend background mode (`{ background: true }`) so status/discovery/power scheduling stays non-blocking and avoids long-lived frontend request locks.
-- Automatic maintenance now keeps per-OLT pending locks in memory (polling/discovery/power) and does not re-submit a due action until:
-  - backend timestamp advances (`last_poll_at`, `last_discovery_at`, `last_power_at`) or
-  - a safety timeout expires.
-- Auto-maintenance priority per OLT is `polling -> power -> discovery`; at most one automatic maintenance request is submitted per OLT per cycle.
-- Due power collection is OLT-scoped (not per selected PON) and uses backend `last_power_at` plus each OLT `power_interval_seconds`.
+- Discovery, polling, and power collection are scheduled by the backend `run_scheduler` management command. The frontend no longer submits automatic maintenance requests.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
 - PON sidebar refresh is tab-aware and collection-first:
   - `Status`: triggers `POST /api/olts/:id/run_polling/` for the selected OLT.
@@ -221,6 +214,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - Unknown backend messages pass through untranslated for operator visibility.
 - `getApiErrorMessage()` accepts a `t` function and runs all extracted backend messages through `translateBackendMessage()` before returning.
 - Queued settings actions (`runQueuedSettingsAction`) prefer frontend-translated messages over raw backend `detail` strings.
+- Settings action messages are OLT-scoped: `settingsActionMessage` is `{ oltId, message }` (or `null`). Each OLT card only shows the message when `oltId` matches; the create card only shows messages with `oltId == null`.
 
 ## Missing Serial Highlighting
 - ONUs with missing or empty serial numbers are highlighted with a red background in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
@@ -234,9 +228,6 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Status Tab Refresh
 - When a status refresh is triggered from the PON sidebar, a translucent overlay with a centered spinner covers the status content area during the operation. Existing data stays visible underneath.
-
-## Auto-Maintenance Control
-- `FRONTEND_AUTO_MAINTENANCE_ENABLED` flag (default `false`) controls whether the frontend submits automatic background maintenance requests. When disabled, only manual interval actions and resume-on-focus refreshes run.
 
 ## Frontend Invariants
 - Do not change visual identity without explicit product request.

@@ -62,18 +62,19 @@ const getSlotHealthState = (slot) => {
   return 'green'
 }
 
-export const deriveOltHealthState = (olt, snmpState, nowMs = Date.now()) => {
-  const snmpStatus = snmpState?.status
-  if (snmpStatus === 'unreachable' || olt?.snmp_reachable === false) {
+export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
+  // When SNMP has never been checked, show neutral until the scheduler reports.
+  if (olt?.snmp_reachable == null) {
+    return { state: 'neutral', reason: 'checking' }
+  }
+
+  const failureCount = Number(olt?.snmp_failure_count || 0)
+  if (olt?.snmp_reachable === false && failureCount >= 2) {
     return { state: 'gray', reason: 'snmp_unreachable' }
   }
 
   if (isStatusStale(olt, nowMs)) {
     return { state: 'gray', reason: 'status_stale' }
-  }
-
-  if (snmpStatus === 'pending' && olt?.snmp_reachable == null) {
-    return { state: 'neutral', reason: 'checking' }
   }
 
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)

@@ -151,8 +151,24 @@ backend/venv/bin/python backend/manage.py discover_onus --force
 backend/venv/bin/python backend/manage.py poll_onu_status --force
 ```
 
-## Background Collection (Docker)
-Run scheduled collection via Docker exec (e.g. from host cron):
+## Background Collection (Scheduler)
+In Docker dev mode, the `run_scheduler` management command runs as a background process alongside the Django server. It automatically dispatches polling, discovery, power collection, and SNMP reachability checks.
+
+```bash
+# Scheduler starts automatically in docker-compose.dev.yml
+# To run manually:
+docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler
+
+# With custom intervals:
+docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler --tick-seconds 60 --snmp-check-seconds 300
+```
+
+Monitor scheduler logs:
+```bash
+docker compose -f docker-compose.dev.yml logs -f backend | grep scheduler
+```
+
+Manual one-off collection (e.g. from host cron or debugging):
 ```bash
 # Discovery (runs only due OLTs)
 docker compose -f docker-compose.dev.yml exec backend python manage.py discover_onus

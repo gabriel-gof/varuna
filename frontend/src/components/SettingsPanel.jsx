@@ -198,20 +198,20 @@ const SectionLabel = ({ children }) => (
   <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-300 dark:text-slate-600 select-none">{children}</span>
 )
 
-const getOltHealth = (olt, snmpStatuses, oltHealthById) => {
+const getOltHealth = (olt, oltHealthById) => {
   const derived = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
   if (derived?.state && HEALTH_STYLES[derived.state]) return HEALTH_STYLES[derived.state]
-  const st = snmpStatuses?.[olt.id]
-  if (st?.status === 'unreachable') return HEALTH_STYLES.gray
-  if (!st || st.status === 'pending') return HEALTH_STYLES.neutral
-  return HEALTH_STYLES.green
+  return HEALTH_STYLES.neutral
 }
 
-const getSnmpBadge = (olt, snmpStatuses, t) => {
-  const st = snmpStatuses?.[olt.id]
-  if (!st || st.status === 'pending') return { label: t('Checking'), color: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500', dot: 'bg-slate-300 dark:bg-slate-600' }
-  if (st.status === 'unreachable') return { label: t('Unreachable'), color: 'bg-rose-50 dark:bg-rose-500/10 text-rose-500 dark:text-rose-400', dot: 'bg-rose-400 dark:bg-rose-500' }
-  return { label: t('Reachable'), color: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', dot: 'bg-emerald-400 dark:bg-emerald-500' }
+const getSnmpBadge = (olt, t) => {
+  if (olt.snmp_reachable === false) {
+    return { label: t('Unreachable'), color: 'bg-rose-50 dark:bg-rose-500/10 text-rose-500 dark:text-rose-400', dot: 'bg-rose-400 dark:bg-rose-500' }
+  }
+  if (olt.snmp_reachable === true) {
+    return { label: t('Reachable'), color: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', dot: 'bg-emerald-400 dark:bg-emerald-500' }
+  }
+  return { label: t('Checking'), color: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500', dot: 'bg-slate-300 dark:bg-slate-600' }
 }
 
 /* ─── OLT Card header ─── */
@@ -412,7 +412,6 @@ export const SettingsPanel = ({
   onRunPolling,
   onRefreshPower,
   actionBusy,
-  snmpStatus = {},
   oltHealthById = {}
 }) => {
   const { t } = useTranslation()
@@ -1025,10 +1024,10 @@ export const SettingsPanel = ({
                       </div>
                     )}
 
-                    {actionMessage && !(localError || actionError) && (
+                    {actionMessage && actionMessage.oltId == null && !(localError || actionError) && (
                       <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-                        <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{actionMessage}</p>
+                        <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{actionMessage.message}</p>
                       </div>
                     )}
 
@@ -1071,12 +1070,12 @@ export const SettingsPanel = ({
           {olts.map((olt) => {
             const oltId = String(olt.id)
             const isSelected = Boolean(expandedIds[oltId])
-            const health = getOltHealth(olt, snmpStatus, oltHealthById)
+            const health = getOltHealth(olt, oltHealthById)
             const vp = vendorProfiles?.find(p => String(p.id) === String(olt.vendor_profile))
             const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || t('Unknown')
             const deleteBusy = Boolean(actionBusy?.[`delete:${olt.id}`])
             const localUpdateBusy = Boolean(actionBusy?.[`update:${olt.id}`])
-            const snmpBadge = getSnmpBadge(olt, snmpStatus, t)
+            const snmpBadge = getSnmpBadge(olt, t)
 
             // Per-card state
             const cardEditForm = editForms[oltId]
@@ -1333,10 +1332,10 @@ export const SettingsPanel = ({
                       </div>
                     )}
 
-                    {actionMessage && !(cardError || actionError) && (
+                    {actionMessage && String(actionMessage.oltId) === String(olt.id) && !(cardError || actionError) && (
                       <div className="flex items-center justify-center gap-2 py-2 animate-in fade-in duration-300 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-b-lg">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-                        <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{actionMessage}</p>
+                        <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{actionMessage.message}</p>
                       </div>
                     )}
 
