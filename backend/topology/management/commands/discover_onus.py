@@ -96,6 +96,14 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore discovery_enabled for the selected OLT(s)")
 
+    def _is_due(self, olt: OLT, now) -> bool:
+        if olt.next_discovery_at:
+            return olt.next_discovery_at <= now
+        if olt.last_discovery_at:
+            interval_minutes = max(int(olt.discovery_interval_minutes or 0), 1)
+            return (olt.last_discovery_at + timedelta(minutes=interval_minutes)) <= now
+        return True
+
     def handle(self, *args, **options):
         force = bool(options.get("force", False))
         if force:
@@ -118,7 +126,18 @@ class Command(BaseCommand):
             self.stdout.write("No OLTs eligible for discovery.")
             return
 
-        for olt in olt_qs:
+        now = timezone.now()
+        olts = list(olt_qs)
+        if not force and not olt_id:
+            due_olts = [olt for olt in olts if self._is_due(olt, now)]
+        else:
+            due_olts = olts
+
+        if not due_olts:
+            self.stdout.write("No OLTs due for discovery.")
+            return
+
+        for olt in due_olts:
             self._discover_for_olt(olt, dry_run=options.get("dry_run", False))
 
     def _discover_for_olt(self, olt: OLT, dry_run: bool = False) -> None:

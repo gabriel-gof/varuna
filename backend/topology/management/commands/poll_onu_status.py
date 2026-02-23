@@ -87,6 +87,14 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore polling_enabled for the selected OLT(s)")
 
+    def _is_due(self, olt: OLT, now) -> bool:
+        if olt.next_poll_at:
+            return olt.next_poll_at <= now
+        if olt.last_poll_at:
+            interval_seconds = max(int(olt.polling_interval_seconds or 0), 1)
+            return (olt.last_poll_at + timedelta(seconds=interval_seconds)) <= now
+        return True
+
     def _snmp_get_with_attempts(
         self,
         olt: OLT,
@@ -205,7 +213,18 @@ class Command(BaseCommand):
             self.stdout.write("No OLTs eligible for polling.")
             return
 
-        for olt in olt_qs:
+        now = timezone.now()
+        olts = list(olt_qs)
+        if not force and not olt_id:
+            due_olts = [olt for olt in olts if self._is_due(olt, now)]
+        else:
+            due_olts = olts
+
+        if not due_olts:
+            self.stdout.write("No OLTs due for polling.")
+            return
+
+        for olt in due_olts:
             self._poll_for_olt(olt, dry_run=options.get("dry_run", False))
 
     def _poll_for_olt(self, olt: OLT, dry_run: bool = False) -> None:
@@ -265,6 +284,10 @@ class Command(BaseCommand):
         if pause_between_pon_batches_seconds is None:
             pause_between_pon_batches_seconds = self.pause_between_pon_batches_seconds
         pause_between_pon_batches_seconds = max(0.0, min(pause_between_pon_batches_seconds, 5.0))
+        max_runtime_seconds = _to_float(status_cfg.get("max_runtime_seconds"))
+        if max_runtime_seconds is None:
+            max_runtime_seconds = 180.0
+        max_runtime_seconds = max(30.0, min(max_runtime_seconds, 1800.0))
         failed_chunks = 0
         estimated_calls = max(1, math.ceil(len(status_oids) / chunk_size))
         call_budget = {
@@ -289,6 +312,8 @@ class Command(BaseCommand):
         )
 
         budget_exhausted = False
+        runtime_exhausted = False
+        poll_started_at = time.monotonic()
         for pon_index, pon_key in enumerate(ordered_pon_keys):
             pon_onus = sorted(pon_groups[pon_key], key=lambda item: int(item.onu_id or 0))
             pon_oids = [
@@ -297,6 +322,15 @@ class Command(BaseCommand):
                 if onu.id in onu_index_map
             ]
             for chunk in _chunked(pon_oids, chunk_size):
+                if (time.monotonic() - poll_started_at) >= max_runtime_seconds:
+                    runtime_exhausted = True
+                    budget_exhausted = True
+                    logger.warning(
+                        "Status polling OLT %s: runtime budget exhausted (max_runtime_seconds=%s); keeping partial status snapshot.",
+                        olt.id,
+                        max_runtime_seconds,
+                    )
+                    break
                 if call_budget["remaining"] <= 0:
                     budget_exhausted = True
                     logger.warning(
@@ -338,7 +372,11 @@ class Command(BaseCommand):
             if not dry_run:
                 mark_olt_unreachable(
                     olt,
-                    error=f"No status data returned (failed_chunks={failed_chunks}, requested={len(status_oids)})",
+                    error=(
+                        "No status data returned "
+                        f"(failed_chunks={failed_chunks}, requested={len(status_oids)}, "
+                        f"runtime_exhausted={runtime_exhausted})"
+                    ),
                 )
                 self._mark_poll_result(olt, now)
             self.stdout.write(f"OLT {olt.id}: no status data returned.")

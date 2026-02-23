@@ -1947,6 +1947,7 @@ const App = () => {
                                       : t('Offline')
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
+                              const hasSerial = serialValue !== '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const disconnectWindow = statusKey === 'online'
                                 ? '—'
@@ -1979,7 +1980,7 @@ const App = () => {
                                       {clientLabel}
                                     </span>
                                   </td>
-                                  <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
                                     {serialValue}
                                   </td>
                                   <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
@@ -2022,6 +2023,7 @@ const App = () => {
                                   : t('Offline')
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                           const serialValue = onu.serial_number || onu.serial || '—'
+                          const hasSerial = serialValue !== '—'
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                           const disconnectWindow = statusKey === 'online'
                             ? '—'
@@ -2046,7 +2048,7 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
-                                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
+                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}>
@@ -2109,6 +2111,7 @@ const App = () => {
                             {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                               const serialValue = onu.serial_number || onu.serial || '—'
+                              const hasSerial = serialValue !== '—'
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                               const hasOnuRx = onuRx !== null
                               const hasOltRx = oltRx !== null
@@ -2143,7 +2146,7 @@ const App = () => {
                                       {clientLabel}
                                     </span>
                                   </td>
-                                  <td className="pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 font-mono whitespace-nowrap tracking-[0.01em]">
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
                                     {serialValue}
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
@@ -2187,6 +2190,7 @@ const App = () => {
                         {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
                           const serialValue = onu.serial_number || onu.serial || '—'
+                          const hasSerial = serialValue !== '—'
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
                           const hasOnuRx = onuRx !== null
                           const hasOltRx = oltRx !== null
@@ -2213,7 +2217,7 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
-                                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-[0.01em] truncate">{serialValue}</span>
+                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 {hasAnyPower ? (

@@ -11,6 +11,10 @@
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
+Host scheduler (systemd timers):
+- Polling/discovery commands are triggered by host timers so collection continues without active frontend sessions.
+- Timers call `manage.py poll_onu_status` and `manage.py discover_onus`; commands are due-aware using per-OLT next/last schedule fields.
+
 ### Dev Port Mapping
 - Frontend (Vite): `http://localhost:4000`
 - Backend API: `http://localhost:8000/api/`

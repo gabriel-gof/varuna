@@ -1,14 +1,17 @@
 import threading
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import ANY, patch
 
+from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, VendorProfile
+from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
 from topology.services.power_service import power_service
 from topology.services.snmp_service import SNMPService
 from topology.management.commands.discover_onus import _normalize_serial
@@ -738,10 +741,38 @@ class PowerServiceResilienceTests(TestCase):
         self.assertIsNotNone(payload['power_read_at'])
 
 
+    @patch('topology.services.power_service.cache_service.set_many_onu_power', return_value=True)
+    @patch('topology.services.power_service.cache_service.get_many_onu_power')
+    @patch('topology.services.power_service.snmp_service.get', return_value=None)
+    def test_refresh_for_onus_keeps_cached_snapshot_when_forced_refresh_fails(
+        self,
+        _mock_snmp_get,
+        mock_get_many_onu_power,
+        mock_set_many_onu_power,
+    ):
+        cached_read_at = timezone.now().isoformat()
+        mock_get_many_onu_power.return_value = {
+            self.onu_a.id: {
+                'onu_rx_power': -19.35,
+                'olt_rx_power': -22.14,
+                'power_read_at': cached_read_at,
+            }
+        }
+
+        result_map = power_service.refresh_for_onus([self.onu_a], force_refresh=True)
+        payload = result_map[self.onu_a.id]
+
+        self.assertEqual(payload['onu_rx_power'], -19.35)
+        self.assertEqual(payload['olt_rx_power'], -22.14)
+        self.assertEqual(payload['power_read_at'], cached_read_at)
+        self.assertTrue(mock_set_many_onu_power.called)
+        cache_batch = mock_set_many_onu_power.call_args.args[1]
+        self.assertEqual(cache_batch[self.onu_a.id]['power_read_at'], cached_read_at)
+
 class SettingsApiContractTests(TestCase):
     def setUp(self):
-        from django.contrib.auth.models import User
         self.user = User.objects.create_user(username='testuser', password='testpass')
+        UserProfile.objects.create(user=self.user, role=UserProfile.ROLE_ADMIN)
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
         self.vendor = build_vendor_profile(name='SETTINGS-API')
@@ -1520,6 +1551,133 @@ class DiscoveryPartialWalkGuardTests(TestCase):
         self.assertEqual(ONU.objects.filter(olt=self.olt, is_active=True).count(), 20)
 
 
+class ReaderRolePermissionTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile(name='READER-PERMISSIONS')
+        self.admin_user = User.objects.create_user(username='admin-user', password='AdminPass123!')
+        self.viewer_user = User.objects.create_user(username='viewer-user', password='ViewerPass123!')
+        UserProfile.objects.create(user=self.admin_user, role=UserProfile.ROLE_ADMIN)
+        UserProfile.objects.create(user=self.viewer_user, role=UserProfile.ROLE_VIEWER)
+
+        self.admin_client = APIClient()
+        self.admin_client.force_authenticate(user=self.admin_user)
+
+        self.viewer_client = APIClient()
+        self.viewer_client.force_authenticate(user=self.viewer_user)
+
+        self.olt = OLT.objects.create(
+            name='OLT-READER-PERM',
+            vendor_profile=self.vendor,
+            ip_address='10.0.0.90',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            polling_enabled=True,
+            is_active=True,
+        )
+        self.slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        self.pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=self.slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        self.onu = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=self.slot,
+            pon_ref=self.pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            serial='SERIAL-READER',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+    def test_viewer_can_read_topology_data(self):
+        response = self.viewer_client.get('/api/olts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_viewer_cannot_create_or_modify_olts(self):
+        create_response = self.viewer_client.post(
+            '/api/olts/',
+            {
+                'name': 'OLT-BLOCKED',
+                'vendor_profile': self.vendor.id,
+                'protocol': 'snmp',
+                'ip_address': '10.0.0.91',
+                'snmp_community': 'public',
+                'snmp_port': 161,
+                'snmp_version': 'v2c',
+                'discovery_interval_minutes': 240,
+                'polling_interval_seconds': 300,
+                'power_interval_seconds': 300,
+            },
+            format='json',
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        patch_response = self.viewer_client.patch(
+            f'/api/olts/{self.olt.id}/',
+            {'name': 'OLT-RENAMED'},
+            format='json',
+        )
+        self.assertEqual(patch_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_viewer_cannot_run_maintenance_actions(self):
+        for endpoint in [
+            f'/api/olts/{self.olt.id}/run_discovery/',
+            f'/api/olts/{self.olt.id}/run_polling/',
+            f'/api/olts/{self.olt.id}/refresh_power/',
+            f'/api/olts/{self.olt.id}/snmp_check/',
+            '/api/olts/refresh_power/',
+        ]:
+            response = self.viewer_client.post(endpoint, {}, format='json')
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_viewer_cannot_patch_pon_description(self):
+        response = self.viewer_client.patch(
+            f'/api/pons/{self.pon.id}/',
+            {'description': 'blocked'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_viewer_cannot_force_power_refresh_but_can_read_cached_power(self):
+        refresh_response = self.viewer_client.post(
+            '/api/onu/batch-power/',
+            {
+                'olt_id': self.olt.id,
+                'slot_id': self.slot.slot_id,
+                'pon_id': self.pon.pon_id,
+                'refresh': True,
+            },
+            format='json',
+        )
+        self.assertEqual(refresh_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        cached_response = self.viewer_client.post(
+            '/api/onu/batch-power/',
+            {
+                'olt_id': self.olt.id,
+                'slot_id': self.slot.slot_id,
+                'pon_id': self.pon.pon_id,
+                'refresh': False,
+            },
+            format='json',
+        )
+        self.assertEqual(cached_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(cached_response.data['count'], 1)
+
+
 class DiscoveryBatchOperationsTests(TestCase):
     def setUp(self):
         self.vendor = build_vendor_profile(name='BATCH')
@@ -2041,3 +2199,274 @@ class NormalizeSerialTests(TestCase):
     def test_normalize_serial_preserves_empty(self):
         self.assertEqual(_normalize_serial(""), "")
         self.assertEqual(_normalize_serial(None), "")
+
+
+class AuthenticationApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='operator1',
+            password='VarunaPass123!',
+        )
+        UserProfile.objects.create(user=self.user, role=UserProfile.ROLE_VIEWER)
+
+    def _login(self, password='VarunaPass123!'):
+        return self.client.post(
+            '/api/auth/login/',
+            {'username': self.user.username, 'password': password},
+            format='json',
+        )
+
+    def _auth_header(self, token):
+        return {'HTTP_AUTHORIZATION': f'Token {token}'}
+
+    def test_login_returns_token_and_user_payload(self):
+        response = self._login()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('token', response.data)
+        self.assertEqual(response.data['user']['username'], self.user.username)
+        self.assertEqual(response.data['user']['role'], UserProfile.ROLE_VIEWER)
+        self.assertFalse(response.data['user']['can_modify_settings'])
+        self.assertTrue(Token.objects.filter(key=response.data['token'], user=self.user).exists())
+
+    def test_login_rejects_invalid_credentials(self):
+        response = self._login(password='wrong-password')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_me_requires_authentication(self):
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_me_returns_authenticated_user(self):
+        login = self._login()
+        token = login.data['token']
+        response = self.client.get('/api/auth/me/', **self._auth_header(token))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['username'], self.user.username)
+        self.assertEqual(response.data['role'], UserProfile.ROLE_VIEWER)
+        self.assertFalse(response.data['can_modify_settings'])
+
+    def test_logout_revokes_token(self):
+        login = self._login()
+        token = login.data['token']
+        logout = self.client.post('/api/auth/logout/', {}, format='json', **self._auth_header(token))
+        self.assertEqual(logout.status_code, status.HTTP_200_OK)
+        self.assertFalse(Token.objects.filter(key=token).exists())
+
+        me = self.client.get('/api/auth/me/', **self._auth_header(token))
+        self.assertEqual(me.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_change_password_rotates_token_and_invalidates_old_password(self):
+        login = self._login()
+        old_token = login.data['token']
+
+        change = self.client.post(
+            '/api/auth/change-password/',
+            {
+                'current_password': 'VarunaPass123!',
+                'new_password': 'VarunaPass456!',
+            },
+            format='json',
+            **self._auth_header(old_token),
+        )
+        self.assertEqual(change.status_code, status.HTTP_200_OK)
+        self.assertEqual(change.data['detail'], 'Password updated.')
+        self.assertIn('token', change.data)
+        self.assertNotEqual(old_token, change.data['token'])
+
+        me_old = self.client.get('/api/auth/me/', **self._auth_header(old_token))
+        self.assertEqual(me_old.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        me_new = self.client.get('/api/auth/me/', **self._auth_header(change.data['token']))
+        self.assertEqual(me_new.status_code, status.HTTP_200_OK)
+
+        old_login = self._login(password='VarunaPass123!')
+        self.assertEqual(old_login.status_code, status.HTTP_401_UNAUTHORIZED)
+        new_login = self._login(password='VarunaPass456!')
+        self.assertEqual(new_login.status_code, status.HTTP_200_OK)
+
+    def test_change_password_validates_policy(self):
+        login = self._login()
+        token = login.data['token']
+
+        response = self.client.post(
+            '/api/auth/change-password/',
+            {
+                'current_password': 'VarunaPass123!',
+                'new_password': '123',
+            },
+            format='json',
+            **self._auth_header(token),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('errors', response.data)
+
+
+class EnsureAuthUserCommandTests(TestCase):
+    def test_command_creates_user_profile_and_superuser(self):
+        call_command(
+            'ensure_auth_user',
+            username='bootstrap',
+            password='BootstrapPass123!',
+            role=UserProfile.ROLE_ADMIN,
+            superuser=True,
+        )
+
+        user = User.objects.get(username='bootstrap')
+        self.assertTrue(user.check_password('BootstrapPass123!'))
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.is_superuser)
+        self.assertEqual(user.profile.role, UserProfile.ROLE_ADMIN)
+
+    def test_command_updates_password_only_with_force_flag(self):
+        user = User.objects.create_user(username='existing', password='OldPass123!')
+        UserProfile.objects.create(user=user, role=UserProfile.ROLE_VIEWER)
+
+        call_command(
+            'ensure_auth_user',
+            username='existing',
+            password='NewPass123!',
+            role=UserProfile.ROLE_OPERATOR,
+        )
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('OldPass123!'))
+        self.assertEqual(user.profile.role, UserProfile.ROLE_OPERATOR)
+
+        call_command(
+            'ensure_auth_user',
+            username='existing',
+            password='NewPass123!',
+            role=UserProfile.ROLE_OPERATOR,
+            force_password=True,
+        )
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('NewPass123!'))
+
+
+class PollingCommandSchedulingTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile(name='POLL-SCHED')
+        self.olt_due = OLT.objects.create(
+            name='OLT-POLL-DUE',
+            vendor_profile=self.vendor,
+            ip_address='10.0.10.1',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            polling_enabled=True,
+            is_active=True,
+        )
+        self.olt_not_due = OLT.objects.create(
+            name='OLT-POLL-NOT-DUE',
+            vendor_profile=self.vendor,
+            ip_address='10.0.10.2',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            polling_enabled=True,
+            is_active=True,
+        )
+
+    @patch('topology.management.commands.poll_onu_status.Command._poll_for_olt')
+    def test_poll_command_runs_only_due_olts_by_default(self, poll_mock):
+        now = timezone.now()
+        self.olt_due.next_poll_at = now - timedelta(seconds=10)
+        self.olt_due.save(update_fields=['next_poll_at'])
+        self.olt_not_due.next_poll_at = now + timedelta(minutes=5)
+        self.olt_not_due.save(update_fields=['next_poll_at'])
+
+        call_command('poll_onu_status')
+
+        self.assertEqual(poll_mock.call_count, 1)
+        called_olt = poll_mock.call_args[0][0]
+        self.assertEqual(called_olt.id, self.olt_due.id)
+
+    @patch('topology.management.commands.poll_onu_status.Command._poll_for_olt')
+    def test_poll_command_force_runs_not_due_olt(self, poll_mock):
+        self.olt_not_due.next_poll_at = timezone.now() + timedelta(minutes=20)
+        self.olt_not_due.save(update_fields=['next_poll_at'])
+
+        call_command('poll_onu_status', olt_id=self.olt_not_due.id, force=True)
+
+        self.assertEqual(poll_mock.call_count, 1)
+        called_olt = poll_mock.call_args[0][0]
+        self.assertEqual(called_olt.id, self.olt_not_due.id)
+
+    @patch('topology.management.commands.poll_onu_status.mark_olt_unreachable')
+    @patch('topology.management.commands.poll_onu_status.Command._fetch_status_chunk_resilient')
+    def test_poll_runtime_budget_stops_before_snmp_fetch(self, fetch_mock, mark_unreachable_mock):
+        templates = dict(self.vendor.oid_templates or {})
+        status_cfg = dict(templates.get('status') or {})
+        status_cfg['max_runtime_seconds'] = 30
+        templates['status'] = status_cfg
+        self.vendor.oid_templates = templates
+        self.vendor.save(update_fields=['oid_templates'])
+
+        ONU.objects.create(
+            olt=self.olt_due,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            serial='POLL-RUNTIME-1',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+
+        with patch('topology.management.commands.poll_onu_status.time.monotonic', side_effect=[0.0, 31.0, 31.1]):
+            call_command('poll_onu_status', olt_id=self.olt_due.id, force=True)
+
+        fetch_mock.assert_not_called()
+        self.assertTrue(mark_unreachable_mock.called)
+        error_detail = mark_unreachable_mock.call_args.kwargs.get('error', '')
+        self.assertIn('runtime_exhausted=True', error_detail)
+
+
+class DiscoveryCommandSchedulingTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile(name='DISCOVERY-SCHED')
+        self.olt_due = OLT.objects.create(
+            name='OLT-DISCOVERY-DUE',
+            vendor_profile=self.vendor,
+            ip_address='10.0.11.1',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            is_active=True,
+        )
+        self.olt_not_due = OLT.objects.create(
+            name='OLT-DISCOVERY-NOT-DUE',
+            vendor_profile=self.vendor,
+            ip_address='10.0.11.2',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            is_active=True,
+        )
+
+    @patch('topology.management.commands.discover_onus.Command._discover_for_olt')
+    def test_discovery_command_runs_only_due_olts_by_default(self, discover_mock):
+        now = timezone.now()
+        self.olt_due.next_discovery_at = now - timedelta(minutes=1)
+        self.olt_due.save(update_fields=['next_discovery_at'])
+        self.olt_not_due.next_discovery_at = now + timedelta(minutes=30)
+        self.olt_not_due.save(update_fields=['next_discovery_at'])
+
+        call_command('discover_onus')
+
+        self.assertEqual(discover_mock.call_count, 1)
+        called_olt = discover_mock.call_args[0][0]
+        self.assertEqual(called_olt.id, self.olt_due.id)
+
+    @patch('topology.management.commands.discover_onus.Command._discover_for_olt')
+    def test_discovery_command_force_runs_not_due_olt(self, discover_mock):
+        self.olt_not_due.next_discovery_at = timezone.now() + timedelta(hours=2)
+        self.olt_not_due.save(update_fields=['next_discovery_at'])
+
+        call_command('discover_onus', olt_id=self.olt_not_due.id, force=True)
+
+        self.assertEqual(discover_mock.call_count, 1)
+        called_olt = discover_mock.call_args[0][0]
+        self.assertEqual(called_olt.id, self.olt_not_due.id)

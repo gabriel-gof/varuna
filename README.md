@@ -21,27 +21,62 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 ## Quick Start
 ### Backend
 ```bash
-cd /Users/gabriel/Documents/varuna
+cd /home/gabriel/varuna
 backend/venv/bin/python backend/manage.py migrate
 backend/venv/bin/python backend/manage.py runserver 0.0.0.0:8000
 ```
 
 ### Frontend
 ```bash
-cd /Users/gabriel/Documents/varuna/frontend
+cd /home/gabriel/varuna/frontend
 npm install
 npm run dev
 ```
 
 ### Docker (Dev)
 ```bash
-cd /Users/gabriel/Documents/varuna
+cd /home/gabriel/varuna
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
 Dev URLs:
 - Frontend: http://localhost:4000
 - Backend API: http://localhost:8000/api/
+
+## Authentication Bootstrap
+API access requires authentication by default. Create users before opening the frontend:
+
+```bash
+cd /home/gabriel/varuna/backend
+. .venv/bin/activate
+python manage.py ensure_auth_user --username gabriel --password 'CHANGE-THIS' --role admin --superuser
+python manage.py ensure_auth_user --username gabisat --password 'CHANGE-THIS-READER' --role viewer
+```
+
+Role behavior:
+- `admin` / `operator`: can access Topology + Settings tabs and execute maintenance/configuration actions.
+- `viewer`: topology read-only; no Settings tab and no API permission for maintenance/configuration actions.
+
+Rotate password later:
+
+```bash
+python manage.py ensure_auth_user --username gabriel --password 'NEW-STRONG-PASSWORD' --role admin --force-password
+```
+
+Disable old default admin account (recommended):
+
+```bash
+python manage.py shell -c "from django.contrib.auth.models import User; User.objects.filter(username='admin').update(is_active=False)"
+```
+
+## Background Collection
+Status/discovery collection is backend-scheduled and must not depend on active UI sessions.
+
+In production, host timers should run:
+- `manage.py poll_onu_status`
+- `manage.py discover_onus`
+
+Commands are due-aware by OLT interval (`next_poll_at`/`next_discovery_at`) when executed without `--force`.
 
 ## Migration Reset (Hard Refactor)
 Backend migrations were reset to a clean `topology` app history.
@@ -66,14 +101,14 @@ docker compose -f docker-compose.dev.yml up -d --build
 - `POST /api/onu/batch-power/`
 
 ## Documentation
-- `/Users/gabriel/Documents/varuna/docs/ARCHITECTURE.md`
-- `/Users/gabriel/Documents/varuna/docs/BACKEND.md`
-- `/Users/gabriel/Documents/varuna/docs/FRONTEND.md`
-- `/Users/gabriel/Documents/varuna/docs/OPERATIONS.md`
-- `/Users/gabriel/Documents/varuna/docs/LLM_CONTEXT.md`
+- `docs/ARCHITECTURE.md`
+- `docs/BACKEND.md`
+- `docs/FRONTEND.md`
+- `docs/OPERATIONS.md`
+- `docs/LLM_CONTEXT.md`
 
 ## Validation
 ```bash
 backend/venv/bin/python backend/manage.py test topology -v 2
-cd /Users/gabriel/Documents/varuna/frontend && npm run build
+cd /home/gabriel/varuna/frontend && npm run build
 ```

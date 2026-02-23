@@ -95,6 +95,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.
 - Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
+- Missing serial values render as a red centered hyphen (`—`) in both Status and Power views (desktop tables and mobile cards) for quick visual detection of incomplete ONU identity data.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While status or power data is being collected from the PON panel refresh action, the active table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.

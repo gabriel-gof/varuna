@@ -17,15 +17,21 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Polling should avoid false offline alarms during transient SNMP gaps.
 - Settings actions validate vendor capabilities/OID templates before executing discovery/polling/power commands.
 - OLT freshness is interval-driven (`polling_interval_seconds`); stale topology must be rendered gray.
-- Documentation must be updated on every code change (see `/Users/gabriel/Documents/varuna/AGENTS.md`).
+- API is authentication-first (`TokenAuthentication` + `IsAuthenticated` by default).
+- User roles are enforced at API + UI:
+  - `admin` / `operator` can modify settings and run maintenance actions.
+  - `viewer` is topology read-only and must not access configuration actions.
+- Polling/discovery collection must be backend-scheduled (host timer), not dependent on active browser sessions.
+- Bootstrap or rotate login users with `python manage.py ensure_auth_user ...` before frontend access.
+- Documentation must be updated on every code change (see `/home/gabriel/varuna/AGENTS.md`).
 
 ## Where to Read First
-1. `/Users/gabriel/Documents/varuna/docs/ARCHITECTURE.md`
-2. `/Users/gabriel/Documents/varuna/docs/BACKEND.md`
-3. `/Users/gabriel/Documents/varuna/docs/FRONTEND.md`
-4. `/Users/gabriel/Documents/varuna/backend/topology/models/models.py`
-5. `/Users/gabriel/Documents/varuna/backend/topology/management/commands/discover_onus.py`
-6. `/Users/gabriel/Documents/varuna/backend/topology/management/commands/poll_onu_status.py`
+1. `/home/gabriel/varuna/docs/ARCHITECTURE.md`
+2. `/home/gabriel/varuna/docs/BACKEND.md`
+3. `/home/gabriel/varuna/docs/FRONTEND.md`
+4. `/home/gabriel/varuna/backend/topology/models/models.py`
+5. `/home/gabriel/varuna/backend/topology/management/commands/discover_onus.py`
+6. `/home/gabriel/varuna/backend/topology/management/commands/poll_onu_status.py`
 
 ## Safe Extension Pattern
 - Add vendor support by extending `VendorProfile.oid_templates` and validating index/status parsing.
