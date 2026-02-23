@@ -14,6 +14,8 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 - `db`: PostgreSQL
 - `redis`: Redis
 
+Manual maintenance actions (discovery, polling, power refresh) are queued as persistent backend jobs with progress tracking (`MaintenanceJob`), so long-running operations are observable and resilient to transient API process restarts.
+
 ## Multi-Client Direction (Future-Ready)
 - Current codebase is single-tenant at application level (no tenant isolation in backend models/API).
 - Current dev default is still one local stack from `docker-compose.dev.yml`; this section defines expansion direction.
@@ -92,6 +94,7 @@ Roles: `admin` (full access), `operator` (full access), `viewer` (read-only, no 
 - `POST /api/olts/{id}/run_polling/`
 - `POST /api/olts/{id}/snmp_check/`
 - `POST /api/olts/{id}/refresh_power/`
+- `GET /api/olts/{id}/maintenance_status/`
 - `POST /api/olts/refresh_power/`
 - `GET /api/onu/`
 - `GET /api/onu/{id}/power/`

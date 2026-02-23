@@ -22,6 +22,9 @@
 - `backend/topology/services/snmp_service.py`: SNMP transport.
 - `backend/topology/services/vendor_profile.py`: vendor index/status parsing helpers.
 - `backend/topology/services/olt_health_service.py`: OLT SNMP health persistence.
+- `backend/topology/services/maintenance_runtime.py`: shared maintenance runtime helpers (status snapshot pre-checks + power collection payloads).
+- `backend/topology/services/maintenance_job_service.py`: persistent OLT maintenance queue/runner and progress lifecycle.
+- `backend/topology/services/topology_counter_service.py`: denormalized topology counter rebuild service (OLT/slot/PON totals and online/offline counts).
 - `backend/topology/management/commands/discover_onus.py`: topology discovery.
 - `backend/topology/management/commands/poll_onu_status.py`: status polling.
 - `backend/topology/management/commands/ensure_auth_user.py`: auth user bootstrap.
@@ -76,6 +79,19 @@ Updated from:
 
 `snmp_check` is maintenance-aware: if a background job (discovery/polling/power) is in-flight for the OLT when the SNMP check times out, the check returns `reachable: true, busy: true` instead of marking the OLT unreachable. This prevents false gray-state on slower OLTs (e.g. VSOL-like) whose SNMP agent cannot serve concurrent requests during heavy power collection.
 
+## Cached Topology Counters
+To remove repeated heavy aggregate queries from the configuration/topology APIs, topology counters are persisted on:
+- `OLT`: `cached_slot_count`, `cached_pon_count`, `cached_onu_count`, `cached_online_count`, `cached_offline_count`, `cached_counts_at`.
+- `OLTSlot`: `cached_pon_count`, `cached_onu_count`, `cached_online_count`, `cached_offline_count`.
+- `OLTPON`: `cached_onu_count`, `cached_online_count`, `cached_offline_count`.
+
+Counter lifecycle contract:
+- Migration `0017_backfill_topology_cached_counts` backfills existing runtime data.
+- Discovery and polling commands rebuild counters at the end of each successful non-dry-run OLT pass.
+- API serializers read cached counters first and safely fall back to live counts when cache fields are null.
+
+This keeps API responses consistent while making `/api/olts/` and `include_topology=true` reads cheaper under high ONU volume.
+
 ## Settings API Guardrails
 The OLT configuration API now enforces strict runtime-safe validation:
 - `protocol` must be `snmp`.
@@ -108,6 +124,7 @@ SNMP transport logs apply per-error throttling (default 30s window per OLT/error
 - Discovery serial safety: when a discovery run receives partial/empty serial rows (SNMP walk timeout gaps), existing ONU serial values are preserved instead of being overwritten with blank strings.
 - Ghost index filtering: SNMP indices where both name and serial are empty/whitespace are filtered out before the `min_safe_ratio` check. This prevents ghost SNMP entries (deregistered ONUs that still appear in walks with empty fields) from inflating the discovered count or being created as phantom ONUs.
 - Discovery DB operations use bulk create/update for ONU upserts to reduce query overhead on large OLTs.
+- Discovery creates `ONULog` entries for offline ONUs whose `status_map` provides a disconnect reason (e.g. FiberHome maps status codes directly to `link_loss`/`dying_gasp`). This ensures the topology API returns the correct `disconnect_reason` on first discovery without waiting for a polling cycle. Existing open logs are not duplicated.
 - PON interface discovery respects `slot_from`/`pon_from` from indexing config (consistent with `parse_onu_index`).
 
 Default global policy (any OLT/vendor profile):
@@ -156,8 +173,14 @@ Background queue contract for OLT-scoped manual actions:
 - With `background=true`, API returns `202 Accepted` immediately with:
   - `status=accepted` when queued.
   - `status=already_running` when any maintenance action is already in-flight for the same OLT.
-- Background execution is serialized per OLT (single-flight across discovery/polling/power) to avoid concurrent SNMP load spikes on the same device.
-- Commands run in backend daemon threads and clear in-flight flags when finished (or on exception).
+- Response payload now includes `job` with persistent metadata (`id`, `kind`, `status`, `progress`, `detail`, timestamps).
+- Background execution is serialized per OLT by database constraint/queue policy (`MaintenanceJob` with one active job per OLT across discovery/polling/power).
+- Queue state is persistent in PostgreSQL (migration `0015_maintenancejob_and_more`) and survives process restarts.
+- Runner behavior:
+  - `enqueue_job()` creates a queued row and ensures a background runner is alive.
+  - runner claims queued jobs with row locking and marks `status=running`.
+  - completion/failure writes terminal status plus output/error, with `progress=100`.
+- `GET /api/olts/{id}/maintenance_status/` returns active/latest job state for frontend progress polling.
 - Without `background=true`, actions keep synchronous behavior and return completion payloads (`200` or `500`) as before.
 
 ## Authentication
@@ -217,6 +240,7 @@ Main endpoints:
 - `POST /api/olts/{id}/run_polling/`
 - `POST /api/olts/{id}/snmp_check/`
 - `POST /api/olts/{id}/refresh_power/`
+- `GET /api/olts/{id}/maintenance_status/`
 - `POST /api/olts/refresh_power/`
 - `GET /api/onu/`
 - `GET /api/onu/{id}/power/`

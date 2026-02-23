@@ -86,6 +86,13 @@ class OLT(models.Model):
     last_snmp_check_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Verificação SNMP')
     last_snmp_error = models.TextField(blank=True, default='', verbose_name='Último Erro SNMP')
     snmp_failure_count = models.IntegerField(default=0, verbose_name='Falhas SNMP Consecutivas')
+
+    cached_slot_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='Slots Ativos (Cache)')
+    cached_pon_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='PONs Ativas (Cache)')
+    cached_onu_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Ativas (Cache)')
+    cached_online_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Online (Cache)')
+    cached_offline_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Não Online (Cache)')
+    cached_counts_at = models.DateTimeField(null=True, blank=True, verbose_name='Cache de Contadores Atualizado em')
     
     is_active = models.BooleanField(default=True, verbose_name='Ativo')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
@@ -117,6 +124,10 @@ class OLTSlot(models.Model):
     name = models.CharField(max_length=200, blank=True, verbose_name='Nome')
 
     is_active = models.BooleanField(default=True, verbose_name='Ativo')
+    cached_pon_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='PONs Ativas (Cache)')
+    cached_onu_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Ativas (Cache)')
+    cached_online_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Online (Cache)')
+    cached_offline_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Não Online (Cache)')
     last_discovered_at = models.DateTimeField(auto_now=True, verbose_name='Última Descoberta')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
 
@@ -151,6 +162,9 @@ class OLTPON(models.Model):
     description = models.TextField(blank=True, default='', verbose_name='Descrição')
 
     is_active = models.BooleanField(default=True, verbose_name='Ativo')
+    cached_onu_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Ativas (Cache)')
+    cached_online_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Online (Cache)')
+    cached_offline_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='ONUs Não Online (Cache)')
     last_discovered_at = models.DateTimeField(auto_now=True, verbose_name='Última Descoberta')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
 
@@ -278,6 +292,85 @@ class ONULog(models.Model):
         verbose_name_plural = 'Logs de ONU'
         indexes = [
             models.Index(fields=['onu', '-offline_since']),
+        ]
+
+
+class MaintenanceJob(models.Model):
+    """
+    Tracks OLT-scoped maintenance jobs (discovery, polling, power).
+    """
+
+    KIND_DISCOVERY = 'discovery'
+    KIND_POLLING = 'polling'
+    KIND_POWER = 'power'
+    KIND_CHOICES = [
+        (KIND_DISCOVERY, 'Discovery'),
+        (KIND_POLLING, 'Polling'),
+        (KIND_POWER, 'Power'),
+    ]
+
+    STATUS_QUEUED = 'queued'
+    STATUS_RUNNING = 'running'
+    STATUS_COMPLETED = 'completed'
+    STATUS_FAILED = 'failed'
+    STATUS_CANCELED = 'canceled'
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, 'Queued'),
+        (STATUS_RUNNING, 'Running'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_FAILED, 'Failed'),
+        (STATUS_CANCELED, 'Canceled'),
+    ]
+    ACTIVE_STATUSES = (STATUS_QUEUED, STATUS_RUNNING)
+
+    olt = models.ForeignKey(
+        OLT,
+        on_delete=models.CASCADE,
+        related_name='maintenance_jobs',
+        verbose_name='OLT',
+    )
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='maintenance_jobs',
+        verbose_name='Solicitado por',
+    )
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES, verbose_name='Tipo')
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_QUEUED,
+        verbose_name='Status',
+    )
+    progress = models.PositiveSmallIntegerField(default=0, verbose_name='Progresso (%)')
+    detail = models.CharField(max_length=255, blank=True, default='', verbose_name='Detalhe')
+    output = models.TextField(blank=True, default='', verbose_name='Saída')
+    error = models.TextField(blank=True, default='', verbose_name='Erro')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name='Iniciado em')
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name='Finalizado em')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Atualizado em')
+
+    class Meta:
+        verbose_name = 'Job de Manutenção'
+        verbose_name_plural = 'Jobs de Manutenção'
+        indexes = [
+            models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['kind', 'status', 'created_at']),
+            models.Index(fields=['olt', 'status', 'created_at']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(progress__gte=0, progress__lte=100),
+                name='topology_maintenance_progress_range',
+            ),
+            models.UniqueConstraint(
+                fields=['olt'],
+                condition=models.Q(status__in=['queued', 'running']),
+                name='topology_unique_active_job_per_olt',
+            ),
         ]
 
 

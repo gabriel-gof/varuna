@@ -12,6 +12,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Multi-client strategy is deployment-level isolation (one Varuna stack per client), not shared-db tenancy.
 - Role-based access: `admin`/`operator` (full), `viewer` (read-only). Enforce via `can_modify_settings()` on backend, `canManageSettings` on frontend.
 - Discovery, polling, power collection, and SNMP checks are scheduled by the backend `run_scheduler` command. The frontend does not submit automatic maintenance; it relies on backend scheduling and provides manual trigger buttons.
+- Manual settings maintenance actions use a persistent `MaintenanceJob` queue (PostgreSQL), not volatile in-memory flags.
 
 ## Core Data/Behavior Rules
 - `ONU` is scoped to `OLT`; SNMP index uniqueness is `(olt, snmp_index)`.
@@ -20,6 +21,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Discovery follows lost-resource retention windows (`disable_lost_after_minutes`, `delete_lost_after_minutes`).
 - Polling should avoid false offline alarms during transient SNMP gaps.
 - Settings actions validate vendor capabilities/OID templates before executing discovery/polling/power commands.
+- Background maintenance responses include durable job metadata and progress; frontend polls `GET /api/olts/{id}/maintenance_status/`.
 - OLT freshness is interval-driven (`polling_interval_seconds`); stale topology must be rendered gray.
 - Documentation must be updated on every code change (see `/Users/gabriel/Documents/varuna/AGENTS.md`).
 - For multi-client hosting on one machine, isolate by container stack, DB, Redis, and credentials per client.

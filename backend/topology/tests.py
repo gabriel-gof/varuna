@@ -1,4 +1,3 @@
-import threading
 from datetime import timedelta
 from io import StringIO
 from unittest.mock import ANY, patch
@@ -11,7 +10,7 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
+from topology.models import MaintenanceJob, OLT, OLTPON, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
 from topology.services.power_service import (
     POWER_FORMULA_REGISTRY,
     _formula_hundredths_dbm,
@@ -20,6 +19,7 @@ from topology.services.power_service import (
     resolve_power_formula,
 )
 from topology.services.snmp_service import SNMPService
+from topology.services.topology_counter_service import topology_counter_service
 from topology.management.commands.discover_onus import _normalize_serial
 from topology.services.vendor_profile import map_disconnect_reason, map_status_code, parse_onu_index
 
@@ -1194,8 +1194,8 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.data['status'], 'error')
         self.assertIn('does not support ONU status polling', response.data['detail'])
 
-    @patch('topology.api.views.OLTViewSet._queue_background_olt_job', return_value=True)
-    def test_run_discovery_background_returns_accepted(self, mock_queue):
+    @patch('topology.services.maintenance_job_service.maintenance_job_service.ensure_runner')
+    def test_run_discovery_background_returns_accepted(self, mock_ensure_runner):
         olt = self._create_olt(name='OLT-BG-DISCOVERY')
         response = self.client.post(
             f'/api/olts/{olt.id}/run_discovery/',
@@ -1207,14 +1207,22 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.data['status'], 'accepted')
         self.assertEqual(response.data['olt_id'], olt.id)
         self.assertIn('scheduled', response.data['detail'].lower())
-        mock_queue.assert_called_once()
-        self.assertEqual(mock_queue.call_args.kwargs['kind'], 'discovery')
-        self.assertEqual(mock_queue.call_args.kwargs['olt_id'], olt.id)
-        self.assertTrue(callable(mock_queue.call_args.kwargs['runner']))
+        self.assertIn('job', response.data)
+        self.assertEqual(response.data['job']['kind'], MaintenanceJob.KIND_DISCOVERY)
+        self.assertEqual(response.data['job']['status'], MaintenanceJob.STATUS_QUEUED)
+        self.assertEqual(response.data['job']['olt_id'], olt.id)
+        mock_ensure_runner.assert_called_once()
 
-    @patch('topology.api.views.OLTViewSet._queue_background_olt_job', return_value=False)
-    def test_run_polling_background_returns_already_running(self, mock_queue):
+    @patch('topology.services.maintenance_job_service.maintenance_job_service.ensure_runner')
+    def test_run_polling_background_returns_already_running(self, mock_ensure_runner):
         olt = self._create_olt(name='OLT-BG-POLLING')
+        MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_DISCOVERY,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=20,
+            detail='Running discovery',
+        )
         response = self.client.post(
             f'/api/olts/{olt.id}/run_polling/',
             {'background': True},
@@ -1224,30 +1232,39 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(response.data['status'], 'already_running')
         self.assertEqual(response.data['olt_id'], olt.id)
-        mock_queue.assert_called_once()
-        self.assertEqual(mock_queue.call_args.kwargs['kind'], 'polling')
-        self.assertEqual(mock_queue.call_args.kwargs['olt_id'], olt.id)
+        self.assertIn('job', response.data)
+        self.assertEqual(response.data['job']['status'], MaintenanceJob.STATUS_RUNNING)
+        self.assertEqual(response.data['job']['kind'], MaintenanceJob.KIND_DISCOVERY)
+        mock_ensure_runner.assert_not_called()
 
-    @patch('topology.api.views.call_command')
-    def test_background_actions_are_serialized_per_olt(self, mock_call_command):
-        templates = dict(self.vendor.oid_templates or {})
-        templates['power'] = {
-            'onu_rx_oid': '1.3.6.1.4.1.test.55',
-            'olt_rx_oid': '1.3.6.1.4.1.test.56',
-        }
-        vendor = build_vendor_profile(name='SETTINGS-BG-SERIALIZED', oid_templates=templates)
-        olt = self._create_olt(name='OLT-BG-SERIALIZED', vendor_profile=vendor)
+    def test_maintenance_status_returns_active_and_latest_job(self):
+        olt = self._create_olt(name='OLT-MAINT-STATUS')
+        active_job = MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_DISCOVERY,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=45,
+            detail='Running discovery',
+        )
+        MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_POLLING,
+            status=MaintenanceJob.STATUS_COMPLETED,
+            progress=100,
+            detail='Completed',
+        )
 
-        started = threading.Event()
-        release = threading.Event()
+        response = self.client.get(f'/api/olts/{olt.id}/maintenance_status/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['olt_id'], olt.id)
+        self.assertTrue(response.data['has_active_job'])
+        self.assertEqual(response.data['active_job']['id'], active_job.id)
+        self.assertEqual(response.data['active_job']['status'], MaintenanceJob.STATUS_RUNNING)
+        self.assertEqual(response.data['latest_job']['id'], active_job.id)
 
-        def _side_effect(command_name, *args, **kwargs):
-            if command_name == 'discover_onus':
-                started.set()
-                release.wait(timeout=1.5)
-            return None
-
-        mock_call_command.side_effect = _side_effect
+    @patch('topology.services.maintenance_job_service.maintenance_job_service.ensure_runner')
+    def test_background_actions_are_serialized_per_olt(self, mock_ensure_runner):
+        olt = self._create_olt(name='OLT-BG-SERIALIZED')
 
         first = self.client.post(
             f'/api/olts/{olt.id}/run_discovery/',
@@ -1256,19 +1273,19 @@ class SettingsApiContractTests(TestCase):
         )
         self.assertEqual(first.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(first.data['status'], 'accepted')
-        self.assertTrue(started.wait(timeout=1.0))
+        self.assertEqual(first.data['job']['status'], MaintenanceJob.STATUS_QUEUED)
 
         second = self.client.post(
             f'/api/olts/{olt.id}/run_polling/',
             {'background': True},
             format='json',
         )
-
         self.assertEqual(second.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(second.data['status'], 'already_running')
         self.assertIn('already running', second.data['detail'].lower())
-
-        release.set()
+        self.assertEqual(second.data['job']['status'], MaintenanceJob.STATUS_QUEUED)
+        self.assertEqual(second.data['job']['kind'], MaintenanceJob.KIND_DISCOVERY)
+        mock_ensure_runner.assert_called_once()
 
     def test_refresh_power_rejects_missing_vendor_power_templates(self):
         olt = self._create_olt(name='OLT-NO-POWER-TPL')
@@ -1281,8 +1298,8 @@ class SettingsApiContractTests(TestCase):
             ['power.onu_rx_oid'],
         )
 
-    @patch('topology.api.views.OLTViewSet._queue_background_olt_job', return_value=True)
-    def test_refresh_power_background_returns_accepted(self, mock_queue):
+    @patch('topology.services.maintenance_job_service.maintenance_job_service.ensure_runner')
+    def test_refresh_power_background_returns_accepted(self, mock_ensure_runner):
         templates = dict(self.vendor.oid_templates or {})
         templates['power'] = {
             'onu_rx_oid': '1.3.6.1.4.1.test.50',
@@ -1300,13 +1317,13 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.data['status'], 'accepted')
         self.assertEqual(response.data['olt_id'], olt.id)
         self.assertIn('scheduled', response.data['detail'].lower())
-        mock_queue.assert_called_once()
-        self.assertEqual(mock_queue.call_args.kwargs['kind'], 'power')
-        self.assertEqual(mock_queue.call_args.kwargs['olt_id'], olt.id)
-        self.assertTrue(callable(mock_queue.call_args.kwargs['runner']))
+        self.assertIn('job', response.data)
+        self.assertEqual(response.data['job']['kind'], MaintenanceJob.KIND_POWER)
+        self.assertEqual(response.data['job']['status'], MaintenanceJob.STATUS_QUEUED)
+        mock_ensure_runner.assert_called_once()
 
-    @patch('topology.api.views.power_service.refresh_for_onus')
-    @patch('topology.api.views.call_command')
+    @patch('topology.services.maintenance_runtime.power_service.refresh_for_onus')
+    @patch('topology.services.maintenance_runtime.call_command')
     def test_refresh_power_runs_polling_when_status_snapshot_missing(self, mock_call_command, mock_refresh):
         templates = dict(self.vendor.oid_templates or {})
         templates['power'] = {
@@ -1341,8 +1358,8 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         mock_call_command.assert_any_call('poll_onu_status', olt_id=olt.id, force=True, stdout=ANY)
 
-    @patch('topology.api.views.power_service.refresh_for_onus')
-    @patch('topology.api.views.call_command')
+    @patch('topology.services.maintenance_runtime.power_service.refresh_for_onus')
+    @patch('topology.services.maintenance_runtime.call_command')
     def test_refresh_power_skips_polling_when_status_snapshot_exists(self, mock_call_command, mock_refresh):
         templates = dict(self.vendor.oid_templates or {})
         templates['power'] = {
@@ -1383,7 +1400,7 @@ class SettingsApiContractTests(TestCase):
             any(call.args and call.args[0] == 'poll_onu_status' for call in mock_call_command.call_args_list)
         )
 
-    @patch('topology.api.views.power_service.refresh_for_onus')
+    @patch('topology.services.maintenance_runtime.power_service.refresh_for_onus')
     def test_refresh_power_updates_power_schedule_fields(self, mock_refresh):
         templates = dict(self.vendor.oid_templates or {})
         templates['power'] = {
@@ -1440,7 +1457,7 @@ class SettingsApiContractTests(TestCase):
             olt.power_interval_seconds,
         )
 
-    @patch('topology.api.views.power_service.refresh_for_onus')
+    @patch('topology.services.maintenance_runtime.power_service.refresh_for_onus')
     def test_refresh_power_all_runs_for_every_valid_olt(self, mock_refresh):
         templates = dict(self.vendor.oid_templates or {})
         templates['power'] = {
@@ -1520,18 +1537,20 @@ class SettingsApiContractTests(TestCase):
     def test_snmp_check_returns_busy_when_maintenance_running(self, mock_get):
         """SNMP check should not mark OLT unreachable if a background job is in-flight."""
         olt = self._create_olt(name='OLT-BUSY')
-        from topology.api.views import _background_jobs_by_olt
-        _background_jobs_by_olt[olt.id] = 'power'
-        try:
-            response = self.client.post(f'/api/olts/{olt.id}/snmp_check/')
-            self.assertEqual(response.status_code, status.HTTP_200_OK)
-            self.assertTrue(response.data['reachable'])
-            self.assertTrue(response.data.get('busy'))
-            olt.refresh_from_db()
-            # Should NOT be marked unreachable — snmp_reachable stays as-is (None or True)
-            self.assertNotEqual(olt.snmp_reachable, False)
-        finally:
-            _background_jobs_by_olt.pop(olt.id, None)
+        MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_POWER,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=40,
+            detail='Running power collection',
+        )
+        response = self.client.post(f'/api/olts/{olt.id}/snmp_check/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['reachable'])
+        self.assertTrue(response.data.get('busy'))
+        olt.refresh_from_db()
+        # Should NOT be marked unreachable — snmp_reachable stays as-is (None or True)
+        self.assertNotEqual(olt.snmp_reachable, False)
 
     @patch('topology.api.views.snmp_service.get', return_value=None)
     def test_snmp_check_marks_unreachable_when_no_maintenance(self, mock_get):
@@ -3348,6 +3367,126 @@ class UnreachableOltSkipTests(TestCase):
         out = StringIO()
         call_command('discover_onus', stdout=out)
         mock_walk.assert_not_called()
+
+
+class TopologyCounterServiceTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile('CounterVP')
+        self.olt = OLT.objects.create(
+            name='CounterOLT',
+            ip_address='10.0.1.1',
+            vendor_profile=self.vendor,
+            snmp_community='public',
+            is_active=True,
+        )
+        self.slot1 = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        self.slot2 = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=2,
+            slot_key='2',
+            is_active=True,
+        )
+        self.pon11 = OLTPON.objects.create(
+            olt=self.olt,
+            slot=self.slot1,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        self.pon12 = OLTPON.objects.create(
+            olt=self.olt,
+            slot=self.slot1,
+            pon_id=2,
+            pon_key='1/2',
+            is_active=True,
+        )
+
+        ONU.objects.create(
+            olt=self.olt,
+            slot_ref=self.slot1,
+            pon_ref=self.pon11,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='100.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        ONU.objects.create(
+            olt=self.olt,
+            slot_ref=self.slot1,
+            pon_ref=self.pon11,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='100.2',
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        ONU.objects.create(
+            olt=self.olt,
+            slot_ref=self.slot1,
+            pon_ref=self.pon12,
+            slot_id=1,
+            pon_id=2,
+            onu_id=1,
+            snmp_index='101.1',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+
+    def test_refresh_olt_populates_cached_counters(self):
+        snapshot = topology_counter_service.refresh_olt(self.olt.id)
+
+        self.olt.refresh_from_db()
+        self.slot1.refresh_from_db()
+        self.slot2.refresh_from_db()
+        self.pon11.refresh_from_db()
+        self.pon12.refresh_from_db()
+
+        self.assertEqual(snapshot.slot_count, 2)
+        self.assertEqual(snapshot.pon_count, 2)
+        self.assertEqual(snapshot.onu_count, 3)
+        self.assertEqual(snapshot.online_count, 1)
+        self.assertEqual(snapshot.offline_count, 2)
+
+        self.assertEqual(self.olt.cached_slot_count, 2)
+        self.assertEqual(self.olt.cached_pon_count, 2)
+        self.assertEqual(self.olt.cached_onu_count, 3)
+        self.assertEqual(self.olt.cached_online_count, 1)
+        self.assertEqual(self.olt.cached_offline_count, 2)
+        self.assertIsNotNone(self.olt.cached_counts_at)
+
+        self.assertEqual(self.slot1.cached_pon_count, 2)
+        self.assertEqual(self.slot1.cached_onu_count, 3)
+        self.assertEqual(self.slot1.cached_online_count, 1)
+        self.assertEqual(self.slot1.cached_offline_count, 2)
+        self.assertEqual(self.slot2.cached_pon_count, 0)
+        self.assertEqual(self.slot2.cached_onu_count, 0)
+        self.assertEqual(self.slot2.cached_online_count, 0)
+        self.assertEqual(self.slot2.cached_offline_count, 0)
+
+        self.assertEqual(self.pon11.cached_onu_count, 2)
+        self.assertEqual(self.pon11.cached_online_count, 1)
+        self.assertEqual(self.pon11.cached_offline_count, 1)
+        self.assertEqual(self.pon12.cached_onu_count, 1)
+        self.assertEqual(self.pon12.cached_online_count, 0)
+        self.assertEqual(self.pon12.cached_offline_count, 1)
+
+    def test_serializer_falls_back_when_cached_counts_are_null(self):
+        from topology.api.serializers import OLTSerializer
+
+        serializer = OLTSerializer(self.olt)
+        self.assertEqual(serializer.data['slot_count'], 2)
+        self.assertEqual(serializer.data['pon_count'], 2)
+        self.assertEqual(serializer.data['onu_count'], 3)
+        self.assertEqual(serializer.data['online_count'], 1)
+        self.assertEqual(serializer.data['offline_count'], 2)
 
 
 class SerializerDisconnectReasonTests(TestCase):

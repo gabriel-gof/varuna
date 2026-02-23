@@ -1,11 +1,9 @@
 import logging
-import threading
-from datetime import timedelta
 from io import StringIO
 
 from django.core.management import call_command
-from django.db import close_old_connections, transaction
-from django.db.models import Count, Prefetch, Q
+from django.db import transaction
+from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -23,20 +21,14 @@ from topology.api.serializers import (
 from topology.api.auth_utils import can_modify_settings
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, VendorProfile
 from topology.services.cache_service import cache_service
+from topology.services.maintenance_job_service import maintenance_job_service
+from topology.services.maintenance_runtime import collect_power_for_olt, ensure_status_snapshot_for_power, has_usable_status_snapshot
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.power_service import power_service
 from topology.services.snmp_service import snmp_service
 from topology.services.topology_service import TopologyService
 
 logger = logging.getLogger(__name__)
-
-_background_jobs_lock = threading.Lock()
-_background_jobs_by_kind = {
-    'discovery': set(),
-    'polling': set(),
-    'power': set(),
-}
-_background_jobs_by_olt = {}
 
 
 def _is_true(value: str | None) -> bool:
@@ -90,21 +82,6 @@ class OLTViewSet(viewsets.ModelViewSet):
         queryset = (
             OLT.objects.filter(is_active=True)
             .select_related('vendor_profile')
-            .annotate(
-                slot_count=Count('slots', filter=Q(slots__is_active=True), distinct=True),
-                pon_count=Count('pons', filter=Q(pons__is_active=True), distinct=True),
-                onu_count=Count('onus', filter=Q(onus__is_active=True), distinct=True),
-                online_count=Count(
-                    'onus',
-                    filter=Q(onus__is_active=True, onus__status=ONU.STATUS_ONLINE),
-                    distinct=True,
-                ),
-                offline_count=Count(
-                    'onus',
-                    filter=Q(onus__is_active=True) & ~Q(onus__status=ONU.STATUS_ONLINE),
-                    distinct=True,
-                ),
-            )
             .order_by('id')
         )
 
@@ -122,38 +99,11 @@ class OLTViewSet(viewsets.ModelViewSet):
             )
             pons_qs = (
                 OLTPON.objects.filter(is_active=True)
-                .annotate(
-                    onu_count=Count('onus', filter=Q(onus__is_active=True), distinct=True),
-                    online_count=Count(
-                        'onus',
-                        filter=Q(onus__is_active=True, onus__status=ONU.STATUS_ONLINE),
-                        distinct=True,
-                    ),
-                    offline_count=Count(
-                        'onus',
-                        filter=Q(onus__is_active=True) & ~Q(onus__status=ONU.STATUS_ONLINE),
-                        distinct=True,
-                    ),
-                )
                 .prefetch_related(Prefetch('onus', queryset=onus_qs))
                 .order_by('pon_id')
             )
             slots_qs = (
                 OLTSlot.objects.filter(is_active=True)
-                .annotate(
-                    pon_count=Count('pons', filter=Q(pons__is_active=True), distinct=True),
-                    onu_count=Count('pons__onus', filter=Q(pons__onus__is_active=True), distinct=True),
-                    online_count=Count(
-                        'pons__onus',
-                        filter=Q(pons__onus__is_active=True, pons__onus__status=ONU.STATUS_ONLINE),
-                        distinct=True,
-                    ),
-                    offline_count=Count(
-                        'pons__onus',
-                        filter=Q(pons__onus__is_active=True) & ~Q(pons__onus__status=ONU.STATUS_ONLINE),
-                        distinct=True,
-                    ),
-                )
                 .prefetch_related(Prefetch('pons', queryset=pons_qs))
                 .order_by('slot_id')
             )
@@ -297,153 +247,47 @@ class OLTViewSet(viewsets.ModelViewSet):
                 power_map.update(cache_service.get_many_onu_power(olt.id, onu_ids))
         return power_map
 
-    def _mark_power_collection_schedule(self, olt: OLT, collected_at=None):
-        now = collected_at or timezone.now()
-        next_at = now + timedelta(seconds=olt.power_interval_seconds or 0)
-        OLT.objects.filter(id=olt.id).update(last_power_at=now, next_power_at=next_at)
-        olt.last_power_at = now
-        olt.next_power_at = next_at
-
-    def _has_usable_status_snapshot(self, olt: OLT) -> bool:
-        if not olt.last_poll_at:
-            return False
-        return ONU.objects.filter(
-            olt=olt,
-            is_active=True,
-            status__in=[ONU.STATUS_ONLINE, ONU.STATUS_OFFLINE],
-        ).exists()
-
-    def _ensure_status_snapshot_for_power(self, olt: OLT):
-        if self._has_usable_status_snapshot(olt):
-            logger.warning(
-                "Power refresh OLT %s: using existing status snapshot (last_poll_at=%s).",
-                olt.id,
-                olt.last_poll_at,
-            )
-            return
-
-        status_templates = ((olt.vendor_profile.oid_templates or {}).get('status', {}))
-        status_oid = status_templates.get('onu_status_oid')
-        if not olt.vendor_profile.supports_onu_status or not status_oid:
-            logger.warning(
-                "Power refresh OLT %s: status snapshot missing and polling capability is unavailable. Proceeding with stored ONU statuses.",
-                olt.id,
-            )
-            return
-
-        logger.warning(
-            "Power refresh OLT %s: status snapshot missing; running poll_onu_status before power collection.",
-            olt.id,
-        )
-        output = StringIO()
-        call_command('poll_onu_status', olt_id=olt.id, force=True, stdout=output)
-        olt.refresh_from_db(fields=['last_poll_at'])
-        known_status_count = ONU.objects.filter(
-            olt=olt,
-            is_active=True,
-            status__in=[ONU.STATUS_ONLINE, ONU.STATUS_OFFLINE],
-        ).count()
-        logger.warning(
-            "Power refresh OLT %s: pre-power status run finished (known_status_onus=%s, output=%s).",
-            olt.id,
-            known_status_count,
-            output.getvalue().strip(),
-        )
-
     def _collect_power_for_olt(self, olt: OLT, *, force_refresh=True, include_results=True):
-        self._ensure_status_snapshot_for_power(olt)
-        onus = list(
-            ONU.objects.filter(olt=olt, is_active=True)
-            .select_related('olt', 'olt__vendor_profile')
-            .order_by('slot_id', 'pon_id', 'onu_id')
+        return collect_power_for_olt(
+            olt,
+            force_refresh=force_refresh,
+            include_results=include_results,
         )
-        result_map = power_service.refresh_for_onus(onus, force_refresh=force_refresh)
-        results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
-        collected_count = sum(
-            1
-            for row in results
-            if row.get('onu_rx_power') is not None or row.get('olt_rx_power') is not None
-        )
-        skipped_offline_count = sum(
-            1
-            for row in results
-            if str(row.get('skipped_reason') or '').lower() == 'offline'
-        )
-        skipped_unknown_count = sum(
-            1
-            for row in results
-            if str(row.get('skipped_reason') or '').lower() == 'unknown'
-        )
-        skipped_not_online_count = sum(
-            1
-            for row in results
-            if str(row.get('skipped_reason') or '').lower() in {'offline', 'unknown', 'not_online'}
-        )
-        attempted_count = max(0, len(results) - skipped_not_online_count)
-        self._mark_power_collection_schedule(olt)
 
-        payload = {
-            'status': 'completed',
-            'olt_id': olt.id,
-            'count': len(results),
-            'attempted_count': attempted_count,
-            'skipped_not_online_count': skipped_not_online_count,
-            'skipped_offline_count': skipped_offline_count,
-            'skipped_unknown_count': skipped_unknown_count,
-            'collected_count': collected_count,
-            'last_power_at': olt.last_power_at,
-            'next_power_at': olt.next_power_at,
+    def _serialize_maintenance_job(self, job):
+        return maintenance_job_service.serialize_job(job)
+
+    def _enqueue_maintenance_job(self, *, olt: OLT, kind: str, request):
+        accepted_detail_map = {
+            'discovery': 'Discovery scheduled in background.',
+            'polling': 'Polling scheduled in background.',
+            'power': 'Power refresh scheduled in background.',
         }
-        logger.warning(
-            "Power refresh OLT %s summary: total=%s attempted=%s collected=%s skipped_offline=%s skipped_unknown=%s.",
-            olt.id,
-            payload['count'],
-            payload['attempted_count'],
-            payload['collected_count'],
-            payload['skipped_offline_count'],
-            payload['skipped_unknown_count'],
+        job, queued = maintenance_job_service.enqueue_job(
+            olt_id=olt.id,
+            kind=kind,
+            requested_by=request.user,
         )
-        if include_results:
-            payload['results'] = results
-        return payload
-
-    def _queue_background_olt_job(self, *, kind: str, olt_id: int, runner):
-        with _background_jobs_lock:
-            running_kind = _background_jobs_by_olt.get(olt_id)
-            if running_kind:
-                logger.warning(
-                    "Background %s not queued for OLT %s: %s is already running.",
-                    kind,
-                    olt_id,
-                    running_kind,
-                )
-                return False
-            running = _background_jobs_by_kind.setdefault(kind, set())
-            if olt_id in running:
-                return False
-            running.add(olt_id)
-            _background_jobs_by_olt[olt_id] = kind
-
-        def _wrapped():
-            close_old_connections()
-            try:
-                runner()
-            except Exception:
-                logger.exception("Background %s failed for OLT %s", kind, olt_id)
-            finally:
-                with _background_jobs_lock:
-                    _background_jobs_by_kind.setdefault(kind, set()).discard(olt_id)
-                    if _background_jobs_by_olt.get(olt_id) == kind:
-                        _background_jobs_by_olt.pop(olt_id, None)
-                close_old_connections()
-
-        thread = threading.Thread(
-            target=_wrapped,
-            name=f"varuna-{kind}-{olt_id}",
-            daemon=True,
+        payload = self._serialize_maintenance_job(job)
+        if not queued:
+            return Response(
+                {
+                    'status': 'already_running',
+                    'olt_id': olt.id,
+                    'detail': 'Another maintenance task is already running for this OLT.',
+                    'job': payload,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        return Response(
+            {
+                'status': 'accepted',
+                'olt_id': olt.id,
+                'detail': accepted_detail_map.get(kind, 'Maintenance task queued successfully.'),
+                'job': payload,
+            },
+            status=status.HTTP_202_ACCEPTED,
         )
-        thread.start()
-        return True
 
     @action(detail=True, methods=['get'])
     def topology(self, request, pk=None):
@@ -454,6 +298,20 @@ class OLTViewSet(viewsets.ModelViewSet):
         service = TopologyService()
         topology = service.build_topology(olt)
         return Response(topology)
+
+    @action(detail=True, methods=['get'], url_path='maintenance_status')
+    def maintenance_status(self, request, pk=None):
+        olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        active_job = maintenance_job_service.get_active_job(olt.id)
+        latest_job = active_job or maintenance_job_service.get_latest_job(olt.id)
+        return Response(
+            {
+                'olt_id': olt.id,
+                'has_active_job': bool(active_job),
+                'active_job': self._serialize_maintenance_job(active_job),
+                'latest_job': self._serialize_maintenance_job(latest_job),
+            }
+        )
 
     @action(detail=True, methods=['post'])
     def refresh_power(self, request, pk=None):
@@ -475,31 +333,10 @@ class OLTViewSet(viewsets.ModelViewSet):
             return validation_error
 
         if _is_true(request.data.get('background', 'false')):
-            queued = self._queue_background_olt_job(
+            return self._enqueue_maintenance_job(
+                olt=olt,
                 kind='power',
-                olt_id=olt.id,
-                runner=lambda: self._collect_power_for_olt(
-                    OLT.objects.select_related('vendor_profile').get(id=olt.id, is_active=True),
-                    force_refresh=True,
-                    include_results=False,
-                ),
-            )
-            if not queued:
-                return Response(
-                    {
-                        'status': 'already_running',
-                        'olt_id': olt.id,
-                        'detail': 'Another maintenance task is already running for this OLT.',
-                    },
-                    status=status.HTTP_202_ACCEPTED,
-                )
-            return Response(
-                {
-                    'status': 'accepted',
-                    'olt_id': olt.id,
-                    'detail': 'Power refresh scheduled in background.',
-                },
-                status=status.HTTP_202_ACCEPTED,
+                request=request,
             )
 
         payload = self._collect_power_for_olt(olt, force_refresh=True, include_results=True)
@@ -608,27 +445,10 @@ class OLTViewSet(viewsets.ModelViewSet):
             return validation_error
 
         if _is_true(request.data.get('background', 'false')):
-            queued = self._queue_background_olt_job(
+            return self._enqueue_maintenance_job(
+                olt=olt,
                 kind='discovery',
-                olt_id=olt.id,
-                runner=lambda: call_command('discover_onus', olt_id=olt.id, force=True),
-            )
-            if not queued:
-                return Response(
-                    {
-                        'status': 'already_running',
-                        'olt_id': olt.id,
-                        'detail': 'Another maintenance task is already running for this OLT.',
-                    },
-                    status=status.HTTP_202_ACCEPTED,
-                )
-            return Response(
-                {
-                    'status': 'accepted',
-                    'olt_id': olt.id,
-                    'detail': 'Discovery scheduled in background.',
-                },
-                status=status.HTTP_202_ACCEPTED,
+                request=request,
             )
 
         output = StringIO()
@@ -668,7 +488,7 @@ class OLTViewSet(viewsets.ModelViewSet):
             )
 
         sys_descr_oid = '1.3.6.1.2.1.1.1.0'
-        has_running_job = bool(_background_jobs_by_olt.get(olt.id))
+        has_running_job = maintenance_job_service.has_active_job(olt.id)
         try:
             result = snmp_service.get(olt, [sys_descr_oid])
             if result and sys_descr_oid in result:
@@ -693,7 +513,7 @@ class OLTViewSet(viewsets.ModelViewSet):
             return Response({'reachable': False, 'sys_descr': None, 'olt_id': olt.id, 'failure_count': olt.snmp_failure_count})
         except Exception as exc:
             if has_running_job:
-                logger.info("SNMP check for OLT %s timed out during active %s; treating as busy.", olt.name, _background_jobs_by_olt.get(olt.id))
+                logger.info("SNMP check for OLT %s timed out during active maintenance job; treating as busy.", olt.name)
                 return Response({
                     'reachable': True,
                     'sys_descr': None,
@@ -733,27 +553,10 @@ class OLTViewSet(viewsets.ModelViewSet):
             return validation_error
 
         if _is_true(request.data.get('background', 'false')):
-            queued = self._queue_background_olt_job(
+            return self._enqueue_maintenance_job(
+                olt=olt,
                 kind='polling',
-                olt_id=olt.id,
-                runner=lambda: call_command('poll_onu_status', olt_id=olt.id, force=True),
-            )
-            if not queued:
-                return Response(
-                    {
-                        'status': 'already_running',
-                        'olt_id': olt.id,
-                        'detail': 'Another maintenance task is already running for this OLT.',
-                    },
-                    status=status.HTTP_202_ACCEPTED,
-                )
-            return Response(
-                {
-                    'status': 'accepted',
-                    'olt_id': olt.id,
-                    'detail': 'Polling scheduled in background.',
-                },
-                status=status.HTTP_202_ACCEPTED,
+                request=request,
             )
 
         output = StringIO()
@@ -777,39 +580,10 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['olt', 'status', 'slot_id', 'pon_id', 'slot_ref', 'pon_ref', 'is_active']
 
     def _has_usable_status_snapshot(self, olt: OLT) -> bool:
-        if not olt.last_poll_at:
-            return False
-        return ONU.objects.filter(
-            olt=olt,
-            is_active=True,
-            status__in=[ONU.STATUS_ONLINE, ONU.STATUS_OFFLINE],
-        ).exists()
+        return has_usable_status_snapshot(olt)
 
     def _ensure_status_snapshot_for_power(self, olt: OLT):
-        if self._has_usable_status_snapshot(olt):
-            return
-
-        status_templates = ((olt.vendor_profile.oid_templates or {}).get('status', {}))
-        status_oid = status_templates.get('onu_status_oid')
-        if not olt.vendor_profile.supports_onu_status or not status_oid:
-            logger.warning(
-                "Batch power OLT %s: status snapshot missing and polling capability is unavailable. Proceeding with stored ONU statuses.",
-                olt.id,
-            )
-            return
-
-        logger.warning(
-            "Batch power OLT %s: status snapshot missing; running poll_onu_status before power collection.",
-            olt.id,
-        )
-        output = StringIO()
-        call_command('poll_onu_status', olt_id=olt.id, force=True, stdout=output)
-        olt.refresh_from_db(fields=['last_poll_at'])
-        logger.warning(
-            "Batch power OLT %s: pre-power status run finished (output=%s).",
-            olt.id,
-            output.getvalue().strip(),
-        )
+        ensure_status_snapshot_for_power(olt)
 
     def get_queryset(self):
         include_inactive = _is_true(self.request.query_params.get('include_inactive', 'false'))

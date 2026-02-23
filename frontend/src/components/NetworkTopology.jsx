@@ -1014,7 +1014,7 @@ export const NetworkTopology = ({
 
       <div className="flex flex-wrap items-start gap-12 px-4 lg:px-10 pb-40 animate-in fade-in duration-500">
         {loading && (
-              <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">Loading live data...</div>
+              <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</div>
         )}
         {error && (
           <div className="text-[12px] font-bold text-rose-500 uppercase tracking-widest">{error}</div>

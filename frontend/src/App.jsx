@@ -198,6 +198,25 @@ const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
   return asList(nextOlts).map((nextOlt) => mergeOltPowerSnapshots(previousByOltId.get(String(nextOlt?.id)), nextOlt))
 }
 
+const mergeBaseOltsPreservingTopology = (previousOlts, nextBaseOlts) => {
+  const previousByOltId = new Map(asList(previousOlts).map((olt) => [String(olt?.id), olt]))
+  return asList(nextBaseOlts).map((nextOlt) => {
+    const previousOlt = previousByOltId.get(String(nextOlt?.id))
+    if (!previousOlt) return nextOlt
+    const previousSlots = asList(previousOlt?.slots)
+    if (!previousSlots.length) return nextOlt
+    return {
+      ...nextOlt,
+      slots: previousSlots
+    }
+  })
+}
+
+const MAINTENANCE_ACTIVE_STATUSES = new Set(['queued', 'running'])
+const MAINTENANCE_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled'])
+const isMaintenanceActive = (job) => Boolean(job && MAINTENANCE_ACTIVE_STATUSES.has(job.status))
+const isMaintenanceTerminal = (job) => Boolean(job && MAINTENANCE_TERMINAL_STATUSES.has(job.status))
+
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
 const SEARCH_ROW_HIGHLIGHT_STYLE = {
@@ -525,6 +544,7 @@ const App = () => {
   const [settingsActionError, setSettingsActionError] = useState(null)
   const [settingsActionMessage, setSettingsActionMessage] = useState(null)
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
+  const [maintenanceJobsByOlt, setMaintenanceJobsByOlt] = useState({})
   const [isRefreshingPonPanel, setIsRefreshingPonPanel] = useState(false)
   const [ponPanelError, setPonPanelError] = useState('')
   const ponPanelErrorTimerRef = useRef(null)
@@ -540,6 +560,7 @@ const App = () => {
   const previousBodyCursorRef = useRef('')
   const previousBodyUserSelectRef = useRef('')
   const previousHtmlCursorRef = useRef('')
+  const fetchOltsInflightRef = useRef({})
 
   useEffect(() => {
     if (isDarkMode) {
@@ -555,42 +576,65 @@ const App = () => {
     ponPanelErrorTimerRef.current = setTimeout(() => setPonPanelError(''), 6000)
   }, [])
 
-  const fetchOlts = useCallback(async ({ surfaceError = false } = {}) => {
-    const isInitialLoad = !oltsRef.current.length
-    if (isInitialLoad) setLoading(true)
-    if (isInitialLoad || surfaceError) setError(null)
-    try {
-      const res = await api.get('/olts/', { params: { include_topology: 'true' } })
-      const nextOlts = normalizeList(res.data)
-      setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, nextOlts))
-      return { ok: true }
-    } catch (err) {
+  const fetchOlts = useCallback(async ({ surfaceError = false, includeTopology = true } = {}) => {
+    const requestKey = includeTopology ? 'topology' : 'base'
+    // Deduplication per request shape: if a fetch is already in flight, reuse its promise
+    if (fetchOltsInflightRef.current[requestKey]) return fetchOltsInflightRef.current[requestKey]
+    const run = async () => {
+      const isInitialLoad = !oltsRef.current.length
+      if (isInitialLoad) setLoading(true)
+      if (isInitialLoad || surfaceError) setError(null)
       try {
-        const base = await api.get('/olts/')
-        const baseOlts = normalizeList(base.data)
-        const enriched = await Promise.all(
-          baseOlts.map(async (olt) => {
-            try {
-              const topoRes = await api.get(`/olts/${olt.id}/topology/`)
-              return mapTopologyToSlots(olt, topoRes.data)
-            } catch (_innerErr) {
-              return olt
-            }
-          })
-        )
-        setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, enriched))
-        return { ok: true, usedFallback: true }
-      } catch (fallbackErr) {
-        const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, t('Failed to load OLT data'), t), t)
-        if (isInitialLoad || surfaceError) {
-          setError(message)
+        if (!includeTopology) {
+          const res = await api.get('/olts/')
+          const nextOlts = normalizeList(res.data)
+          setOlts((previousOlts) => mergeBaseOltsPreservingTopology(previousOlts, nextOlts))
+          return { ok: true, includeTopology: false }
         }
-        return { ok: false, message }
+
+        const res = await api.get('/olts/', { params: { include_topology: 'true' } })
+        const nextOlts = normalizeList(res.data)
+        setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, nextOlts))
+        return { ok: true, includeTopology: true }
+      } catch (err) {
+        if (!includeTopology) {
+          const message = getApiErrorMessage(err, t('Failed to load OLT data'), t)
+          if (isInitialLoad || surfaceError) {
+            setError(message)
+          }
+          return { ok: false, message }
+        }
+
+        try {
+          const base = await api.get('/olts/')
+          const baseOlts = normalizeList(base.data)
+          const enriched = await Promise.all(
+            baseOlts.map(async (olt) => {
+              try {
+                const topoRes = await api.get(`/olts/${olt.id}/topology/`)
+                return mapTopologyToSlots(olt, topoRes.data)
+              } catch (_innerErr) {
+                return olt
+              }
+            })
+          )
+          setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, enriched))
+          return { ok: true, usedFallback: true, includeTopology: true }
+        } catch (fallbackErr) {
+          const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, t('Failed to load OLT data'), t), t)
+          if (isInitialLoad || surfaceError) {
+            setError(message)
+          }
+          return { ok: false, message }
+        }
+      } finally {
+        if (isInitialLoad) setLoading(false)
+        delete fetchOltsInflightRef.current[requestKey]
       }
-    } finally {
-      if (isInitialLoad) setLoading(false)
     }
-  }, [])
+    fetchOltsInflightRef.current[requestKey] = run()
+    return fetchOltsInflightRef.current[requestKey]
+  }, [t])
 
   const fetchVendorProfiles = useCallback(async () => {
     setVendorLoading(true)
@@ -607,15 +651,18 @@ const App = () => {
 
   useEffect(() => {
     if (!authToken) return
-    fetchOlts()
+    const includeTopology = activeNav === 'topology' || !canManageSettings
+    fetchOlts({ includeTopology })
     if (canManageSettings) {
       fetchVendorProfiles()
     } else {
       setVendorProfiles([])
     }
-    const interval = setInterval(fetchOlts, 30000)
+    const interval = setInterval(() => {
+      void fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
+    }, 30000)
     return () => clearInterval(interval)
-  }, [authToken, canManageSettings, fetchOlts, fetchVendorProfiles])
+  }, [activeNav, authToken, canManageSettings, fetchOlts, fetchVendorProfiles])
 
   useEffect(() => {
     oltsRef.current = olts
@@ -630,6 +677,22 @@ const App = () => {
         return prev.length ? prev.filter((id) => allIds.includes(id)) : allIds
       }
       return prev.filter((id) => allIds.includes(id))
+    })
+  }, [olts])
+
+  useEffect(() => {
+    const validIds = new Set(olts.map((olt) => String(olt.id)))
+    setMaintenanceJobsByOlt((prev) => {
+      const next = {}
+      let changed = false
+      Object.entries(prev).forEach(([oltId, job]) => {
+        if (validIds.has(String(oltId))) {
+          next[oltId] = job
+          return
+        }
+        changed = true
+      })
+      return changed ? next : prev
     })
   }, [olts])
 
@@ -655,7 +718,7 @@ const App = () => {
       if (now - lastResumeRefreshAtRef.current < RESUME_REFRESH_THROTTLE_MS) return
       lastResumeRefreshAtRef.current = now
       setHealthTick(now)
-      void fetchOlts()
+      void fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
     }
 
     const handleVisibilityChange = () => {
@@ -682,7 +745,7 @@ const App = () => {
       window.removeEventListener('focus', handleWindowFocus)
       window.removeEventListener('pageshow', handlePageShow)
     }
-  }, [authToken, fetchOlts])
+  }, [activeNav, authToken, canManageSettings, fetchOlts])
 
   const runSettingsAction = async (key, request, successMessage = '', { oltId = null } = {}) => {
     setSettingsActionError(null)
@@ -709,13 +772,24 @@ const App = () => {
     }
   }
 
+  const upsertMaintenanceJob = useCallback((oltId, job) => {
+    if (oltId == null || !job) return
+    setMaintenanceJobsByOlt((prev) => ({
+      ...prev,
+      [String(oltId)]: job
+    }))
+  }, [])
+
   const runQueuedSettingsAction = async ({ endpoint, acceptedMessage, alreadyRunningMessage, oltId = null }) => {
     setSettingsActionError(null)
     setSettingsActionMessage(null)
     try {
       const response = await api.post(endpoint, { background: true })
       const queuedStatus = response?.data?.status
-      const queuedDetail = response?.data?.detail
+      const queuedJob = response?.data?.job
+      if (oltId != null && queuedJob) {
+        upsertMaintenanceJob(oltId, queuedJob)
+      }
       if (queuedStatus === 'already_running') {
         setSettingsActionMessage({ oltId, message: alreadyRunningMessage || acceptedMessage })
       } else {
@@ -730,12 +804,97 @@ const App = () => {
     }
   }
 
+  useEffect(() => {
+    const oltIds = Object.keys(maintenanceJobsByOlt).filter((oltId) =>
+      isMaintenanceActive(maintenanceJobsByOlt[oltId])
+    )
+    if (!authToken || !oltIds.length) return
+
+    let canceled = false
+    const poll = async () => {
+      const responses = await Promise.all(
+        oltIds.map(async (oltId) => {
+          try {
+            const response = await api.get(`/olts/${oltId}/maintenance_status/`)
+            return { oltId, payload: response.data }
+          } catch (_err) {
+            return { oltId, payload: null }
+          }
+        })
+      )
+      if (canceled) return
+
+      const nextMap = { ...maintenanceJobsByOlt }
+      const terminalResults = []
+      let changed = false
+
+      responses.forEach(({ oltId, payload }) => {
+        const previousJob = maintenanceJobsByOlt[oltId]
+        const latestJob = payload?.active_job || payload?.latest_job || null
+
+        if (latestJob) {
+          if (
+            !previousJob
+            || previousJob.id !== latestJob.id
+            || previousJob.status !== latestJob.status
+            || Number(previousJob.progress || 0) !== Number(latestJob.progress || 0)
+            || String(previousJob.detail || '') !== String(latestJob.detail || '')
+          ) {
+            changed = true
+          }
+          nextMap[oltId] = latestJob
+        } else {
+          if (Object.prototype.hasOwnProperty.call(nextMap, oltId)) {
+            delete nextMap[oltId]
+            changed = true
+          }
+        }
+
+        if (isMaintenanceActive(previousJob) && isMaintenanceTerminal(latestJob)) {
+          terminalResults.push({ oltId, job: latestJob })
+        }
+      })
+
+      if (changed) {
+        setMaintenanceJobsByOlt(nextMap)
+      }
+
+      if (terminalResults.length) {
+        void fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
+
+        const failedJob = terminalResults.find((entry) => entry.job?.status === 'failed')
+        if (failedJob) {
+          const message = failedJob.job?.error || failedJob.job?.detail || t('Failed to execute settings action')
+          setSettingsActionError(message)
+          setTimeout(() => setSettingsActionError(null), 5000)
+          return
+        }
+
+        const completedJob = terminalResults.find((entry) => entry.job?.status === 'completed')
+        if (completedJob) {
+          setSettingsActionMessage({
+            oltId: completedJob.oltId,
+            message: completedJob.job?.detail || t('Maintenance task completed'),
+          })
+          setTimeout(() => setSettingsActionMessage(null), 4000)
+        }
+      }
+    }
+
+    poll()
+    const interval = setInterval(poll, 2000)
+    return () => {
+      canceled = true
+      clearInterval(interval)
+    }
+  }, [activeNav, authToken, canManageSettings, fetchOlts, maintenanceJobsByOlt, t])
+
   const createOlt = async (payload) => {
     const created = await runSettingsAction(
       'create',
       async () => {
         const response = await api.post('/olts/', payload)
-        await fetchOlts()
+        fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
         return response.data
       },
       t('OLT created successfully')
@@ -748,7 +907,7 @@ const App = () => {
       `update:${oltId}`,
       async () => {
         const response = await api.patch(`/olts/${oltId}/`, payload)
-        await fetchOlts()
+        fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
         return response.data
       },
       t('OLT updated successfully'),
@@ -762,7 +921,7 @@ const App = () => {
       `delete:${oltId}`,
       async () => {
         await api.delete(`/olts/${oltId}/`)
-        await fetchOlts()
+        fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
         return true
       },
       t('OLT removed successfully'),
@@ -1152,6 +1311,13 @@ const App = () => {
     })
   }, [selectedOnus, statusSortMode, alarmSortConfig.enabled, alarmSortConfig.reasons])
 
+  const hasOnuNames = useMemo(() => {
+    return selectedOnus.some((onu) => {
+      const name = onu.client_name || onu.name
+      return name && name.trim() !== ''
+    })
+  }, [selectedOnus])
+
   const powerRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
       const classification = classifyOnu(onu)
@@ -1459,6 +1625,7 @@ const App = () => {
               onRunPolling={runPolling}
               onRefreshPower={refreshPower}
               actionBusy={settingsActionBusy}
+              maintenanceJobsByOlt={maintenanceJobsByOlt}
               oltHealthById={oltHealthById}
             />
           )}
@@ -1696,15 +1863,15 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '10%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '18%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '24%' }} />
+                            {hasOnuNames && <col style={{ width: '24%' }} />}
+                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
                           </colgroup>
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>
+                              {hasOnuNames && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>}
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Desconexão')}</th>
@@ -1716,10 +1883,10 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '10%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '18%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '24%' }} />
+                            {hasOnuNames && <col style={{ width: '24%' }} />}
+                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {statusRows.map(({ onu, statusKey }) => {
@@ -1762,11 +1929,13 @@ const App = () => {
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
                                   </td>
+                                  {hasOnuNames && (
                                   <td className="px-2.5 py-0 align-middle">
                                     <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
                                       {clientLabel}
                                     </span>
                                   </td>
+                                  )}
                                   <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
                                     {serialValue}
                                   </td>
@@ -1786,7 +1955,7 @@ const App = () => {
                             })}
                             {statusRows.length === 0 && (
                               <tr>
-                                <td colSpan={5} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                                <td colSpan={hasOnuNames ? 5 : 4} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
                                 </td>
                               </tr>
@@ -1834,7 +2003,7 @@ const App = () => {
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
-                                <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
+                                {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
                                 <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
@@ -1869,15 +2038,15 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '10%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '18%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '24%' }} />
+                            {hasOnuNames && <col style={{ width: '24%' }} />}
+                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
                           </colgroup>
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
-                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>
+                              {hasOnuNames && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>}
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Power')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
@@ -1889,10 +2058,10 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '10%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '18%' }} />
-                            <col style={{ width: '24%' }} />
-                            <col style={{ width: '24%' }} />
+                            {hasOnuNames && <col style={{ width: '24%' }} />}
+                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
@@ -1928,11 +2097,13 @@ const App = () => {
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
                                   </td>
+                                  {hasOnuNames && (
                                   <td className="px-2.5 py-0 align-middle">
                                     <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
                                       {clientLabel}
                                     </span>
                                   </td>
+                                  )}
                                   <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
                                     {serialValue}
                                   </td>
@@ -1962,7 +2133,7 @@ const App = () => {
                             })}
                             {powerRows.length === 0 && (
                               <tr>
-                                <td colSpan={5} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
+                                <td colSpan={hasOnuNames ? 5 : 4} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
                                 </td>
                               </tr>
@@ -2003,7 +2174,7 @@ const App = () => {
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
-                                <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>
+                                {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
                                 <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">

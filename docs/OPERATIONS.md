@@ -102,6 +102,7 @@ backend/venv/bin/python backend/manage.py migrate
 ```
 
 Recent schema additions include OLT interval fields such as `power_interval_seconds`, so migrations are mandatory before opening topology/settings.
+Recent schema additions also include persistent maintenance queue tracking (`topology_maintenancejob`, migration `0015_maintenancejob_and_more`), so applying migrations is mandatory before using background discovery/polling/power actions.
 
 If running with Docker, also recreate the stack so containers pick up new code and schema:
 ```bash
@@ -197,6 +198,21 @@ SNMP check behavior is adaptive:
 - Reachable OLTs are checked on the base `--snmp-check-seconds` cadence.
 - Repeatedly unreachable OLTs are checked less frequently (exponential backoff) up to `--snmp-check-max-backoff-seconds`.
 - Scheduler logs include SNMP summary lines (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed) for tuning verification.
+
+## Manual Maintenance Queue Observability
+Background actions triggered from Settings (`background=true`) are persisted in `MaintenanceJob` and can be observed via API:
+
+```bash
+curl -H "Authorization: Token <token>" \
+  http://localhost:8000/api/olts/<OLT_ID>/maintenance_status/
+```
+
+Response includes active/latest job metadata:
+- `status`: `queued`, `running`, `completed`, `failed`, `canceled`
+- `progress`: `0..100`
+- `detail`, `output`, `error`
+
+If queued jobs are present, backend API calls that touch maintenance status (`maintenance_status`, `snmp_check`) automatically ensure the in-process runner is active.
 
 ## Validation
 Backend tests:

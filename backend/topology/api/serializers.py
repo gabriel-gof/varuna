@@ -7,6 +7,13 @@ from topology.models import OLTPON, OLT, OLTSlot, ONU, ONULog, UserProfile, Vend
 from topology.services.cache_service import cache_service
 
 
+def _cached_or_fallback(instance, cached_attr: str, fallback_fn):
+    value = getattr(instance, cached_attr, None)
+    if value is None:
+        return int(fallback_fn())
+    return int(value)
+
+
 class VendorProfileSerializer(serializers.ModelSerializer):
     """
     Serializer for VendorProfile
@@ -182,13 +189,25 @@ class PONNestedSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_onu_count(self, obj):
-        return int(getattr(obj, 'onu_count', obj.onus.filter(is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_onu_count',
+            lambda: obj.onus.filter(is_active=True).count(),
+        )
 
     def get_online_count(self, obj):
-        return int(getattr(obj, 'online_count', obj.onus.filter(is_active=True, status=ONU.STATUS_ONLINE).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_online_count',
+            lambda: obj.onus.filter(is_active=True, status=ONU.STATUS_ONLINE).count(),
+        )
 
     def get_offline_count(self, obj):
-        return int(getattr(obj, 'offline_count', obj.onus.filter(is_active=True).exclude(status=ONU.STATUS_ONLINE).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_offline_count',
+            lambda: obj.onus.filter(is_active=True).exclude(status=ONU.STATUS_ONLINE).count(),
+        )
 
 
 class SlotNestedSerializer(serializers.ModelSerializer):
@@ -220,22 +239,38 @@ class SlotNestedSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_pon_count(self, obj):
-        return int(getattr(obj, 'pon_count', obj.pons.filter(is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_pon_count',
+            lambda: obj.pons.filter(is_active=True).count(),
+        )
 
     def get_onu_count(self, obj):
-        if hasattr(obj, 'onu_count'):
-            return int(obj.onu_count)
-        return ONU.objects.filter(pon_ref__slot=obj, is_active=True).count()
+        return _cached_or_fallback(
+            obj,
+            'cached_onu_count',
+            lambda: ONU.objects.filter(pon_ref__slot=obj, is_active=True).count(),
+        )
 
     def get_online_count(self, obj):
-        if hasattr(obj, 'online_count'):
-            return int(obj.online_count)
-        return ONU.objects.filter(pon_ref__slot=obj, is_active=True, status=ONU.STATUS_ONLINE).count()
+        return _cached_or_fallback(
+            obj,
+            'cached_online_count',
+            lambda: ONU.objects.filter(
+                pon_ref__slot=obj,
+                is_active=True,
+                status=ONU.STATUS_ONLINE,
+            ).count(),
+        )
 
     def get_offline_count(self, obj):
-        if hasattr(obj, 'offline_count'):
-            return int(obj.offline_count)
-        return ONU.objects.filter(pon_ref__slot=obj, is_active=True).exclude(status=ONU.STATUS_ONLINE).count()
+        return _cached_or_fallback(
+            obj,
+            'cached_offline_count',
+            lambda: ONU.objects.filter(pon_ref__slot=obj, is_active=True).exclude(
+                status=ONU.STATUS_ONLINE
+            ).count(),
+        )
 
 
 class OLTTopologySerializer(serializers.ModelSerializer):
@@ -302,21 +337,45 @@ class OLTTopologySerializer(serializers.ModelSerializer):
         return (obj.vendor_profile.vendor or '').upper()
 
     def get_slot_count(self, obj):
-        return int(getattr(obj, 'slot_count', obj.slots.filter(is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_slot_count',
+            lambda: obj.slots.filter(is_active=True).count(),
+        )
 
     def get_pon_count(self, obj):
-        return int(getattr(obj, 'pon_count', OLTPON.objects.filter(olt=obj, is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_pon_count',
+            lambda: OLTPON.objects.filter(olt=obj, is_active=True).count(),
+        )
 
     def get_onu_count(self, obj):
-        return int(getattr(obj, 'onu_count', ONU.objects.filter(olt=obj, is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_onu_count',
+            lambda: ONU.objects.filter(olt=obj, is_active=True).count(),
+        )
 
     def get_online_count(self, obj):
-        return int(getattr(obj, 'online_count', ONU.objects.filter(olt=obj, is_active=True, status=ONU.STATUS_ONLINE).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_online_count',
+            lambda: ONU.objects.filter(
+                olt=obj,
+                is_active=True,
+                status=ONU.STATUS_ONLINE,
+            ).count(),
+        )
 
     def get_offline_count(self, obj):
-        if hasattr(obj, 'offline_count'):
-            return int(obj.offline_count)
-        return ONU.objects.filter(olt=obj, is_active=True).exclude(status=ONU.STATUS_ONLINE).count()
+        return _cached_or_fallback(
+            obj,
+            'cached_offline_count',
+            lambda: ONU.objects.filter(olt=obj, is_active=True).exclude(
+                status=ONU.STATUS_ONLINE
+            ).count(),
+        )
 
     def get_supports_olt_rx_power(self, obj):
         power_cfg = ((obj.vendor_profile.oid_templates or {}).get('power', {}))
@@ -416,21 +475,45 @@ class OLTSerializer(serializers.ModelSerializer):
         return (obj.vendor_profile.vendor or '').upper()
 
     def get_slot_count(self, obj):
-        return int(getattr(obj, 'slot_count', OLTSlot.objects.filter(olt=obj, is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_slot_count',
+            lambda: OLTSlot.objects.filter(olt=obj, is_active=True).count(),
+        )
 
     def get_pon_count(self, obj):
-        return int(getattr(obj, 'pon_count', OLTPON.objects.filter(olt=obj, is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_pon_count',
+            lambda: OLTPON.objects.filter(olt=obj, is_active=True).count(),
+        )
 
     def get_onu_count(self, obj):
-        return int(getattr(obj, 'onu_count', ONU.objects.filter(olt=obj, is_active=True).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_onu_count',
+            lambda: ONU.objects.filter(olt=obj, is_active=True).count(),
+        )
 
     def get_online_count(self, obj):
-        return int(getattr(obj, 'online_count', ONU.objects.filter(olt=obj, is_active=True, status=ONU.STATUS_ONLINE).count()))
+        return _cached_or_fallback(
+            obj,
+            'cached_online_count',
+            lambda: ONU.objects.filter(
+                olt=obj,
+                is_active=True,
+                status=ONU.STATUS_ONLINE,
+            ).count(),
+        )
 
     def get_offline_count(self, obj):
-        if hasattr(obj, 'offline_count'):
-            return int(obj.offline_count)
-        return ONU.objects.filter(olt=obj, is_active=True).exclude(status=ONU.STATUS_ONLINE).count()
+        return _cached_or_fallback(
+            obj,
+            'cached_offline_count',
+            lambda: ONU.objects.filter(olt=obj, is_active=True).exclude(
+                status=ONU.STATUS_ONLINE
+            ).count(),
+        )
 
     def get_supports_olt_rx_power(self, obj):
         power_cfg = ((obj.vendor_profile.oid_templates or {}).get('power', {}))
@@ -568,6 +651,12 @@ class OLTSerializer(serializers.ModelSerializer):
         olt.next_poll_at = None
         olt.last_power_at = None
         olt.next_power_at = None
+        olt.cached_slot_count = None
+        olt.cached_pon_count = None
+        olt.cached_onu_count = None
+        olt.cached_online_count = None
+        olt.cached_offline_count = None
+        olt.cached_counts_at = None
         return {
             'snmp_reachable',
             'last_snmp_check_at',
@@ -578,6 +667,12 @@ class OLTSerializer(serializers.ModelSerializer):
             'next_poll_at',
             'last_power_at',
             'next_power_at',
+            'cached_slot_count',
+            'cached_pon_count',
+            'cached_onu_count',
+            'cached_online_count',
+            'cached_offline_count',
+            'cached_counts_at',
         }
 
     def create(self, validated_data):

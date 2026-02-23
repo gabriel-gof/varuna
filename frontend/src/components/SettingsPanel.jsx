@@ -214,6 +214,9 @@ const getSnmpBadge = (olt, t) => {
   return { label: t('Checking'), color: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500', dot: 'bg-slate-300 dark:bg-slate-600' }
 }
 
+const MAINTENANCE_ACTIVE_STATUSES = new Set(['queued', 'running'])
+const isMaintenanceJobActive = (job) => Boolean(job && MAINTENANCE_ACTIVE_STATUSES.has(job.status))
+
 /* ─── OLT Card header ─── */
 
 const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy, resolvedVendor, t, children }) => {
@@ -249,7 +252,7 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy,
             {olt.name || '\u2014'}
           </p>
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-black text-slate-700 dark:text-slate-300 tabular-nums">{total} <span className="text-[9px] uppercase font-bold text-slate-400 dark:text-slate-500">ONUs</span></span>
+            <span className="text-[11px] font-black text-slate-700 dark:text-slate-300 tabular-nums">{total} <span className="text-[9px] uppercase font-bold text-slate-400 dark:text-slate-500">{t('ONUs')}</span></span>
             <span className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
             <div className="flex items-center gap-1">
               <span className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">{online}</span>
@@ -412,6 +415,7 @@ export const SettingsPanel = ({
   onRunPolling,
   onRefreshPower,
   actionBusy,
+  maintenanceJobsByOlt = {},
   oltHealthById = {}
 }) => {
   const { t } = useTranslation()
@@ -1099,6 +1103,12 @@ export const SettingsPanel = ({
               : false
             const cardDirty = cardFormDirty || cardThresholdDirty
             const cardIsOverride = hasOltOverride(oltId)
+            const maintenanceJob = maintenanceJobsByOlt?.[oltId]
+            const maintenanceActive = isMaintenanceJobActive(maintenanceJob)
+            const maintenancePercent = maintenanceJob
+              ? Math.max(0, Math.min(100, Number(maintenanceJob.progress || 0)))
+              : 0
+            const maintenanceDetail = maintenanceJob?.detail || ''
 
             return (
               <div key={olt.id}>
@@ -1234,7 +1244,8 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => handleDiscovery(olt.id)}
-                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5"
+                                disabled={maintenanceActive}
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:dark:hover:text-slate-500 disabled:hover:bg-transparent"
                               >
                                 <span>{t('Run')}</span>
                               </button>
@@ -1257,7 +1268,8 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => onRunPolling?.(olt.id)}
-                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5"
+                                disabled={maintenanceActive}
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:dark:hover:text-slate-500 disabled:hover:bg-transparent"
                               >
                                 <span>{t('Run')}</span>
                               </button>
@@ -1280,7 +1292,8 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => onRefreshPower?.(olt.id)}
-                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5"
+                                disabled={maintenanceActive}
+                                className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:dark:hover:text-slate-500 disabled:hover:bg-transparent"
                               >
                                 <span>{t('Run')}</span>
                               </button>
@@ -1339,6 +1352,30 @@ export const SettingsPanel = ({
                       </div>
                     )}
 
+                    {maintenanceActive && (
+                      <div className="space-y-1.5 py-2 px-2 bg-slate-50/90 dark:bg-slate-800/40 rounded-lg border border-slate-200/70 dark:border-slate-700/60 animate-in fade-in duration-200">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            {t('Maintenance in progress')}
+                          </span>
+                          <span className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                            {Math.round(maintenancePercent)}%
+                          </span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-emerald-500 transition-[width] duration-300"
+                            style={{ width: `${maintenancePercent}%` }}
+                          />
+                        </div>
+                        {maintenanceDetail && (
+                          <p className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                            {maintenanceDetail}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     {/* ── Action bar ── */}
                     <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700/30">
                       {/* Left: info */}
@@ -1363,7 +1400,7 @@ export const SettingsPanel = ({
                             <button
                               type="button"
                               onClick={() => handleUpdate(oltId)}
-                              disabled={localUpdateBusy || !cardDirty}
+                              disabled={localUpdateBusy || !cardDirty || maintenanceActive}
                               className="h-7 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all active:scale-95 whitespace-nowrap"
                             >
                               {localUpdateBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}

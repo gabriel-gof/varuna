@@ -14,6 +14,7 @@ from topology.models import OLT, ONU, ONULog
 from topology.services.cache_service import cache_service
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.snmp_service import snmp_service
+from topology.services.topology_counter_service import topology_counter_service
 from topology.services.vendor_profile import map_disconnect_reason, map_status_code
 
 
@@ -607,6 +608,10 @@ class Command(BaseCommand):
                 if onus_to_update:
                     ONU.objects.bulk_update(onus_to_update, ['status'])
                 self._mark_poll_result(olt, now)
+            try:
+                topology_counter_service.refresh_olt(olt.id)
+            except Exception:
+                logger.exception("OLT %s polling: failed to refresh cached topology counters.", olt.id)
 
         self.stdout.write(
             f"OLT {olt.id}: polled {updated} ONUs "

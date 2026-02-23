@@ -58,6 +58,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - `OLTSlot` and `OLTPON`: discovered topology map.
 - `ONU`: per-OLT endpoint with active/inactive lifecycle and status.
 - `ONULog`: offline event history and disconnect reasons.
+- `MaintenanceJob`: persistent OLT-scoped maintenance queue/progress state for manual discovery/polling/power actions.
 
 ## Key Backend Flows
 ### 1. Discovery (`discover_onus`)
@@ -85,6 +86,13 @@ When to split into dedicated `discovery` and `poller` workers:
 - Polling, discovery, and power collection skip OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
 - Frontend derives OLT health from backend fields (`snmp_reachable`, `snmp_failure_count >= 2`) and renders unreachable OLT nodes as gray.
 - ONU state is preserved during hard SNMP outages to avoid false state corruption.
+
+## Manual Maintenance Queue
+- Manual settings actions (`run_discovery`, `run_polling`, `refresh_power` with `background=true`) enqueue `MaintenanceJob` rows in PostgreSQL.
+- Queue is serialized per OLT (single active job across discovery/polling/power) to prevent concurrent SNMP bursts against the same OLT.
+- A backend in-process runner claims queued jobs with row locking and updates progress/status (`queued -> running -> completed|failed|canceled`).
+- Frontend polls `GET /api/olts/{id}/maintenance_status/` for durable progress, so in-flight visibility does not depend on in-memory API view state.
+- `snmp_check` "busy" behavior now derives from active `MaintenanceJob` rows, avoiding false unreachable markings while maintenance is running.
 
 ## Role-Based Access Control
 - Users have roles (`admin`, `operator`, `viewer`) via `UserProfile.role`.

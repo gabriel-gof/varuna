@@ -9,9 +9,10 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from topology.models import OLT, OLTSlot, OLTPON, ONU
+from topology.models import OLT, OLTSlot, OLTPON, ONU, ONULog
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.snmp_service import snmp_service
+from topology.services.topology_counter_service import topology_counter_service
 from topology.services.vendor_profile import map_status_code, parse_onu_index
 
 
@@ -440,6 +441,7 @@ class Command(BaseCommand):
                 "name": name,
                 "serial": serial,
                 "status": mapped["status"],
+                "reason": mapped.get("reason", ""),
             })
 
         # Total index-parse failure guard: SNMP returned ONUs but none could be
@@ -547,6 +549,50 @@ class Command(BaseCommand):
                         batch_size=500,
                     )
 
+                # Create ONULog entries for offline ONUs discovered without an open log.
+                # This ensures first-discovery on vendors like FiberHome (where status_map
+                # encodes the disconnect reason directly) shows the correct reason in the
+                # topology view without waiting for a polling cycle.
+                offline_reason_map: Dict[int, str] = {}
+                created_onu_map: Dict[tuple, int] = {}
+                if to_create:
+                    for onu in created_onus:
+                        created_onu_map[(onu.slot_id, onu.pon_id, onu.onu_id)] = onu.id
+                for entry in parsed_onus:
+                    if entry["status"] != ONU.STATUS_OFFLINE or not entry.get("reason"):
+                        continue
+                    identity = entry["identity"]
+                    key = (identity["slot_id"], identity["pon_id"], identity["onu_id"])
+                    existing_info = existing_lookup.get(key)
+                    onu_db_id = existing_info["id"] if existing_info else created_onu_map.get(key)
+                    if onu_db_id:
+                        offline_reason_map[onu_db_id] = entry["reason"]
+
+                if offline_reason_map:
+                    already_open = set(
+                        ONULog.objects.filter(
+                            onu_id__in=offline_reason_map.keys(),
+                            offline_until__isnull=True,
+                        ).values_list("onu_id", flat=True)
+                    )
+                    now_ts = timezone.now()
+                    new_logs = [
+                        ONULog(
+                            onu_id=onu_id,
+                            offline_since=now_ts,
+                            disconnect_reason=reason,
+                        )
+                        for onu_id, reason in offline_reason_map.items()
+                        if onu_id not in already_open
+                    ]
+                    if new_logs:
+                        ONULog.objects.bulk_create(new_logs)
+                        logger.info(
+                            "OLT %s discovery: created %d ONULog entries for offline ONUs",
+                            olt.id,
+                            len(new_logs),
+                        )
+
             deactivate_missing = bool(discovery_cfg.get('deactivate_missing', True))
             stale_onus = stale_slots = stale_pons = 0
             waiting_onus = waiting_slots = waiting_pons = 0
@@ -594,6 +640,10 @@ class Command(BaseCommand):
 
         if not dry_run:
             mark_olt_reachable(olt)
+            try:
+                topology_counter_service.refresh_olt(olt.id)
+            except Exception:
+                logger.exception("OLT %s discovery: failed to refresh cached topology counters.", olt.id)
 
         # Discovery is unhealthy when SNMP returned indices but none parsed
         all_skipped = indices and skipped == len(indices)

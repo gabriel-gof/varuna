@@ -43,12 +43,15 @@ The UI remains topology-first. No dashboard page is required for current product
 - The UI renders a visual gradient bar showing the three zones relative to the current input.
 
 ## Live Data Flow
-- Fetch OLTs with topology (`/api/olts/?include_topology=true`).
+- Topology view fetches OLTs with topology (`/api/olts/?include_topology=true`).
+- Settings view prefers lightweight OLT fetches (`/api/olts/`) and preserves previously loaded topology trees in memory, reducing save/action latency on large deployments.
 - Refresh periodically.
 - OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable when `snmp_reachable === false` and `snmp_failure_count >= 2`.
 - Render unreachable or stale OLT nodes in gray.
 - When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and offline red-hyphen indicators are all forced to gray to signal that displayed data may be outdated.
 - `loading` is only `true` during the initial fetch when no OLT data exists. Background refreshes silently update `olts` state without toggling `loading`, keeping the topology tree mounted. If a background refresh fails, existing data is preserved.
+- `fetchOlts` uses request deduplication per request shape (`topology` vs `base`) to avoid redundant loads when multiple triggers fire simultaneously (30s poll timer + settings action + resume-on-focus).
+- Settings mutations (`updateOlt`, `deleteOlt`) trigger `fetchOlts` without `await`, so the success toast shows immediately and the topology refreshes silently in the background (same pattern as `createOlt`).
 - Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
 - Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads.
@@ -140,9 +143,12 @@ The UI remains topology-first. No dashboard page is required for current product
 - Error and success messages render in normal document flow between the tab content area and the action bar, with a translucent backdrop blur. They do not overlay tab content (e.g. threshold inputs). Auto-dismiss after 5 seconds.
 - Manual interval action buttons (`Run` for discovery/polling/power) are non-blocking:
   - Request payload includes `{ background: true }`.
-  - UI shows immediate inline acknowledgment and does not wait for command completion.
+  - API returns persistent job metadata (`job.id`, `status`, `progress`, `detail`).
+  - UI shows immediate inline acknowledgment and starts progress polling via `GET /api/olts/:id/maintenance_status/` every 2 seconds while job is active.
+  - Run buttons and Save button are disabled while a queued/running maintenance job exists for that OLT.
+  - Each expanded card renders a live progress bar with percent + backend detail text.
   - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend translates known backend messages via `translateBackendMessage()`, preferring its own translated strings for queued action responses.
-  - Run buttons do not show per-button loading animation for these long-running operations.
+  - On terminal job state (`completed`/`failed`/`canceled`), frontend refreshes OLT data and surfaces result feedback inline.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 
 ## Settings API Contract Expectations
@@ -219,6 +225,10 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Missing Serial Highlighting
 - ONUs with missing or empty serial numbers are highlighted with a red background in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
 - This draws attention to ONUs that may need re-registration or have incomplete SNMP discovery data.
+
+## Adaptive Name Column
+- The Name column in the PON sidebar (both status and power tabs, desktop and mobile) is automatically hidden when no ONU in the selected PON has a real name (i.e. `client_name` and `name` are both empty).
+- This applies to vendors like Fiberhome where SNMP does not expose ONU names. Column space is redistributed to Serial, Status/Power, and Desconexão/Leitura columns.
 
 ## Mobile UX
 - Viewport meta includes `viewport-fit=cover, maximum-scale=1.0, user-scalable=no` to prevent zoom and handle safe areas on notched devices.
