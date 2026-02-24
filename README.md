@@ -16,22 +16,31 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 
 Manual maintenance actions (discovery, polling, power refresh) are queued as persistent backend jobs with progress tracking (`MaintenanceJob`), so long-running operations are observable and resilient to transient API process restarts.
 
-## Multi-Client Direction (Future-Ready)
+## Multi-Instance Production
 - Current codebase is single-tenant at application level (no tenant isolation in backend models/API).
-- Current dev default is still one local stack from `docker-compose.dev.yml`; this section defines expansion direction.
-- Recommended growth path is one isolated Varuna stack per client:
-  - `frontend + backend + db + redis` per client
-  - isolated Docker Compose project name per client (`-p`)
-  - isolated database/Redis data and credentials per client
-- Multiple stacks can run on the same host when host port bindings are unique per stack.
-- In production, place one reverse proxy in front and route by subdomain (`client-a.varuna.example`, `client-b.varuna.example`).
-- Keep PostgreSQL/Redis internal-only for each stack (no public exposure unless explicitly required).
+- Multi-client hosting is stack-level isolation: one `frontend + backend + db + redis` stack per client.
+- `docker-compose.prod.yml` now supports per-instance overrides through env vars:
+  - `VARUNA_ENV_FILE` (container env file used by `db` and `backend`)
+  - `VARUNA_FRONTEND_HTTP_HOST_PORT`
+  - `VARUNA_FRONTEND_HTTPS_HOST_PORT`
+  - `VARUNA_BACKEND_HOST_PORT`
+  - `VARUNA_TLS_CERTS_DIR`
+- Always use a unique Compose project name (`-p varuna_<client>`) per instance.
 
-Example (same machine, two client stacks):
+Example (same host, second production instance):
 ```bash
-docker compose -p varuna_client_a -f docker-compose.dev.yml up -d --build
-docker compose -p varuna_client_b -f docker-compose.dev.yml -f docker-compose.client-b.dev.yml up -d --build
+cd /Users/gabriel/Documents/varuna
+cp docker/prod.env docker/prod.client-b.env
+# Edit docker/prod.client-b.env:
+# - VARUNA_ENV_FILE=docker/prod.client-b.env
+# - unique ports (for example 18080/18443/18081)
+# - unique DB credentials/name
+# - domain/host settings (ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, SERVER_NAME, SERVER_ALIASES)
+
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml up -d --build
 ```
+
+Use one host-level reverse proxy/load balancer to route subdomains to each instance's frontend host ports.
 
 ## Naming
 - Database (PostgreSQL) can be `varuna_dev` / `varuna_prod` (configured by `POSTGRES_DB`).

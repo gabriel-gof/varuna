@@ -33,6 +33,15 @@ Container/runtime health:
   - unique project name,
   - unique host port bindings,
   - isolated env vars/secrets.
+- `docker-compose.prod.yml` is instance-parameterized via:
+  - `VARUNA_ENV_FILE` (env file injected into `db` and `backend`),
+  - `VARUNA_FRONTEND_HTTP_HOST_PORT`,
+  - `VARUNA_FRONTEND_HTTPS_HOST_PORT`,
+  - `VARUNA_BACKEND_HOST_PORT`,
+  - `VARUNA_TLS_CERTS_DIR`.
+- Each instance should run with both:
+  - a dedicated compose project namespace (`docker compose -p varuna_<client> ...`),
+  - a dedicated env file passed with `--env-file` (and `VARUNA_ENV_FILE` pointing to that same file).
 - Typical shared infrastructure components are:
   - reverse proxy (host-level ingress),
   - host monitoring/log shipping.

@@ -30,41 +30,54 @@ Development service URLs:
 Production:
 ```bash
 cd /Users/gabriel/Documents/varuna
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose -p varuna --env-file docker/prod.env -f docker-compose.prod.yml up -d --build
 ```
 
-## Multi-Instance Direction (Per Client)
-Use one Compose stack per client when serving different OLT fleets.
-This is a deployment direction guide; current dev default remains the single-stack `docker-compose.dev.yml` flow.
+## Multi-Instance Production (Per Client)
+Use one production Compose stack per client when serving different OLT fleets.
 
 Core rules:
 - one project name per client (`-p varuna_<client>`),
-- one env file per client (DB name, credentials, secrets),
+- one env file per client (DB name, credentials, secrets, hostnames, and compose overrides),
 - one port mapping set per client for frontend/backend,
 - one dedicated PostgreSQL/Redis data set per client.
 
-Example (same host):
+`docker-compose.prod.yml` reads these instance-specific compose variables:
+- `VARUNA_ENV_FILE`
+- `VARUNA_FRONTEND_HTTP_HOST_PORT`
+- `VARUNA_FRONTEND_HTTPS_HOST_PORT`
+- `VARUNA_BACKEND_HOST_PORT`
+- `VARUNA_TLS_CERTS_DIR`
+
+Bring up a second instance on the same host:
 ```bash
 cd /Users/gabriel/Documents/varuna
-docker compose -p varuna_client_a --env-file docker/client-a.env -f docker-compose.dev.yml up -d --build
-docker compose -p varuna_client_b --env-file docker/client-b.env -f docker-compose.dev.yml -f docker-compose.client-b.dev.yml up -d --build
+cp docker/prod.env docker/prod.client-b.env
 ```
 
-Typical client override file (`docker-compose.client-b.dev.yml`) should only remap host ports:
-```yaml
-services:
-  frontend:
-    ports:
-      - "4100:4000"
-  backend:
-    ports:
-      - "8100:8000"
-  db:
-    ports:
-      - "5433:5432"
-  redis:
-    ports:
-      - "6380:6379"
+Edit `docker/prod.client-b.env`:
+- `VARUNA_ENV_FILE=docker/prod.client-b.env`
+- unique host ports (for example `VARUNA_FRONTEND_HTTP_HOST_PORT=18080`, `VARUNA_FRONTEND_HTTPS_HOST_PORT=18443`, `VARUNA_BACKEND_HOST_PORT=18081`)
+- unique DB identity (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`)
+- per-instance hostnames (`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `SERVER_NAME`, `SERVER_ALIASES`)
+- TLS mount base when needed (`VARUNA_TLS_CERTS_DIR`)
+
+Start instance:
+```bash
+cd /Users/gabriel/Documents/varuna
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml up -d --build
+```
+
+Daily operations for one instance:
+```bash
+# logs
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml logs -f
+
+# restart / recreate after env edits
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml up -d --build --force-recreate
+
+# stop
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml down
 ```
 
 Operational recommendations:
