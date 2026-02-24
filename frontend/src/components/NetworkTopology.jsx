@@ -786,7 +786,7 @@ export const NetworkTopology = ({
             }}
             className={`h-9 w-9 flex items-center justify-center rounded-lg border bg-white dark:bg-slate-800 shadow-sm transition-colors ${
               selectedOltIds.length < olts.length || oltFilterOpen
-                ? 'border-emerald-400 dark:border-emerald-500 text-emerald-600 dark:text-emerald-400'
+                ? 'border-slate-200/80 dark:border-slate-700 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                 : 'border-slate-200/80 dark:border-slate-700 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
@@ -936,7 +936,7 @@ export const NetworkTopology = ({
           onClick={() => setShowPonCounts((prev) => !prev)}
           className={`h-9 w-9 flex items-center justify-center rounded-lg border bg-white dark:bg-slate-800 shadow-sm transition-colors shrink-0 ${
             showPonCounts
-              ? 'border-emerald-400 dark:border-emerald-500 text-emerald-600 dark:text-emerald-400'
+              ? 'border-slate-200/80 dark:border-slate-700 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
               : 'border-slate-200/80 dark:border-slate-700 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
@@ -952,7 +952,7 @@ export const NetworkTopology = ({
             }}
             className={`h-9 w-9 flex items-center justify-center rounded-lg border bg-white dark:bg-slate-800 shadow-sm transition-colors shrink-0 ${
               alarmEnabled
-                ? 'border-rose-400 dark:border-rose-500 text-rose-600 dark:text-rose-400'
+                ? 'border-slate-200/80 dark:border-slate-700 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400'
                 : 'border-slate-200/80 dark:border-slate-700 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
