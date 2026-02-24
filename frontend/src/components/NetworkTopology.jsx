@@ -380,6 +380,7 @@ export const NetworkTopology = ({
   const searchContainerRef = useRef(null)
   const oltFilterContainerRef = useRef(null)
   const alarmMenuContainerRef = useRef(null)
+  const hasInitializedDefaultExpansionRef = useRef(false)
   const normalizedSearchTerm = normalizeSearch(searchTerm)
 
   useEffect(() => {
@@ -391,8 +392,10 @@ export const NetworkTopology = ({
   }, [selectedSearchMatch])
 
   useEffect(() => {
-    if (!olts.length) return
+    if (!olts.length || hasInitializedDefaultExpansionRef.current) return
     setOpenNodes((prev) => {
+      // Apply default expansion only once per component mount.
+      hasInitializedDefaultExpansionRef.current = true
       if (Object.keys(prev).length) return prev
       const firstOlt = olts[0]
       const firstSlot = asList(firstOlt?.slots)[0]
