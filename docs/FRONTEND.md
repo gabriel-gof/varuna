@@ -187,6 +187,7 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Toolbar Layout
 - All five toolbar controls (filter, search, collapse, counters, alarm) render in a single row on all breakpoints.
+- The toolbar is sticky (`sticky top-0`) with a solid background (`bg-white dark:bg-slate-950`) and a subtle bottom border so it stays readable while scrolling through long OLT/slot lists.
 - Collapse, counters, and alarm buttons are icon-only (`h-9 w-9`) on all breakpoints. Tooltips provide labels on hover.
 - The search input takes remaining space (`flex-1 min-w-0`) on mobile, capped at `lg:max-w-[268px]` on desktop.
 - Filter and search dropdowns open downward (`top-11`) on all breakpoints.
@@ -248,6 +249,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Viewport meta includes `viewport-fit=cover, maximum-scale=1.0, user-scalable=no` to prevent zoom and handle safe areas on notched devices.
 - Input, select, and textarea elements are forced to 16px font on mobile (`max-width: 1023px`) to prevent iOS Safari auto-zoom on focus.
 - Search input uses `text-base md:text-[11px]` for readable font on mobile while keeping compact desktop sizing.
+- SettingsPanel inputs use the `text-compact` CSS class to opt out of the global 16px `!important` mobile override, keeping compact 11px/12px sizing on all viewports. The viewport meta (`maximum-scale=1.0, user-scalable=no`) already prevents iOS auto-zoom.
 - Layout uses `h-[100dvh] min-h-[100dvh]` instead of `h-screen` for correct mobile viewport height on Safari.
 
 ## Status Tab Refresh

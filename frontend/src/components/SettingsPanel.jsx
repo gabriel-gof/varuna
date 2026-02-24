@@ -107,7 +107,7 @@ const FieldInput = React.forwardRef(({ className = '', ...props }, ref) => (
     ref={ref}
     {...props}
     className={`h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
-      text-[11px] font-semibold text-slate-800 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600
+      text-[11px] text-compact font-semibold text-slate-800 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600
       focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all
       [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${className}`}
   />
@@ -127,7 +127,7 @@ const FieldSelect = ({ value, onChange, options = [], disabled, className = '' }
         <button
           ref={triggerRef}
           className={`group h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
-            text-[11px] font-semibold text-slate-800 dark:text-slate-200
+            text-[11px] text-compact font-semibold text-slate-800 dark:text-slate-200
             focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all
             disabled:opacity-50 disabled:cursor-not-allowed
             flex items-center justify-center relative ${className}`}
@@ -346,7 +346,7 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    onChange={handleChange}
                    onBlur={handleBlur}
                    className="w-full h-7 pl-6 pr-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
-                              text-[12px] font-black text-slate-700 dark:text-slate-200 text-center tracking-tight shadow-sm
+                              text-[12px] text-compact font-black text-slate-700 dark:text-slate-200 text-center tracking-tight shadow-sm
                               focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 outline-none transition-all"
                    placeholder="-25"
                 />
@@ -893,7 +893,7 @@ export const SettingsPanel = ({
                                 </label>
                                 <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                                   <input
-                                    className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                    className="w-16 h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                     value={form.discovery_interval}
                                     onChange={(e) => setField('discovery_interval', e.target.value)}
                                     placeholder="5h"
@@ -913,7 +913,7 @@ export const SettingsPanel = ({
                                 </label>
                                 <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                                   <input
-                                    className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                    className="w-16 h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                     value={form.polling_interval}
                                     onChange={(e) => setField('polling_interval', e.target.value)}
                                     placeholder="5m"
@@ -932,7 +932,7 @@ export const SettingsPanel = ({
                                 </label>
                                 <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                                   <input
-                                    className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                    className="w-16 h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                     value={form.power_interval}
                                     onChange={(e) => setField('power_interval', e.target.value)}
                                     placeholder="1d"
@@ -1181,7 +1181,7 @@ export const SettingsPanel = ({
                             </label>
                             <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
-                                className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                className="w-16 h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={cardEditForm.discovery_interval}
                                 onChange={(e) => setEditField(oltId, 'discovery_interval', e.target.value)}
                                 placeholder="5h"
@@ -1204,7 +1204,7 @@ export const SettingsPanel = ({
                             </label>
                             <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
-                                className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                className="w-16 h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={cardEditForm.polling_interval}
                                 onChange={(e) => setEditField(oltId, 'polling_interval', e.target.value)}
                                 placeholder="5m"
@@ -1227,7 +1227,7 @@ export const SettingsPanel = ({
                             </label>
                             <div className="flex items-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
                               <input
-                                className="w-16 h-7 bg-transparent text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                className="w-16 h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
                                 value={cardEditForm.power_interval}
                                 onChange={(e) => setEditField(oltId, 'power_interval', e.target.value)}
                                 placeholder="1d"

@@ -765,8 +765,8 @@ export const NetworkTopology = ({
   }
 
   return (
-    <div className="flex flex-col w-full h-full pt-8">
-      <div className="flex items-center gap-1.5 lg:gap-2 mb-8 px-4 lg:px-10">
+    <div className="flex flex-col w-full h-full">
+      <div className="sticky top-0 z-20 flex items-center gap-1.5 lg:gap-2 px-4 lg:px-10 pt-8 pb-4 mb-4 bg-white dark:bg-slate-950 border-b border-slate-100 dark:border-slate-800/60">
         <div ref={oltFilterContainerRef} className="relative shrink-0">
           <button
             title={t('Filter OLTs')}
@@ -861,7 +861,7 @@ export const NetworkTopology = ({
           )}
         </div>
 
-        <div ref={searchContainerRef} className="relative flex-1 min-w-0 max-w-[260px] lg:max-w-[268px]">
+        <div ref={searchContainerRef} className="relative flex-1 min-w-0 lg:max-w-[268px]">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 dark:text-slate-500" />
           <input
             type="text"
@@ -869,7 +869,7 @@ export const NetworkTopology = ({
             value={searchTerm}
             onFocus={() => setSearchFocused(true)}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl pl-9 pr-8 text-base md:text-[11px] font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl pl-9 pr-8 text-[11px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
           />
 
           {searchTerm && (
@@ -1023,7 +1023,7 @@ export const NetworkTopology = ({
                       onBlur={() => {
                         setAlarmMinCountInput(String(clampAlarmMinCount(alarmMinCountInput)))
                       }}
-                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] font-bold leading-none text-slate-700 dark:text-slate-200"
+                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] text-compact font-bold leading-none text-slate-700 dark:text-slate-200"
                     />
                     <div className="h-9 w-8 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col">
                       <button
@@ -1097,27 +1097,29 @@ export const NetworkTopology = ({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-start gap-12 px-4 lg:px-10 pb-40 animate-in fade-in duration-500">
-        {loading && (
-              <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</div>
-        )}
-        {error && (
-          <div className="text-[12px] font-bold text-rose-500 uppercase tracking-widest">{error}</div>
-        )}
-        {!loading && !error && filteredOlts.map((olt) => renderOlt(olt))}
+      <div className="flex-1 mx-3 lg:mx-8 mb-6 rounded-2xl border border-slate-200/70 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-900/30">
+        <div className="flex flex-wrap items-start gap-12 p-4 lg:p-8 pb-40 animate-in fade-in duration-500">
+          {loading && (
+                <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</div>
+          )}
+          {error && (
+            <div className="text-[12px] font-bold text-rose-500 uppercase tracking-widest">{error}</div>
+          )}
+          {!loading && !error && filteredOlts.map((olt) => renderOlt(olt))}
 
-        {!loading && !error && filteredOlts.length === 0 && (
-          <div className="flex flex-col items-center justify-center w-full py-20 text-slate-300">
-            <Search className="w-16 h-16 mb-4 opacity-10" />
-            <p className="text-[12px] font-black uppercase tracking-[0.2em]">
-              {normalizedSearchTerm
-                ? t('No equipment matches your search')
-                : alarmEnabled
-                  ? t('No PON matches alarm filter')
-                  : t('No OLTs found')}
-            </p>
-          </div>
-        )}
+          {!loading && !error && filteredOlts.length === 0 && (
+            <div className="flex flex-col items-center justify-center w-full py-20 text-slate-300">
+              <Search className="w-16 h-16 mb-4 opacity-10" />
+              <p className="text-[12px] font-black uppercase tracking-[0.2em]">
+                {normalizedSearchTerm
+                  ? t('No equipment matches your search')
+                  : alarmEnabled
+                    ? t('No PON matches alarm filter')
+                    : t('No OLTs found')}
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
