@@ -169,10 +169,11 @@ const aggregateStats = (entity, level) => {
   const children = level === 'olt'
     ? asList(entity?.slots).filter(isActiveEntity).flatMap((slot) => asList(slot?.pons).filter(isActiveEntity))
     : asList(entity?.pons).filter(isActiveEntity)
-  const totals = { total: 0, offline: 0, linkLoss: 0, dyingGasp: 0, unknown: 0 }
+  const totals = { total: 0, online: 0, offline: 0, linkLoss: 0, dyingGasp: 0, unknown: 0 }
   children.forEach((pon) => {
     const s = pon?.stats || getOnuStats(pon?.onus || [])
     totals.total += asCount(s.total)
+    totals.online += asCount(s.online)
     totals.offline += asCount(s.offline)
     totals.linkLoss += asCount(s.linkLoss)
     totals.dyingGasp += asCount(s.dyingGasp)
@@ -198,6 +199,35 @@ const getOltHealthState = (olt, selectedReasons) => {
   return 'green'
 }
 
+
+const CounterDisplay = ({ counters }) => {
+  const sep = <span className="text-slate-400 dark:text-slate-500">{' / '}</span>
+  const breakdown = [
+    asCount(counters.online) > 0 && <span key="on" className="text-emerald-600 dark:text-emerald-400">{asCount(counters.online)}</span>,
+    asCount(counters.linkLoss) > 0 && <span key="ll" className="text-rose-600 dark:text-rose-400">{asCount(counters.linkLoss)}</span>,
+    asCount(counters.dyingGasp) > 0 && <span key="dg" className="text-blue-600 dark:text-blue-400">{asCount(counters.dyingGasp)}</span>,
+    asCount(counters.unknown) > 0 && <span key="un" className="text-purple-600 dark:text-purple-400">{asCount(counters.unknown)}</span>,
+  ].filter(Boolean)
+  return (
+    <div className="flex items-center gap-2 text-[10px] font-bold tabular-nums leading-none whitespace-nowrap shrink-0">
+      {breakdown.length > 0 && (
+        <>
+          <span>{breakdown.reduce((acc, el, i) => i === 0 ? [el] : [...acc, <span key={`s${i}`} className="text-slate-400 dark:text-slate-500">{' / '}</span>, el], [])}</span>
+          <span className="w-px h-2.5 bg-slate-300 dark:bg-slate-600" />
+        </>
+      )}
+      <span>
+        <span className="text-slate-600 dark:text-slate-300">{asCount(counters.total)}</span>
+        {asCount(counters.offline) > 0 && (
+          <>
+            {sep}
+            <span className="text-amber-600 dark:text-amber-400">{asCount(counters.offline)}</span>
+          </>
+        )}
+      </span>
+    </div>
+  )
+}
 
 const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel, alertCount, healthState = 'green', counters }) => {
   const isVisualActive = type === 'pon' ? active : isOpen
@@ -280,29 +310,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       </div>
 
       {counters && (
-        <div className="flex items-center gap-2 text-[10px] font-bold tabular-nums leading-none whitespace-nowrap shrink-0">
-          {counters.linkLoss != null && asCount(counters.offline) > 0 && (
-            <>
-              <span>
-                {asCount(counters.linkLoss) > 0 && <span className="text-rose-600 dark:text-rose-400">{asCount(counters.linkLoss)}</span>}
-                {asCount(counters.linkLoss) > 0 && asCount(counters.dyingGasp) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
-                {asCount(counters.dyingGasp) > 0 && <span className="text-blue-600 dark:text-blue-400">{asCount(counters.dyingGasp)}</span>}
-                {(asCount(counters.linkLoss) > 0 || asCount(counters.dyingGasp) > 0) && asCount(counters.unknown) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
-                {asCount(counters.unknown) > 0 && <span className="text-purple-600 dark:text-purple-400">{asCount(counters.unknown)}</span>}
-              </span>
-              <span className="w-px h-2.5 bg-slate-300 dark:bg-slate-600" />
-            </>
-          )}
-          <span>
-            <span className="text-slate-600 dark:text-slate-300">{asCount(counters.total)}</span>
-            {asCount(counters.offline) > 0 && (
-              <>
-                <span className="text-slate-400 dark:text-slate-500">{' / '}</span>
-                <span className="text-amber-600 dark:text-amber-400">{asCount(counters.offline)}</span>
-              </>
-            )}
-          </span>
-        </div>
+        <CounterDisplay counters={counters} />
       )}
       </div>
 
@@ -766,8 +774,9 @@ export const NetworkTopology = ({
   }
 
   return (
-    <div className="flex flex-col w-full h-full">
-      <div className="sticky top-0 z-20 flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-4 pb-4 bg-white dark:bg-slate-950">
+    <div className="flex flex-col w-full min-h-full bg-slate-100 dark:bg-slate-950">
+      <div className="sticky top-0 z-20">
+      <div className="flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-4 pb-4 bg-slate-100 dark:bg-slate-950">
         <div ref={oltFilterContainerRef} className="relative shrink-0">
           <button
             title={t('Filter OLTs')}
@@ -775,10 +784,10 @@ export const NetworkTopology = ({
               setOltFilterOpen((prev) => !prev)
               setAlarmMenuOpen(false)
             }}
-            className={`h-9 w-9 flex items-center justify-center rounded-xl border bg-slate-50 dark:bg-slate-900 shadow-sm transition-colors ${
+            className={`h-9 w-9 flex items-center justify-center rounded-lg border bg-white dark:bg-slate-800 shadow-sm transition-colors ${
               selectedOltIds.length < olts.length || oltFilterOpen
                 ? 'border-emerald-400 dark:border-emerald-500 text-emerald-600 dark:text-emerald-400'
-                : 'border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
+                : 'border-slate-200/80 dark:border-slate-700 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
             <Filter className="w-3.5 h-3.5" />
@@ -862,7 +871,7 @@ export const NetworkTopology = ({
           )}
         </div>
 
-        <div ref={searchContainerRef} className="relative flex-1 min-w-0 lg:max-w-[268px]">
+        <div ref={searchContainerRef} className="relative flex-1 min-w-0 max-w-[200px] lg:max-w-[268px]">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 dark:text-slate-500" />
           <input
             type="text"
@@ -870,7 +879,7 @@ export const NetworkTopology = ({
             value={searchTerm}
             onFocus={() => setSearchFocused(true)}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-9 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl pl-9 pr-8 text-[11px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+            className="h-9 w-full bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-lg pl-9 pr-8 text-[11px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
           />
 
           {searchTerm && (
@@ -917,18 +926,18 @@ export const NetworkTopology = ({
         <button
           title={t('Collapse')}
           onClick={collapseAllNodes}
-          className="h-9 w-9 flex items-center justify-center rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-900 shadow-sm text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors shrink-0"
+          className="h-9 w-9 flex items-center justify-center rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors shrink-0"
         >
-          <svg className="w-4 h-4" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
+          <svg className="w-[18px] h-[18px]" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
         </button>
 
         <button
           title={t('Counters')}
           onClick={() => setShowPonCounts((prev) => !prev)}
-          className={`h-9 w-9 flex items-center justify-center rounded-xl border bg-slate-50 dark:bg-slate-900 shadow-sm transition-colors shrink-0 ${
+          className={`h-9 w-9 flex items-center justify-center rounded-lg border bg-white dark:bg-slate-800 shadow-sm transition-colors shrink-0 ${
             showPonCounts
               ? 'border-emerald-400 dark:border-emerald-500 text-emerald-600 dark:text-emerald-400'
-              : 'border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
+              : 'border-slate-200/80 dark:border-slate-700 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <Sigma className="w-3.5 h-3.5" />
@@ -941,10 +950,10 @@ export const NetworkTopology = ({
               setAlarmMenuOpen((prev) => !prev)
               setOltFilterOpen(false)
             }}
-            className={`h-9 w-9 flex items-center justify-center rounded-xl border bg-slate-50 dark:bg-slate-900 shadow-sm transition-colors shrink-0 ${
+            className={`h-9 w-9 flex items-center justify-center rounded-lg border bg-white dark:bg-slate-800 shadow-sm transition-colors shrink-0 ${
               alarmEnabled
                 ? 'border-rose-400 dark:border-rose-500 text-rose-600 dark:text-rose-400'
-                : 'border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
+                : 'border-slate-200/80 dark:border-slate-700 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
             <Bell className="w-3.5 h-3.5" />
@@ -983,7 +992,7 @@ export const NetworkTopology = ({
                       w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-colors
                       ${isSelected
                         ? 'bg-slate-50/80 border-slate-200 dark:bg-slate-800 dark:border-slate-700'
-                        : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300 dark:bg-slate-900/40 dark:border-slate-700/50 dark:hover:bg-slate-800 dark:hover:border-slate-700'}
+                        : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300 dark:bg-slate-950 dark:border-slate-700/50 dark:hover:bg-slate-800 dark:hover:border-slate-700'}
                     `}
                   >
                     <span className="h-4 w-4 shrink-0 flex items-center justify-center">
@@ -1097,8 +1106,10 @@ export const NetworkTopology = ({
         </div>
         </div>
       </div>
+      <div className="h-8 -mb-8 bg-gradient-to-b from-slate-100 to-transparent dark:from-slate-950 pointer-events-none" aria-hidden="true" />
+      </div>
 
-      <div className="flex-1 mx-3 lg:mx-8 bg-slate-100 dark:bg-slate-900/40 overflow-y-auto">
+      <div className="flex-1 px-3 lg:px-8">
         <div className="flex flex-wrap items-start gap-x-10 gap-y-6 p-4 lg:p-8 pb-10 animate-in fade-in duration-500">
           {loading && (
                 <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</div>

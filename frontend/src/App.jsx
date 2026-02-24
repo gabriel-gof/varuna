@@ -1353,13 +1353,16 @@ const App = () => {
     if (!selectedPonId || String(selectedSearchMatch.ponId) !== String(selectedPonId)) return
 
     const scrollToHighlight = () => {
-      const row = document.querySelector('[data-onu-highlight="true"]')
-      if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      const rows = document.querySelectorAll('[data-onu-highlight="true"]')
+      for (const row of rows) {
+        if (row.offsetParent !== null) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          break
+        }
       }
     }
     const frame = requestAnimationFrame(() => {
-      setTimeout(scrollToHighlight, 80)
+      setTimeout(scrollToHighlight, 120)
     })
     return () => cancelAnimationFrame(frame)
   }, [selectedSearchMatch, selectedPonId, selectedOnus, activeTab])
@@ -1638,7 +1641,7 @@ const App = () => {
         {activeNav === 'topology' && (
           <aside
             className={`
-              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-900/40 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width,opacity,transform] duration-300 ease-out'}
+              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width,opacity,transform] duration-300 ease-out'}
               ${isPonPanelOpen
                 ? 'w-full lg:w-[var(--pon-panel-width)] opacity-100 translate-x-0 border-l border-slate-100 dark:border-slate-700/50'
                 : 'w-0 opacity-0 translate-x-full pointer-events-none border-l-0'}
@@ -1731,7 +1734,7 @@ const App = () => {
                   </div>
                 </div>
 
-                <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-900/40 overflow-hidden">
+                <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-950 overflow-hidden">
                   <div className="flex items-center gap-2 mb-3">
                     <div className="inline-flex h-9 items-center gap-1 p-1 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-900/70">
                       {[
@@ -1942,7 +1945,7 @@ const App = () => {
                       </div>
                       {selectedPonStats.total > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-2.5">
                             {selectedPonStats.online > 0 && (
                               <div className="flex items-center gap-1">
                                 <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
@@ -2041,24 +2044,24 @@ const App = () => {
                       </div>
                       {selectedPonStats.total > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1">
                             <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
                             <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
                           </div>
                           {selectedPonStats.linkLoss > 0 && (
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
                               <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.linkLoss}</span>
                             </div>
                           )}
                           {selectedPonStats.dyingGasp > 0 && (
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-blue-500 shadow-sm shadow-blue-500/20" />
                               <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.dyingGasp}</span>
                             </div>
                           )}
                           {selectedPonStats.unknown > 0 && (
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-purple-500 shadow-sm shadow-purple-500/20" />
                               <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.unknown}</span>
                             </div>
@@ -2194,7 +2197,7 @@ const App = () => {
                       </div>
                       {selectedPonStats.total > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-2.5">
                             {selectedPonStats.online > 0 && (
                               <div className="flex items-center gap-1">
                                 <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
@@ -2298,24 +2301,24 @@ const App = () => {
                       </div>
                       {selectedPonStats.total > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1">
                             <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
                             <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
                           </div>
                           {selectedPonStats.linkLoss > 0 && (
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
                               <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.linkLoss}</span>
                             </div>
                           )}
                           {selectedPonStats.dyingGasp > 0 && (
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-blue-500 shadow-sm shadow-blue-500/20" />
                               <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.dyingGasp}</span>
                             </div>
                           )}
                           {selectedPonStats.unknown > 0 && (
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-purple-500 shadow-sm shadow-purple-500/20" />
                               <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.unknown}</span>
                             </div>
