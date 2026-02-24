@@ -83,6 +83,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - `red` when all ONUs are offline,
   - `yellow` when there is a mix of online and offline ONUs,
   - `green` when all ONUs are online.
+- PON status table includes a pinned footer bar below the scrollable area. Desktop shows clean text: `{total} ONUs / {offline} Offline` — no dots, since the topology tree is visible alongside. Mobile shows colored status dots with counts plus `total / offline`, since the topology tree is hidden. Footer uses `bg-slate-50/80 dark:bg-slate-800/60` with `border-t`. Offline count appears in `text-rose-500` only when > 0. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
@@ -171,9 +172,18 @@ The UI remains topology-first. No dashboard page is required for current product
 - Removed unused frontend helpers/exports in topology/settings/power utility modules to reduce dead code without changing layout or interaction design.
 - Preserved existing UI design and interaction model.
 
+## Counters Toggle
+- A toolbar toggle button (`Hash` icon) between Collapse and Alarm enables an optional `total / online / offline` counter displayed to the right of each node card (OLT, Slot, and PON).
+- State is persisted in `localStorage` key `varuna.showPonCounts` (boolean, default `false`).
+- When off (default): node cards show no counters.
+- When on: a compact `total / online / offline` text appears beside each card. OLT and Slot counters aggregate all descendant PON ONU stats. PON counters show that PON's own stats. Offline count is only shown when > 0. Gray-tree nodes (unreachable OLTs) do not show counters.
+- Button uses emerald tint when active (matching the OLT filter button pattern), neutral when off.
+- Mobile: icon-only; desktop: icon + "Counters"/"Contadores" label.
+- This toggle is independent of the PON status table footer (which always shows its own summary).
+
 ## Mobile Toolbar Layout
-- All four toolbar controls (filter, search, collapse, alarm) render in a single row on all breakpoints.
-- On mobile (`<lg`), collapse and alarm buttons are icon-only (`h-9 w-9`). On desktop (`>=lg`), they expand to show labels (`lg:w-auto lg:px-3` with `hidden lg:inline` text).
+- All five toolbar controls (filter, search, collapse, counters, alarm) render in a single row on all breakpoints.
+- On mobile (`<lg`), collapse, counters, and alarm buttons are icon-only (`h-9 w-9`). On desktop (`>=lg`), they expand to show labels (`lg:w-auto lg:px-3` with `hidden lg:inline` text).
 - The search input takes remaining space (`flex-1 min-w-0`) on mobile, capped at `lg:max-w-[268px]` on desktop.
 - Filter and search dropdowns open downward (`top-11`) on all breakpoints.
 - Toolbar horizontal padding is `px-4` on mobile, `lg:px-10` on desktop, matching the topology content area.

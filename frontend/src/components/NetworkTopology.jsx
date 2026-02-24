@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X, Check, Minus, Plus } from 'lucide-react'
+import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, Sigma, X, Check, Minus, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getOnuStats } from '../utils/stats'
 import { resolveHealthStyle } from '../utils/healthStyles'
@@ -162,6 +162,23 @@ const getSlotHealthState = (slot, selectedReasons) => {
   return 'green'
 }
 
+const aggregateStats = (entity, level) => {
+  if (level === 'pon') {
+    return entity?.stats || getOnuStats(entity?.onus || [])
+  }
+  const children = level === 'olt'
+    ? asList(entity?.slots).filter(isActiveEntity).flatMap((slot) => asList(slot?.pons).filter(isActiveEntity))
+    : asList(entity?.pons).filter(isActiveEntity)
+  const totals = { total: 0, online: 0, offline: 0 }
+  children.forEach((pon) => {
+    const s = pon?.stats || getOnuStats(pon?.onus || [])
+    totals.total += asCount(s.total)
+    totals.online += asCount(s.online)
+    totals.offline += asCount(s.offline)
+  })
+  return totals
+}
+
 const getOltHealthState = (olt, selectedReasons) => {
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   // No topology data at all → SNMP likely unreachable → gray
@@ -180,7 +197,7 @@ const getOltHealthState = (olt, selectedReasons) => {
 }
 
 
-const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel, healthState = 'green' }) => {
+const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel, healthState = 'green', counters }) => {
   const isVisualActive = type === 'pon' ? active : isOpen
   const healthStyle = resolveNodeHealthStyle(healthState)
 
@@ -195,6 +212,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
 
   return (
     <div className="flex flex-col relative">
+      <div className="flex items-center gap-2">
       <div
         onClick={onToggle}
         className={`
@@ -251,6 +269,21 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
         )}
       </div>
 
+      {counters && (
+        <p className="text-[10px] font-semibold tabular-nums leading-none text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0">
+          {asCount(counters.total)}
+          <span className="text-slate-300 dark:text-slate-600"> / </span>
+          <span className="text-emerald-600 dark:text-emerald-400">{asCount(counters.online)}</span>
+          {asCount(counters.offline) > 0 && (
+            <>
+              <span className="text-slate-300 dark:text-slate-600"> / </span>
+              <span className="text-rose-500 dark:text-rose-400">{asCount(counters.offline)}</span>
+            </>
+          )}
+        </p>
+      )}
+      </div>
+
       {isOpen && children && (
         <div className="relative mt-2.5 ml-4 pl-8 border-l-[1.5px] border-slate-100 dark:border-slate-700/50 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
           {children}
@@ -291,6 +324,10 @@ export const NetworkTopology = ({
   })
   const [oltFilterOpen, setOltFilterOpen] = useState(false)
   const [alarmMenuOpen, setAlarmMenuOpen] = useState(false)
+  const [showPonCounts, setShowPonCounts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('varuna.showPonCounts')) ?? false }
+    catch { return false }
+  })
   const [alarmEnabled, setAlarmEnabled] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('varuna.alarmConfig'))
@@ -391,6 +428,11 @@ export const NetworkTopology = ({
       minCount: effectiveAlarmMinCount
     })
   }, [alarmEnabled, activeAlarmReasons, effectiveAlarmMinCount, onAlarmModeChange])
+
+  useEffect(() => {
+    try { localStorage.setItem('varuna.showPonCounts', JSON.stringify(showPonCounts)) }
+    catch {}
+  }, [showPonCounts])
 
   useEffect(() => {
     try {
@@ -630,6 +672,7 @@ export const NetworkTopology = ({
           isOpen={openNodes[oltId]}
           onToggle={() => toggleNode(oltId)}
           healthState={oltHealthState}
+          counters={showPonCounts && !isGrayTree ? aggregateStats(sourceOlt, 'olt') : null}
         >
           {asList(olt?.slots)
             .filter(isActiveEntity)
@@ -653,6 +696,7 @@ export const NetworkTopology = ({
                   isOpen={openNodes[slotId]}
                   onToggle={() => toggleNode(slotId)}
                   healthState={slotHealthState}
+                  counters={showPonCounts && !isGrayTree ? aggregateStats(sourceSlot, 'slot') : null}
                 >
                   {asList(slot?.pons)
                     .filter(isActiveEntity)
@@ -678,6 +722,7 @@ export const NetworkTopology = ({
                           active={String(selectedPonId) === String(ponId)}
                           onToggle={() => onPonSelect(ponId)}
                           healthState={ponHealth.state}
+                          counters={showPonCounts && !isGrayTree ? { total: stats.total, online: stats.online, offline: stats.offline } : null}
                         />
                       )
                     })}
@@ -845,6 +890,19 @@ export const NetworkTopology = ({
           >
             <svg className="w-4 h-4 shrink-0" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
             <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Collapse')}</span>
+          </button>
+
+          <button
+            title={t('Counters')}
+            onClick={() => setShowPonCounts((prev) => !prev)}
+            className={`h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all shrink-0 ${
+              showPonCounts
+                ? 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200'
+                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 dark:text-slate-400 hover:text-emerald-600'
+            }`}
+          >
+            <Sigma className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Counters')}</span>
           </button>
 
           <div ref={alarmMenuContainerRef} className="relative">
