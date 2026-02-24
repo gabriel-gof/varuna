@@ -23,16 +23,12 @@ export const DEFAULT_THRESHOLDS = {
 
 /* ─── Read / write ─── */
 
-export const getGlobalThresholds = () => {
+const getGlobalThresholds = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_GLOBAL)
     if (raw) return { ...DEFAULT_THRESHOLDS, ...JSON.parse(raw) }
   } catch { /* ignore */ }
   return { ...DEFAULT_THRESHOLDS }
-}
-
-export const saveGlobalThresholds = (thresholds) => {
-  try { localStorage.setItem(STORAGE_KEY_GLOBAL, JSON.stringify(thresholds)) } catch { /* ignore */ }
 }
 
 export const getOltThresholds = (oltId) => {
@@ -47,10 +43,6 @@ export const getOltThresholds = (oltId) => {
 
 export const saveOltThresholds = (oltId, thresholds) => {
   try { localStorage.setItem(STORAGE_KEY_OLT(oltId), JSON.stringify(thresholds)) } catch { /* ignore */ }
-}
-
-export const clearOltThresholds = (oltId) => {
-  try { localStorage.removeItem(STORAGE_KEY_OLT(oltId)) } catch { /* ignore */ }
 }
 
 export const hasOltOverride = (oltId) => {

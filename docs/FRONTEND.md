@@ -97,6 +97,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Status table disconnection column is interval-aware:
   - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.
+  - when `—` is shown for non-online rows, its color follows the ONU status palette (red/link loss-offline, blue/dying gasp, purple/unknown); online and gray-tree rows keep neutral gray.
 - Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
@@ -144,12 +145,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - Error and success messages render in normal document flow between the tab content area and the action bar, with a translucent backdrop blur. They do not overlay tab content (e.g. threshold inputs). Auto-dismiss after 5 seconds.
 - Manual interval action buttons (`Run` for discovery/polling/power) are non-blocking:
   - Request payload includes `{ background: true }`.
-  - API returns persistent job metadata (`job.id`, `status`, `progress`, `detail`).
-  - UI shows immediate inline acknowledgment and starts progress polling via `GET /api/olts/:id/maintenance_status/` every 2 seconds while job is active.
-  - Run buttons and Save button are disabled while a queued/running maintenance job exists for that OLT.
-  - Each expanded card renders a live progress bar with percent + backend detail text.
+  - UI shows immediate inline acknowledgment only (queued/already-running), without job progress polling or progress bar animation.
+  - Run and Save controls remain available; duplicate submissions are handled by backend `already_running` responses and surfaced as inline messages.
   - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend translates known backend messages via `translateBackendMessage()`, preferring its own translated strings for queued action responses.
-  - On terminal job state (`completed`/`failed`/`canceled`), frontend refreshes OLT data and surfaces result feedback inline.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 
 ## Settings API Contract Expectations
@@ -170,6 +168,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Removed test/demo topology generator path from runtime.
 - Removed stale settings action call to undefined `runSnmpChecks` in component scope.
 - Removed unused frontend assets and unused `motion` dependency.
+- Removed unused frontend helpers/exports in topology/settings/power utility modules to reduce dead code without changing layout or interaction design.
 - Preserved existing UI design and interaction model.
 
 ## Mobile Toolbar Layout

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, X, Check, Minus, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getOnuStats } from '../utils/stats'
-import { HEALTH_STYLES, resolveHealthStyle } from '../utils/healthStyles'
+import { resolveHealthStyle } from '../utils/healthStyles'
 
 const pad2 = (value) => String(value).padStart(2, '0')
 const asCount = (value) => {
@@ -124,7 +124,7 @@ const getSelectedOfflineCount = (stats, selectedReasons = []) => {
      }, 0)
 }
 
-const getPonHealthState = (pon, selectedReasons, minCount) => {
+const getPonHealthState = (pon, selectedReasons) => {
   const stats = pon?.stats || getOnuStats(pon?.onus || [])
   if (!pon || pon?.is_active === false) {
     return {
@@ -148,11 +148,11 @@ const getPonHealthState = (pon, selectedReasons, minCount) => {
   }
 }
 
-const getSlotHealthState = (slot, selectedReasons, minCount) => {
+const getSlotHealthState = (slot, selectedReasons) => {
   const activePons = asList(slot?.pons).filter(isActiveEntity)
   if (!activePons.length) return 'green'
 
-  const ponStates = activePons.map((pon) => getPonHealthState(pon, selectedReasons, minCount).state)
+  const ponStates = activePons.map((pon) => getPonHealthState(pon, selectedReasons).state)
   const redPonCount = ponStates.reduce((count, state) => (
     state === 'red' ? count + 1 : count
   ), 0)
@@ -162,13 +162,13 @@ const getSlotHealthState = (slot, selectedReasons, minCount) => {
   return 'green'
 }
 
-const getOltHealthState = (olt, selectedReasons, minCount) => {
+const getOltHealthState = (olt, selectedReasons) => {
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   // No topology data at all → SNMP likely unreachable → gray
   if (!activeSlots.length && !asList(olt?.slots).length) return 'gray'
   if (!activeSlots.length) return 'green'
 
-  const slotStates = activeSlots.map((slot) => getSlotHealthState(slot, selectedReasons, minCount))
+  const slotStates = activeSlots.map((slot) => getSlotHealthState(slot, selectedReasons))
   const redSlotCount = slotStates.reduce((count, state) => (
     state === 'red' ? count + 1 : count
   ), 0)
@@ -423,7 +423,7 @@ export const NetworkTopology = ({
   const passesAlarmFilter = (pon) => {
     if (!alarmEnabled) return true
     if (pon?.is_active === false) return false
-    const { selectedOfflineCount } = getPonHealthState(pon, activeAlarmReasons, effectiveAlarmMinCount)
+    const { selectedOfflineCount } = getPonHealthState(pon, activeAlarmReasons)
     return selectedOfflineCount >= effectiveAlarmMinCount
   }
 
@@ -613,7 +613,7 @@ export const NetworkTopology = ({
     const sourceOlt = searchedOltMap.get(String(olt.id)) || olt
     const oltId = `olt-${olt.id}`
     const derivedHealth = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
-    const oltHealthState = derivedHealth?.state || getOltHealthState(sourceOlt, activeAlarmReasons, effectiveAlarmMinCount)
+    const oltHealthState = derivedHealth?.state || getOltHealthState(sourceOlt, activeAlarmReasons)
     const isGrayTree = oltHealthState === 'gray'
     const slotCount = olt.slot_count ?? olt.slots?.length ?? 0
     const sourceSlotMap = new Map(
@@ -641,7 +641,7 @@ export const NetworkTopology = ({
                   .filter(Boolean)
                   .map((pon) => [String(pon.id), pon])
               )
-              const slotHealthState = isGrayTree ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons, effectiveAlarmMinCount)
+              const slotHealthState = isGrayTree ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons)
               const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
               const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
               return (
@@ -660,7 +660,7 @@ export const NetworkTopology = ({
                       const sourcePon = sourcePonMap.get(String(pon.id)) || pon
                       const ponHealth = isGrayTree
                         ? { state: 'gray', stats: { online: 0, dyingGasp: 0, linkLoss: 0, unknown: 0 }, selectedOfflineCount: 0 }
-                        : getPonHealthState(sourcePon, activeAlarmReasons, effectiveAlarmMinCount)
+                        : getPonHealthState(sourcePon, activeAlarmReasons)
                       const stats = ponHealth.stats
                       const ponId = pon.id
                       const ponNumber = pon.pon_number ?? pon.pon_id ?? pon.id

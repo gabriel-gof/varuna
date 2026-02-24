@@ -2,26 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2, RefreshCcw, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Clock } from 'lucide-react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useTranslation } from 'react-i18next'
-import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, clearOltThresholds, hasOltOverride } from '../utils/powerThresholds'
+import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, hasOltOverride } from '../utils/powerThresholds'
 import { HEALTH_STYLES } from '../utils/healthStyles'
 
 const MAX_OLT_NAME = 12
 const EXPANDED_OLTS_STORAGE_KEY = 'varuna.settings.expandedOltIds'
 const OLD_SELECTED_OLT_STORAGE_KEY = 'varuna.settings.selectedOltId'
-
-const timeAgo = (dateStr, t) => {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  if (isNaN(date.getTime())) return dateStr
-  const seconds = Math.floor((new Date() - date) / 1000)
-  if (seconds < 60) return t('just now')
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} ${t('min ago')}`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} ${t('h ago')}`
-  const days = Math.floor(hours / 24)
-  return `${days} ${t('d ago')}`
-}
 
 const buildInitialForm = (vendorProfiles = []) => {
   const firstVendor = vendorProfiles[0]?.vendor || ''
@@ -52,12 +38,6 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     polling_interval: formatDuration(olt.polling_interval_seconds || 300),
     power_interval: formatDuration(olt.power_interval_seconds || 300)
   }
-}
-
-const toPositiveInteger = (value, fallback) => {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
-  return Math.round(parsed)
 }
 
 /**
@@ -204,26 +184,12 @@ const getOltHealth = (olt, oltHealthById) => {
   return HEALTH_STYLES.neutral
 }
 
-const getSnmpBadge = (olt, t) => {
-  if (olt.snmp_reachable === false) {
-    return { label: t('Unreachable'), color: 'bg-rose-50 dark:bg-rose-500/10 text-rose-500 dark:text-rose-400', dot: 'bg-rose-400 dark:bg-rose-500' }
-  }
-  if (olt.snmp_reachable === true) {
-    return { label: t('Reachable'), color: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', dot: 'bg-emerald-400 dark:bg-emerald-500' }
-  }
-  return { label: t('Checking'), color: 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500', dot: 'bg-slate-300 dark:bg-slate-600' }
-}
-
-const MAINTENANCE_ACTIVE_STATUSES = new Set(['queued', 'running'])
-const isMaintenanceJobActive = (job) => Boolean(job && MAINTENANCE_ACTIVE_STATUSES.has(job.status))
-
 /* ─── OLT Card header ─── */
 
-const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy, resolvedVendor, t, children }) => {
+const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy, t, children }) => {
   const total = Number(olt.onu_count || 0)
   const online = Number(olt.online_count || 0)
   const offline = Number(olt.offline_count || 0)
-  const hasOnus = total > 0
 
   return (
     <div className={`
@@ -304,7 +270,6 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
 
   // Auto-derived zones
   const warningAt = goodValid ? goodNum - THRESHOLD_GAP : null
-  const criticalAt = goodValid ? goodNum - (THRESHOLD_GAP * 2) : null
 
   const goodDisplay = typeof goodRaw === 'string' ? goodRaw : (goodValid ? String(goodNum) : '')
 
@@ -404,8 +369,6 @@ export const SettingsPanel = ({
   vendorProfiles,
   loading,
   vendorLoading,
-  error,
-  vendorError,
   actionError,
   actionMessage,
   onCreateOlt,
@@ -415,7 +378,6 @@ export const SettingsPanel = ({
   onRunPolling,
   onRefreshPower,
   actionBusy,
-  maintenanceJobsByOlt = {},
   oltHealthById = {}
 }) => {
   const { t } = useTranslation()
@@ -441,7 +403,7 @@ export const SettingsPanel = ({
         }
       }
       return {}
-    } catch (_err) {
+    } catch {
       return {}
     }
   })
@@ -514,7 +476,7 @@ export const SettingsPanel = ({
       } else {
         window.localStorage.removeItem(EXPANDED_OLTS_STORAGE_KEY)
       }
-    } catch (_err) {
+    } catch {
       // noop
     }
   }, [expandedIds])
@@ -757,12 +719,6 @@ export const SettingsPanel = ({
       if (!cardForm) return prev
       return { ...prev, [oltId]: { ...cardForm, [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue } }
     })
-  }
-
-  const resetThresholds = (oltId) => {
-    if (!oltId) return
-    clearOltThresholds(oltId)
-    setThresholdForms((prev) => ({ ...prev, [oltId]: { ...DEFAULT_THRESHOLDS } }))
   }
 
   const createBusy = Boolean(actionBusy?.create)
@@ -1075,11 +1031,8 @@ export const SettingsPanel = ({
             const oltId = String(olt.id)
             const isSelected = Boolean(expandedIds[oltId])
             const health = getOltHealth(olt, oltHealthById)
-            const vp = vendorProfiles?.find(p => String(p.id) === String(olt.vendor_profile))
-            const resolvedVendor = olt.vendor || olt.vendor_display || vp?.vendor || t('Unknown')
             const deleteBusy = Boolean(actionBusy?.[`delete:${olt.id}`])
             const localUpdateBusy = Boolean(actionBusy?.[`update:${olt.id}`])
-            const snmpBadge = getSnmpBadge(olt, t)
 
             // Per-card state
             const cardEditForm = editForms[oltId]
@@ -1103,12 +1056,6 @@ export const SettingsPanel = ({
               : false
             const cardDirty = cardFormDirty || cardThresholdDirty
             const cardIsOverride = hasOltOverride(oltId)
-            const maintenanceJob = maintenanceJobsByOlt?.[oltId]
-            const maintenanceActive = isMaintenanceJobActive(maintenanceJob)
-            const maintenancePercent = maintenanceJob
-              ? Math.max(0, Math.min(100, Number(maintenanceJob.progress || 0)))
-              : 0
-            const maintenanceDetail = maintenanceJob?.detail || ''
 
             return (
               <div key={olt.id}>
@@ -1119,7 +1066,6 @@ export const SettingsPanel = ({
                   onSelect={toggleCard}
                   onDeleteClick={() => handleDelete(olt.id)}
                   deleteBusy={deleteBusy}
-                  resolvedVendor={resolvedVendor}
                   t={t}
                 >
                 {isSelected && cardEditForm && (
@@ -1244,7 +1190,6 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => handleDiscovery(olt.id)}
-                                disabled={maintenanceActive}
                                 className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:dark:hover:text-slate-500 disabled:hover:bg-transparent"
                               >
                                 <span>{t('Run')}</span>
@@ -1268,7 +1213,6 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => onRunPolling?.(olt.id)}
-                                disabled={maintenanceActive}
                                 className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:dark:hover:text-slate-500 disabled:hover:bg-transparent"
                               >
                                 <span>{t('Run')}</span>
@@ -1292,7 +1236,6 @@ export const SettingsPanel = ({
                               <button
                                 type="button"
                                 onClick={() => onRefreshPower?.(olt.id)}
-                                disabled={maintenanceActive}
                                 className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-white dark:hover:bg-slate-700/50 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:dark:hover:text-slate-500 disabled:hover:bg-transparent"
                               >
                                 <span>{t('Run')}</span>
@@ -1352,30 +1295,6 @@ export const SettingsPanel = ({
                       </div>
                     )}
 
-                    {maintenanceActive && (
-                      <div className="space-y-1.5 py-2 px-2 bg-slate-50/90 dark:bg-slate-800/40 rounded-lg border border-slate-200/70 dark:border-slate-700/60 animate-in fade-in duration-200">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                            {t('Maintenance in progress')}
-                          </span>
-                          <span className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
-                            {Math.round(maintenancePercent)}%
-                          </span>
-                        </div>
-                        <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-emerald-500 transition-[width] duration-300"
-                            style={{ width: `${maintenancePercent}%` }}
-                          />
-                        </div>
-                        {maintenanceDetail && (
-                          <p className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 truncate">
-                            {maintenanceDetail}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
                     {/* ── Action bar ── */}
                     <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700/30">
                       {/* Left: info */}
@@ -1400,7 +1319,7 @@ export const SettingsPanel = ({
                             <button
                               type="button"
                               onClick={() => handleUpdate(oltId)}
-                              disabled={localUpdateBusy || !cardDirty || maintenanceActive}
+                              disabled={localUpdateBusy || !cardDirty}
                               className="h-7 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all active:scale-95 whitespace-nowrap"
                             >
                               {localUpdateBusy ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}

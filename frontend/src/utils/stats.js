@@ -65,9 +65,3 @@ export const getOnuStats = (onus = []) => {
 
   return stats
 }
-
-export const isZteOlt = (olt) => {
-  const vendor = normalize(olt?.vendor_profile_name)
-  const name = normalize(olt?.name)
-  return vendor.includes('zte') || name.includes('zte')
-}

@@ -212,11 +212,6 @@ const mergeBaseOltsPreservingTopology = (previousOlts, nextBaseOlts) => {
   })
 }
 
-const MAINTENANCE_ACTIVE_STATUSES = new Set(['queued', 'running'])
-const MAINTENANCE_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled'])
-const isMaintenanceActive = (job) => Boolean(job && MAINTENANCE_ACTIVE_STATUSES.has(job.status))
-const isMaintenanceTerminal = (job) => Boolean(job && MAINTENANCE_TERMINAL_STATUSES.has(job.status))
-
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
 const SEARCH_ROW_HIGHLIGHT_STYLE = {
@@ -503,7 +498,7 @@ const App = () => {
       if (typeof window === 'undefined') return null
       const saved = window.localStorage.getItem(SELECTED_PON_STORAGE_KEY)
       return saved ? String(saved) : null
-    } catch (_err) {
+    } catch {
       return null
     }
   })
@@ -511,7 +506,7 @@ const App = () => {
     try {
       const saved = window.localStorage.getItem(SEARCH_MATCH_STORAGE_KEY)
       return saved ? JSON.parse(saved) : null
-    } catch (_err) {
+    } catch {
       return null
     }
   })
@@ -557,7 +552,7 @@ const App = () => {
       } else {
         window.localStorage.removeItem(SELECTED_PON_STORAGE_KEY)
       }
-    } catch (_err) {
+    } catch {
       // noop
     }
   }, [selectedPonId])
@@ -568,7 +563,7 @@ const App = () => {
       } else {
         window.localStorage.removeItem(SEARCH_MATCH_STORAGE_KEY)
       }
-    } catch (_err) {
+    } catch {
       // noop
     }
   }, [selectedSearchMatch])
@@ -578,7 +573,7 @@ const App = () => {
       if (typeof window === 'undefined') return 42
       const saved = window.localStorage.getItem('varuna.ponSidebarWidth')
       return clampPonPanelWidth(saved ?? 42)
-    } catch (_err) {
+    } catch {
       return 42
     }
   })
@@ -587,7 +582,7 @@ const App = () => {
       if (typeof window === 'undefined') return []
       const saved = window.localStorage.getItem(SELECTED_OLT_IDS_STORAGE_KEY)
       return saved ? JSON.parse(saved) : []
-    } catch (_err) {
+    } catch {
       return []
     }
   })
@@ -597,11 +592,9 @@ const App = () => {
   const [loading, setLoading] = useState(false)
   const [vendorLoading, setVendorLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [vendorError, setVendorError] = useState(null)
   const [settingsActionError, setSettingsActionError] = useState(null)
   const [settingsActionMessage, setSettingsActionMessage] = useState(null)
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
-  const [maintenanceJobsByOlt, setMaintenanceJobsByOlt] = useState({})
   const [isRefreshingPonPanel, setIsRefreshingPonPanel] = useState(false)
   const [ponPanelError, setPonPanelError] = useState('')
   const ponPanelErrorTimerRef = useRef(null)
@@ -670,7 +663,7 @@ const App = () => {
               try {
                 const topoRes = await api.get(`/olts/${olt.id}/topology/`)
                 return mapTopologyToSlots(olt, topoRes.data)
-              } catch (_innerErr) {
+              } catch {
                 return olt
               }
             })
@@ -695,12 +688,11 @@ const App = () => {
 
   const fetchVendorProfiles = useCallback(async () => {
     setVendorLoading(true)
-    setVendorError(null)
     try {
       const res = await api.get('/vendor-profiles/')
       setVendorProfiles(normalizeList(res.data))
-    } catch (err) {
-      setVendorError(getApiErrorMessage(err, t('Failed to load vendor profiles'), t))
+    } catch {
+      // Keep previously loaded vendor profiles if refresh fails.
     } finally {
       setVendorLoading(false)
     }
@@ -738,26 +730,10 @@ const App = () => {
   }, [olts])
 
   useEffect(() => {
-    const validIds = new Set(olts.map((olt) => String(olt.id)))
-    setMaintenanceJobsByOlt((prev) => {
-      const next = {}
-      let changed = false
-      Object.entries(prev).forEach(([oltId, job]) => {
-        if (validIds.has(String(oltId))) {
-          next[oltId] = job
-          return
-        }
-        changed = true
-      })
-      return changed ? next : prev
-    })
-  }, [olts])
-
-  useEffect(() => {
     try {
       if (typeof window === 'undefined') return
       window.localStorage.setItem(SELECTED_OLT_IDS_STORAGE_KEY, JSON.stringify(selectedOltIds))
-    } catch (_err) {
+    } catch {
       // noop
     }
   }, [selectedOltIds])
@@ -829,24 +805,12 @@ const App = () => {
     }
   }
 
-  const upsertMaintenanceJob = useCallback((oltId, job) => {
-    if (oltId == null || !job) return
-    setMaintenanceJobsByOlt((prev) => ({
-      ...prev,
-      [String(oltId)]: job
-    }))
-  }, [])
-
   const runQueuedSettingsAction = async ({ endpoint, acceptedMessage, alreadyRunningMessage, oltId = null }) => {
     setSettingsActionError(null)
     setSettingsActionMessage(null)
     try {
       const response = await api.post(endpoint, { background: true })
       const queuedStatus = response?.data?.status
-      const queuedJob = response?.data?.job
-      if (oltId != null && queuedJob) {
-        upsertMaintenanceJob(oltId, queuedJob)
-      }
       if (queuedStatus === 'already_running') {
         setSettingsActionMessage({ oltId, message: alreadyRunningMessage || acceptedMessage })
       } else {
@@ -860,91 +824,6 @@ const App = () => {
       return null
     }
   }
-
-  useEffect(() => {
-    const oltIds = Object.keys(maintenanceJobsByOlt).filter((oltId) =>
-      isMaintenanceActive(maintenanceJobsByOlt[oltId])
-    )
-    if (!authToken || !oltIds.length) return
-
-    let canceled = false
-    const poll = async () => {
-      const responses = await Promise.all(
-        oltIds.map(async (oltId) => {
-          try {
-            const response = await api.get(`/olts/${oltId}/maintenance_status/`)
-            return { oltId, payload: response.data }
-          } catch (_err) {
-            return { oltId, payload: null }
-          }
-        })
-      )
-      if (canceled) return
-
-      const nextMap = { ...maintenanceJobsByOlt }
-      const terminalResults = []
-      let changed = false
-
-      responses.forEach(({ oltId, payload }) => {
-        const previousJob = maintenanceJobsByOlt[oltId]
-        const latestJob = payload?.active_job || payload?.latest_job || null
-
-        if (latestJob) {
-          if (
-            !previousJob
-            || previousJob.id !== latestJob.id
-            || previousJob.status !== latestJob.status
-            || Number(previousJob.progress || 0) !== Number(latestJob.progress || 0)
-            || String(previousJob.detail || '') !== String(latestJob.detail || '')
-          ) {
-            changed = true
-          }
-          nextMap[oltId] = latestJob
-        } else {
-          if (Object.prototype.hasOwnProperty.call(nextMap, oltId)) {
-            delete nextMap[oltId]
-            changed = true
-          }
-        }
-
-        if (isMaintenanceActive(previousJob) && isMaintenanceTerminal(latestJob)) {
-          terminalResults.push({ oltId, job: latestJob })
-        }
-      })
-
-      if (changed) {
-        setMaintenanceJobsByOlt(nextMap)
-      }
-
-      if (terminalResults.length) {
-        void fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
-
-        const failedJob = terminalResults.find((entry) => entry.job?.status === 'failed')
-        if (failedJob) {
-          const message = failedJob.job?.error || failedJob.job?.detail || t('Failed to execute settings action')
-          setSettingsActionError(message)
-          setTimeout(() => setSettingsActionError(null), 5000)
-          return
-        }
-
-        const completedJob = terminalResults.find((entry) => entry.job?.status === 'completed')
-        if (completedJob) {
-          setSettingsActionMessage({
-            oltId: completedJob.oltId,
-            message: completedJob.job?.detail || t('Maintenance task completed'),
-          })
-          setTimeout(() => setSettingsActionMessage(null), 4000)
-        }
-      }
-    }
-
-    poll()
-    const interval = setInterval(poll, 2000)
-    return () => {
-      canceled = true
-      clearInterval(interval)
-    }
-  }, [activeNav, authToken, canManageSettings, fetchOlts, maintenanceJobsByOlt, t])
 
   const createOlt = async (payload) => {
     const created = await runSettingsAction(
@@ -1211,7 +1090,7 @@ const App = () => {
     try {
       if (typeof window === 'undefined') return
       window.localStorage.setItem('varuna.ponSidebarWidth', String(ponPanelWidth))
-    } catch (_err) {
+    } catch {
       // noop
     }
   }, [ponPanelWidth])
@@ -1475,15 +1354,6 @@ const App = () => {
     return () => cancelAnimationFrame(frame)
   }, [selectedSearchMatch, selectedPonId, selectedOnus, activeTab])
 
-  const selectedPonStats = useMemo(() => {
-    return selectedOnus.reduce((acc, onu) => {
-      const { status } = classifyOnu(onu)
-      if (status === 'online') acc.online++
-      else acc.offline++
-      return acc
-    }, { online: 0, offline: 0 })
-  }, [selectedOnus])
-
   const isSelectedOltGray = useMemo(() => {
     const oltId = selectedPonData?.olt?.id
     if (!oltId) return false
@@ -1521,6 +1391,16 @@ const App = () => {
     if (statusKey === 'unknown') return 'bg-purple-500'
     if (statusKey === 'offline') return 'bg-rose-500'
     return 'bg-slate-400'
+  }
+
+  const disconnectPlaceholderClass = (statusKey, disconnectWindow) => {
+    if (disconnectWindow !== '—' || statusKey === 'online' || isSelectedOltGray) {
+      return 'text-slate-500 dark:text-slate-400'
+    }
+    if (statusKey === 'dying_gasp') return 'text-blue-600 dark:text-blue-300'
+    if (statusKey === 'unknown') return 'text-purple-600 dark:text-purple-300'
+    if (statusKey === 'link_loss' || statusKey === 'offline') return 'text-rose-500 dark:text-rose-400'
+    return 'text-slate-500 dark:text-slate-400'
   }
 
   const handleAlarmModeChange = useCallback((config) => {
@@ -1704,8 +1584,6 @@ const App = () => {
               vendorProfiles={vendorProfiles}
               loading={loading}
               vendorLoading={vendorLoading}
-              error={error}
-              vendorError={vendorError}
               actionError={settingsActionError}
               actionMessage={settingsActionMessage}
               onCreateOlt={createOlt}
@@ -1715,7 +1593,6 @@ const App = () => {
               onRunPolling={runPolling}
               onRefreshPower={refreshPower}
               actionBusy={settingsActionBusy}
-              maintenanceJobsByOlt={maintenanceJobsByOlt}
               oltHealthById={oltHealthById}
             />
           )}
@@ -1775,7 +1652,7 @@ const App = () => {
                 )
                 try {
                   await updatePonDescription(dbId, newValue)
-                } catch (_err) {
+                } catch {
                   await fetchOlts()
                 }
               }
@@ -2037,7 +1914,7 @@ const App = () => {
                                       {statusLabel}
                                     </span>
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${statusKey !== 'online' && disconnectWindow === '—' ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${disconnectPlaceholderClass(statusKey, disconnectWindow)}`}>
                                     {disconnectWindow}
                                   </td>
                                 </tr>

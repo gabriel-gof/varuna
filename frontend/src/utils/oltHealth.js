@@ -18,10 +18,9 @@ const parseTimestampMs = (value) => {
   return ms
 }
 
-export const getPollingIntervalSeconds = (olt) => toPositiveSeconds(olt?.polling_interval_seconds, 300)
-export const getPowerIntervalSeconds = (olt) => toPositiveSeconds(olt?.power_interval_seconds, 300)
+const getPollingIntervalSeconds = (olt) => toPositiveSeconds(olt?.polling_interval_seconds, 300)
 
-export const isStatusStale = (olt, nowMs = Date.now()) => {
+const isStatusStale = (olt, nowMs = Date.now()) => {
   const lastPollMs = parseTimestampMs(olt?.last_poll_at)
   const staleAfterMs = getPollingIntervalSeconds(olt) * 1000
   const graceMs = Math.max(90_000, Math.round(staleAfterMs * 0.5))
