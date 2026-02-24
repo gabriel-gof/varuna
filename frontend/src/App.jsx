@@ -1933,13 +1933,40 @@ const App = () => {
                         </table>
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center gap-3">
+                          <div className="flex items-center gap-1.5">
+                            {selectedPonStats.online > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
+                              </div>
+                            )}
+                            {selectedPonStats.linkLoss > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.linkLoss}</span>
+                              </div>
+                            )}
+                            {selectedPonStats.dyingGasp > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-blue-500 shadow-sm shadow-blue-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.dyingGasp}</span>
+                              </div>
+                            )}
+                            {selectedPonStats.unknown > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-purple-500 shadow-sm shadow-purple-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.unknown}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
                           <p className="text-[11px] font-bold tabular-nums leading-none">
                             <span className="text-slate-500 dark:text-slate-400">{selectedPonStats.total}</span>
                             {selectedPonStats.offline > 0 && (
                               <>
                                 <span className="text-slate-300 dark:text-slate-600"> / </span>
-                                <span className="text-rose-500 dark:text-rose-400">{selectedPonStats.offline}</span>
+                                <span className="text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                               </>
                             )}
                           </p>
@@ -2033,7 +2060,7 @@ const App = () => {
                           {selectedPonStats.offline > 0 && (
                             <>
                               <span className="text-[10px] text-slate-300 dark:text-slate-600">/</span>
-                              <span className="text-[11px] font-bold tabular-nums text-rose-500 dark:text-rose-400">{selectedPonStats.offline}</span>
+                              <span className="text-[11px] font-bold tabular-nums text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                             </>
                           )}
                         </div>
@@ -2158,13 +2185,40 @@ const App = () => {
                         </table>
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center gap-3">
+                          <div className="flex items-center gap-1.5">
+                            {selectedPonStats.online > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
+                              </div>
+                            )}
+                            {selectedPonStats.linkLoss > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.linkLoss}</span>
+                              </div>
+                            )}
+                            {selectedPonStats.dyingGasp > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-blue-500 shadow-sm shadow-blue-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.dyingGasp}</span>
+                              </div>
+                            )}
+                            {selectedPonStats.unknown > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-purple-500 shadow-sm shadow-purple-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.unknown}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
                           <p className="text-[11px] font-bold tabular-nums leading-none">
                             <span className="text-slate-500 dark:text-slate-400">{selectedPonStats.total}</span>
                             {selectedPonStats.offline > 0 && (
                               <>
                                 <span className="text-slate-300 dark:text-slate-600"> / </span>
-                                <span className="text-rose-500 dark:text-rose-400">{selectedPonStats.offline}</span>
+                                <span className="text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                               </>
                             )}
                           </p>
@@ -2263,7 +2317,7 @@ const App = () => {
                           {selectedPonStats.offline > 0 && (
                             <>
                               <span className="text-[10px] text-slate-300 dark:text-slate-600">/</span>
-                              <span className="text-[11px] font-bold tabular-nums text-rose-500 dark:text-rose-400">{selectedPonStats.offline}</span>
+                              <span className="text-[11px] font-bold tabular-nums text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                             </>
                           )}
                         </div>

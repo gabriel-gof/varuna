@@ -281,6 +281,18 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
 
       {counters && (
         <div className="flex items-center gap-1.5 text-[10px] font-bold tabular-nums leading-none whitespace-nowrap shrink-0">
+          {counters.linkLoss != null && asCount(counters.offline) > 0 && (
+            <>
+              <span>
+                {asCount(counters.linkLoss) > 0 && <span className="text-rose-600 dark:text-rose-400">{asCount(counters.linkLoss)}</span>}
+                {asCount(counters.linkLoss) > 0 && asCount(counters.dyingGasp) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
+                {asCount(counters.dyingGasp) > 0 && <span className="text-blue-600 dark:text-blue-400">{asCount(counters.dyingGasp)}</span>}
+                {(asCount(counters.linkLoss) > 0 || asCount(counters.dyingGasp) > 0) && asCount(counters.unknown) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
+                {asCount(counters.unknown) > 0 && <span className="text-purple-600 dark:text-purple-400">{asCount(counters.unknown)}</span>}
+              </span>
+              <span className="w-px h-2.5 bg-slate-300 dark:bg-slate-600" />
+            </>
+          )}
           <span>
             <span className="text-slate-600 dark:text-slate-300">{asCount(counters.total)}</span>
             {asCount(counters.offline) > 0 && (
@@ -290,18 +302,6 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
               </>
             )}
           </span>
-          {counters.linkLoss != null && asCount(counters.offline) > 0 && (
-            <>
-              <span className="w-px h-2.5 bg-slate-300 dark:bg-slate-600" />
-              <span>
-                {asCount(counters.linkLoss) > 0 && <span className="text-rose-600 dark:text-rose-400">{asCount(counters.linkLoss)}</span>}
-                {asCount(counters.linkLoss) > 0 && asCount(counters.dyingGasp) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
-                {asCount(counters.dyingGasp) > 0 && <span className="text-blue-600 dark:text-blue-400">{asCount(counters.dyingGasp)}</span>}
-                {(asCount(counters.linkLoss) > 0 || asCount(counters.dyingGasp) > 0) && asCount(counters.unknown) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
-                {asCount(counters.unknown) > 0 && <span className="text-purple-600 dark:text-purple-400">{asCount(counters.unknown)}</span>}
-              </span>
-            </>
-          )}
         </div>
       )}
       </div>
@@ -916,23 +916,21 @@ export const NetworkTopology = ({
           <button
             title={t('Collapse')}
             onClick={collapseAllNodes}
-            className="h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-500 dark:text-slate-400 shadow-sm hover:text-emerald-600 transition-all shrink-0"
+            className="h-9 w-9 flex items-center justify-center bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-500 dark:text-slate-400 shadow-sm hover:text-emerald-600 transition-all shrink-0"
           >
-            <svg className="w-4 h-4 shrink-0" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
-            <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Collapse')}</span>
+            <svg className="w-4 h-4" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
           </button>
 
           <button
             title={t('Counters')}
             onClick={() => setShowPonCounts((prev) => !prev)}
-            className={`h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all shrink-0 ${
+            className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all shrink-0 ${
               showPonCounts
                 ? 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200'
                 : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 dark:text-slate-400 hover:text-emerald-600'
             }`}
           >
             <Sigma className="w-3.5 h-3.5" />
-            <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Counters')}</span>
           </button>
 
           <div ref={alarmMenuContainerRef} className="relative">
@@ -942,14 +940,13 @@ export const NetworkTopology = ({
                 setAlarmMenuOpen((prev) => !prev)
                 setOltFilterOpen(false)
               }}
-              className={`h-9 w-9 lg:w-auto lg:px-3 flex items-center justify-center gap-1.5 border rounded-xl shadow-sm transition-all shrink-0 ${
+              className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all shrink-0 ${
                 alarmEnabled
                   ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
                   : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 dark:text-slate-400 hover:text-rose-600'
               }`}
             >
               <Bell className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline text-[10px] font-black uppercase tracking-wider">{t('Alarm')}</span>
             </button>
 
             {alarmMenuOpen && (

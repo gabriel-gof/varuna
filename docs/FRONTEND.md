@@ -87,7 +87,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - OLT: `{slotCount} PLACAS / {redSlots}` — number of slots where all PONs are fully offline (red health).
   - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).
   - Alert count only appears when > 0. Gray-tree nodes are excluded.
-- Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop shows numeric-only text: `{total} / {offline}` — no labels, matching the topology tree counter style. Mobile shows colored status dots with counts plus `total / offline`, since the topology tree is hidden. Footer uses `bg-slate-50/80 dark:bg-slate-800/60` with `border-t`. Offline count appears in `text-rose-500` only when > 0. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
+- Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop and mobile both show colored reason dots (rose=link loss, blue=dying gasp, purple=unknown) with counts, a vertical separator, then `{total} / {offline}`. Reason dots and separator only appear when offline > 0. Offline count uses amber to distinguish from the rose link-loss dot. Footer uses `bg-slate-50/80 dark:bg-slate-800/60` with `border-t`. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
@@ -185,9 +185,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - Mobile: icon-only; desktop: icon + "Counters"/"Contadores" label.
 - This toggle is independent of the PON status table footer (which always shows its own summary).
 
-## Mobile Toolbar Layout
+## Toolbar Layout
 - All five toolbar controls (filter, search, collapse, counters, alarm) render in a single row on all breakpoints.
-- On mobile (`<lg`), collapse, counters, and alarm buttons are icon-only (`h-9 w-9`). On desktop (`>=lg`), they expand to show labels (`lg:w-auto lg:px-3` with `hidden lg:inline` text).
+- Collapse, counters, and alarm buttons are icon-only (`h-9 w-9`) on all breakpoints. Tooltips provide labels on hover.
 - The search input takes remaining space (`flex-1 min-w-0`) on mobile, capped at `lg:max-w-[268px]` on desktop.
 - Filter and search dropdowns open downward (`top-11`) on all breakpoints.
 - Toolbar horizontal padding is `px-4` on mobile, `lg:px-10` on desktop, matching the topology content area.
