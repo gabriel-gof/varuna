@@ -195,7 +195,7 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Topology Container Surface
 - The tree content area (OLT/Slot/PON nodes, loading, error, and empty states) is wrapped in a container surface below the action buttons.
-- Container uses `rounded-t-2xl` (top corners only) with subtle background (`bg-slate-50/50 dark:bg-slate-900/30`) and border (`border-slate-200/70 dark:border-slate-700/40`, no bottom border) so it extends seamlessly to the footer.
+- Container uses `rounded-t-2xl` (top corners only) with background (`bg-slate-100 dark:bg-slate-950`) matching the PON sidebar content area, and border (`border-slate-200/70 dark:border-slate-700/40`, no bottom border) so it extends seamlessly to the footer.
 - `flex-1` and `overflow-y-auto` make the container scroll internally while filling remaining viewport height.
 - Horizontal margins (`mx-3 lg:mx-8`) match toolbar padding for coherent alignment across all three rows.
 - Inner content padding is `p-4 lg:p-8 pb-10` (relative to the container, not the page).

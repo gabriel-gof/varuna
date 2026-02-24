@@ -1098,7 +1098,7 @@ export const NetworkTopology = ({
         </div>
       </div>
 
-      <div className="flex-1 mx-3 lg:mx-8 rounded-t-2xl border border-b-0 border-slate-200/70 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-900/30 overflow-y-auto">
+      <div className="flex-1 mx-3 lg:mx-8 rounded-t-2xl border border-b-0 border-slate-200/70 dark:border-slate-700/40 bg-slate-100 dark:bg-slate-950 overflow-y-auto">
         <div className="flex flex-wrap items-start gap-x-10 gap-y-6 p-4 lg:p-8 pb-10 animate-in fade-in duration-500">
           {loading && (
                 <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</div>
