@@ -87,7 +87,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - OLT: `{slotCount} PLACAS / {redSlots}` — number of slots where all PONs are fully offline (red health).
   - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).
   - Alert count only appears when > 0. Gray-tree nodes are excluded.
-- Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop and mobile both show colored reason dots (rose=link loss, blue=dying gasp, purple=unknown) with counts, a vertical separator, then `{total} / {offline}`. Reason dots and separator only appear when offline > 0. Offline count uses amber to distinguish from the rose link-loss dot. Footer uses `bg-slate-50/80 dark:bg-slate-800/60` with `border-t`. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
+- Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop and mobile both show colored reason dots (rose=link loss, blue=dying gasp, purple=unknown) with counts, a vertical separator, then `{total} / {offline}`. Reason dots and separator only appear when offline > 0. Offline count uses amber to distinguish from the rose link-loss dot. Footer uses `bg-white dark:bg-slate-900` with `border-t`. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
@@ -181,21 +181,21 @@ The UI remains topology-first. No dashboard page is required for current product
 - State is persisted in `localStorage` key `varuna.showPonCounts` (boolean, default `false`).
 - When off (default): node cards show no counters.
 - When on: a compact `total / offline` text appears beside each card. OLT and Slot counters aggregate all descendant PON ONU stats. PON counters show that PON's own stats. Offline count is only shown when > 0 (healthy nodes show just the total). Reason breakdown (link loss, dying gasp, unknown) is only shown at the PON level via dots inside the card — not repeated at OLT/Slot level to keep the layout clean. Gray-tree nodes (unreachable OLTs) do not show counters.
-- Button uses emerald tint when active (matching the OLT filter button pattern), neutral when off.
+- Button uses emerald icon color + emerald border when active, neutral slate when off. The pill background stays neutral — only icon color and border color change.
 - Mobile: icon-only; desktop: icon + "Counters"/"Contadores" label.
 - This toggle is independent of the PON status table footer (which always shows its own summary).
 
 ## Toolbar Layout
 - The topology area has two visual rows: a single toolbar row and the container surface below it.
-- The toolbar row contains filter button, search input, and action buttons (collapse, counters, alarm) all on one line. Action buttons are pushed to the right via `ml-auto`.
-- The toolbar is not sticky — it scrolls with the page. Toolbar bottom padding (`pb-2`) is compact so the container surface top edge aligns with the bottom of the PON sidebar header.
+- The toolbar row contains filter button, search input, and action buttons (collapse, counters, alarm) all on one line. Action buttons are pushed to the right via `ml-auto`. All toolbar icon buttons use a neutral pill container (`bg-slate-50 dark:bg-slate-900`, `border-slate-200/70 dark:border-slate-700/50`, `rounded-xl shadow-sm`) that never changes background. State is communicated through icon color (`text-slate-400` default, `text-slate-600` hover, semantic color when active) and border color — active buttons get a colored border around the whole pill (`border-emerald-400` for filter/counters, `border-rose-400` for alarm) while inactive ones use the default `border-slate-200/70`. No background tinting. Filter button also activates (green icon + border) when its dropdown is open.
+- The toolbar is sticky (`sticky top-0 z-20`) with `bg-white dark:bg-slate-950` so it stays visible while the topology tree scrolls beneath it.
 - The search input takes remaining space (`flex-1 min-w-0`) on mobile, capped at `lg:max-w-[268px]` on desktop.
 - Filter and search dropdowns open downward (`top-11`) on all breakpoints.
 - Toolbar vertical padding is `pt-4 pb-4`, centering the controls between the nav header and the container surface. Horizontal padding is `px-3` on mobile, `lg:px-8` on desktop — matching the container margins for coherent alignment.
 
 ## Topology Container Surface
 - The tree content area (OLT/Slot/PON nodes, loading, error, and empty states) is wrapped in a container surface below the action buttons.
-- Container uses `rounded-t-2xl` (top corners only) with background (`bg-slate-100 dark:bg-slate-950`) matching the PON sidebar content area, and border (`border-slate-200/70 dark:border-slate-700/40`, no bottom border) so it extends seamlessly to the footer.
+- Container uses background (`bg-slate-100 dark:bg-slate-950`) matching the PON sidebar content area, with no border or rounding — it blends seamlessly into the page surface.
 - `flex-1` and `overflow-y-auto` make the container scroll internally while filling remaining viewport height.
 - Horizontal margins (`mx-3 lg:mx-8`) match toolbar padding for coherent alignment across all three rows.
 - Inner content padding is `p-4 lg:p-8 pb-10` (relative to the container, not the page).

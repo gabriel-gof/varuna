@@ -1941,7 +1941,7 @@ const App = () => {
                         </table>
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             {selectedPonStats.online > 0 && (
                               <div className="flex items-center gap-1">
@@ -2040,7 +2040,7 @@ const App = () => {
                         )}
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
                             <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
@@ -2193,7 +2193,7 @@ const App = () => {
                         </table>
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             {selectedPonStats.online > 0 && (
                               <div className="flex items-center gap-1">
@@ -2297,7 +2297,7 @@ const App = () => {
                         )}
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
                             <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>

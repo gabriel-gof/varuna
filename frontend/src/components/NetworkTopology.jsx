@@ -767,7 +767,7 @@ export const NetworkTopology = ({
 
   return (
     <div className="flex flex-col w-full h-full">
-      <div className="flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-4 pb-4">
+      <div className="sticky top-0 z-20 flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-4 pb-4 bg-white dark:bg-slate-950">
         <div ref={oltFilterContainerRef} className="relative shrink-0">
           <button
             title={t('Filter OLTs')}
@@ -775,10 +775,10 @@ export const NetworkTopology = ({
               setOltFilterOpen((prev) => !prev)
               setAlarmMenuOpen(false)
             }}
-            className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 hover:text-emerald-600 ${
-              selectedOltIds.length < olts.length
-                ? 'text-emerald-600 dark:text-emerald-400'
-                : 'text-slate-400 dark:text-slate-400'
+            className={`h-9 w-9 flex items-center justify-center rounded-xl border bg-slate-50 dark:bg-slate-900 shadow-sm transition-colors ${
+              selectedOltIds.length < olts.length || oltFilterOpen
+                ? 'border-emerald-400 dark:border-emerald-500 text-emerald-600 dark:text-emerald-400'
+                : 'border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
             <Filter className="w-3.5 h-3.5" />
@@ -917,7 +917,7 @@ export const NetworkTopology = ({
         <button
           title={t('Collapse')}
           onClick={collapseAllNodes}
-          className="h-9 w-9 flex items-center justify-center bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-400 dark:text-slate-500 shadow-sm hover:text-emerald-600 dark:hover:text-emerald-400 transition-all shrink-0"
+          className="h-9 w-9 flex items-center justify-center rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-900 shadow-sm text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors shrink-0"
         >
           <svg className="w-4 h-4" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
         </button>
@@ -925,10 +925,10 @@ export const NetworkTopology = ({
         <button
           title={t('Counters')}
           onClick={() => setShowPonCounts((prev) => !prev)}
-          className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all shrink-0 ${
+          className={`h-9 w-9 flex items-center justify-center rounded-xl border bg-slate-50 dark:bg-slate-900 shadow-sm transition-colors shrink-0 ${
             showPonCounts
-              ? 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200'
-              : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400'
+              ? 'border-emerald-400 dark:border-emerald-500 text-emerald-600 dark:text-emerald-400'
+              : 'border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
           }`}
         >
           <Sigma className="w-3.5 h-3.5" />
@@ -941,10 +941,10 @@ export const NetworkTopology = ({
               setAlarmMenuOpen((prev) => !prev)
               setOltFilterOpen(false)
             }}
-            className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all shrink-0 ${
+            className={`h-9 w-9 flex items-center justify-center rounded-xl border bg-slate-50 dark:bg-slate-900 shadow-sm transition-colors shrink-0 ${
               alarmEnabled
-                ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
-                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400'
+                ? 'border-rose-400 dark:border-rose-500 text-rose-600 dark:text-rose-400'
+                : 'border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
             <Bell className="w-3.5 h-3.5" />
@@ -1098,7 +1098,7 @@ export const NetworkTopology = ({
         </div>
       </div>
 
-      <div className="flex-1 mx-3 lg:mx-8 rounded-t-2xl border border-b-0 border-slate-200/70 dark:border-slate-700/40 bg-slate-100 dark:bg-slate-950 overflow-y-auto">
+      <div className="flex-1 mx-3 lg:mx-8 bg-slate-100 dark:bg-slate-950 overflow-y-auto">
         <div className="flex flex-wrap items-start gap-x-10 gap-y-6 p-4 lg:p-8 pb-10 animate-in fade-in duration-500">
           {loading && (
                 <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</div>
