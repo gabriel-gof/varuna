@@ -83,6 +83,10 @@ The UI remains topology-first. No dashboard page is required for current product
   - `red` when all ONUs are offline,
   - `yellow` when there is a mix of online and offline ONUs,
   - `green` when all ONUs are online.
+- OLT and Slot sublabels show a rose-colored alert count (always visible, no toggle needed):
+  - OLT: `{slotCount} PLACAS / {redSlots}` — number of slots where all PONs are fully offline (red health).
+  - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).
+  - Alert count only appears when > 0. Gray-tree nodes are excluded.
 - Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop shows numeric-only text: `{total} / {offline}` — no labels, matching the topology tree counter style. Mobile shows colored status dots with counts plus `total / offline`, since the topology tree is hidden. Footer uses `bg-slate-50/80 dark:bg-slate-800/60` with `border-t`. Offline count appears in `text-rose-500` only when > 0. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`

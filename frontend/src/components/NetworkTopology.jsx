@@ -196,7 +196,7 @@ const getOltHealthState = (olt, selectedReasons) => {
 }
 
 
-const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel, healthState = 'green', counters }) => {
+const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, sublabel, alertCount, healthState = 'green', counters }) => {
   const isVisualActive = type === 'pon' ? active : isOpen
   const healthStyle = resolveNodeHealthStyle(healthState)
 
@@ -257,7 +257,15 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
               {asCount(stats.unknown) > 0 && <StatusItem color="bg-purple-500" count={asCount(stats.unknown)} />}
             </div>
           ) : (
-            <p className="mt-0.5 text-[9px] font-black text-slate-400 uppercase tracking-widest opacity-80 whitespace-nowrap overflow-hidden text-ellipsis">{sublabel}</p>
+            <p className="mt-0.5 text-[9px] font-black text-slate-400 uppercase tracking-widest opacity-80 whitespace-nowrap overflow-hidden text-ellipsis">
+              {sublabel}
+              {alertCount > 0 && (
+                <>
+                  <span className="text-slate-300 dark:text-slate-600"> / </span>
+                  <span className="text-rose-500 dark:text-rose-400">{alertCount}</span>
+                </>
+              )}
+            </p>
           )}
         </div>
 
@@ -660,12 +668,16 @@ export const NetworkTopology = ({
         .filter(Boolean)
         .map((slot) => [String(slot.id), slot])
     )
+    const redSlotCount = !isGrayTree
+      ? asList(sourceOlt?.slots).filter(isActiveEntity).filter((slot) => getSlotHealthState(slot, activeAlarmReasons) === 'red').length
+      : 0
     return (
       <div key={oltId} className="flex-shrink-0">
         <NetworkNode
           type="olt"
           label={olt.name}
           sublabel={`${slotCount} ${t('SLOTS')}`}
+          alertCount={redSlotCount}
           isOpen={openNodes[oltId]}
           onToggle={() => toggleNode(oltId)}
           healthState={oltHealthState}
@@ -684,12 +696,16 @@ export const NetworkTopology = ({
               const slotHealthState = isGrayTree ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons)
               const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
               const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
+              const redPonCount = !isGrayTree
+                ? asList(sourceSlot?.pons).filter(isActiveEntity).filter((pon) => getPonHealthState(pon, activeAlarmReasons).state === 'red').length
+                : 0
               return (
                 <NetworkNode
                   key={slotId}
                   type="slot"
                   label={`${t('SLOT')} ${pad2(slotNumber)}`}
                   sublabel={`${ponCount} ${t('PONS')}`}
+                  alertCount={redPonCount}
                   isOpen={openNodes[slotId]}
                   onToggle={() => toggleNode(slotId)}
                   healthState={slotHealthState}
