@@ -214,7 +214,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
 
   return (
     <div className="flex flex-col relative">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
       <div
         onClick={onToggle}
         className={`
@@ -280,7 +280,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       </div>
 
       {counters && (
-        <div className="flex items-center gap-1.5 text-[10px] font-bold tabular-nums leading-none whitespace-nowrap shrink-0">
+        <div className="flex items-center gap-2 text-[10px] font-bold tabular-nums leading-none whitespace-nowrap shrink-0">
           {counters.linkLoss != null && asCount(counters.offline) > 0 && (
             <>
               <span>
@@ -307,7 +307,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       </div>
 
       {isOpen && children && (
-        <div className="relative mt-2.5 ml-4 pl-8 border-l-[1.5px] border-slate-100 dark:border-slate-700/50 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
+        <div className="relative mt-2.5 ml-6 pl-6 border-l-[1.5px] border-slate-100 dark:border-slate-700/50 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
           {children}
         </div>
       )}
@@ -568,19 +568,17 @@ export const NetworkTopology = ({
 
   const searchedOlts = useMemo(() => {
     const oltVisible = olts.filter((olt) => selectedOltIds.includes(String(olt.id)))
-    const term = normalizedSearchTerm
+
+    // Only filter the tree when a search match is selected — typing alone does not modify topology
+    if (!selectedSearchMatch?.ponId || !selectedSearchMatch?.oltId) return oltVisible
+
+    const term = normalizeSearch(selectedSearchMatch?.searchTerm)
     if (!term) return oltVisible
 
-    const hasPinnedSearchPath = Boolean(
-      selectedSearchMatch?.ponId &&
-      selectedSearchMatch?.oltId &&
-      normalizeSearch(selectedSearchMatch?.searchTerm) === term
-    )
     const hasPinnedSlotId = selectedSearchMatch?.slotId != null
     return oltVisible
       .map((olt) => {
-        const isPinnedOlt = hasPinnedSearchPath && String(olt.id) === String(selectedSearchMatch.oltId)
-        if (hasPinnedSearchPath && !isPinnedOlt) {
+        if (String(olt.id) !== String(selectedSearchMatch.oltId)) {
           return {
             ...olt,
             slots: [],
@@ -591,9 +589,7 @@ export const NetworkTopology = ({
         const slots = asList(olt?.slots)
           .filter(isActiveEntity)
           .map((slot) => {
-            const isPinnedSlot = hasPinnedSearchPath
-              ? (!hasPinnedSlotId || String(slot?.id) === String(selectedSearchMatch?.slotId))
-              : true
+            const isPinnedSlot = !hasPinnedSlotId || String(slot?.id) === String(selectedSearchMatch?.slotId)
             if (!isPinnedSlot) {
               return {
                 ...slot,
@@ -605,9 +601,6 @@ export const NetworkTopology = ({
             const pons = asList(slot?.pons)
               .filter(isActiveEntity)
               .filter((pon) => {
-                const matchesSearch = asList(pon?.onus).some((onu) => onuMatchesSearchTerm(onu, term))
-                if (!matchesSearch) return false
-                if (!hasPinnedSearchPath) return true
                 return String(pon?.id) === String(selectedSearchMatch?.ponId)
               })
             return {
@@ -625,10 +618,10 @@ export const NetworkTopology = ({
         }
       })
       .filter((olt) => asList(olt?.slots).length > 0)
-  }, [olts, selectedOltIds, normalizedSearchTerm, selectedSearchMatch])
+  }, [olts, selectedOltIds, selectedSearchMatch])
 
   const filteredOlts = useMemo(() => {
-    if (normalizedSearchTerm) return searchedOlts
+    if (selectedSearchMatch?.ponId) return searchedOlts
     if (!alarmEnabled) return searchedOlts
 
     return searchedOlts
@@ -652,7 +645,7 @@ export const NetworkTopology = ({
         }
       })
       .filter((olt) => asList(olt?.slots).length > 0)
-  }, [searchedOlts, alarmEnabled, normalizedSearchTerm, effectiveAlarmMinCount, activeAlarmReasons])
+  }, [searchedOlts, alarmEnabled, selectedSearchMatch, effectiveAlarmMinCount, activeAlarmReasons])
 
   const searchedOltMap = useMemo(() => {
     return new Map(searchedOlts.map((olt) => [String(olt.id), olt]))
@@ -766,7 +759,7 @@ export const NetworkTopology = ({
 
   return (
     <div className="flex flex-col w-full h-full">
-      <div className="sticky top-0 z-20 flex items-center gap-1.5 lg:gap-2 px-4 lg:px-10 pt-8 pb-4 mb-4 bg-white dark:bg-slate-950 border-b border-slate-100 dark:border-slate-800/60">
+      <div className="flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-6 pb-4">
         <div ref={oltFilterContainerRef} className="relative shrink-0">
           <button
             title={t('Filter OLTs')}
@@ -912,193 +905,193 @@ export const NetworkTopology = ({
           )}
         </div>
 
-        <div className="ml-auto flex items-center gap-1.5 lg:gap-2">
-          <button
-            title={t('Collapse')}
-            onClick={collapseAllNodes}
-            className="h-9 w-9 flex items-center justify-center bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-500 dark:text-slate-400 shadow-sm hover:text-emerald-600 transition-all shrink-0"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
-          </button>
+        <div className="flex items-center gap-1.5 ml-auto shrink-0">
+        <button
+          title={t('Collapse')}
+          onClick={collapseAllNodes}
+          className="h-9 w-9 flex items-center justify-center bg-slate-50 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/50 rounded-xl text-slate-400 dark:text-slate-500 shadow-sm hover:text-emerald-600 dark:hover:text-emerald-400 transition-all shrink-0"
+        >
+          <svg className="w-4 h-4" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M9 9H4v1h5V9z"/><path fillRule="evenodd" clipRule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/></svg>
+        </button>
 
+        <button
+          title={t('Counters')}
+          onClick={() => setShowPonCounts((prev) => !prev)}
+          className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all shrink-0 ${
+            showPonCounts
+              ? 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200'
+              : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-emerald-600 dark:hover:text-emerald-400'
+          }`}
+        >
+          <Sigma className="w-3.5 h-3.5" />
+        </button>
+
+        <div ref={alarmMenuContainerRef} className="relative">
           <button
-            title={t('Counters')}
-            onClick={() => setShowPonCounts((prev) => !prev)}
+            title={t('Alarm')}
+            onClick={() => {
+              setAlarmMenuOpen((prev) => !prev)
+              setOltFilterOpen(false)
+            }}
             className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all shrink-0 ${
-              showPonCounts
-                ? 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200'
-                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 dark:text-slate-400 hover:text-emerald-600'
+              alarmEnabled
+                ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
+                : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-400 dark:text-slate-500 hover:text-rose-600 dark:hover:text-rose-400'
             }`}
           >
-            <Sigma className="w-3.5 h-3.5" />
+            <Bell className="w-3.5 h-3.5" />
           </button>
 
-          <div ref={alarmMenuContainerRef} className="relative">
-            <button
-              title={t('Alarm')}
-              onClick={() => {
-                setAlarmMenuOpen((prev) => !prev)
-                setOltFilterOpen(false)
-              }}
-              className={`h-9 w-9 flex items-center justify-center border rounded-xl shadow-sm transition-all shrink-0 ${
-                alarmEnabled
-                  ? 'bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 text-rose-700 dark:text-rose-400'
-                  : 'bg-slate-50 dark:bg-slate-900 border-slate-200/70 dark:border-slate-700/50 text-slate-500 dark:text-slate-400 hover:text-rose-600'
-              }`}
-            >
-              <Bell className="w-3.5 h-3.5" />
-            </button>
+          {alarmMenuOpen && (
+            <div className="absolute right-0 top-11 z-30 w-[272px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl">
+            <div className="flex items-center justify-between mb-3.5">
+              <p className="text-[12px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">{t('Alarm settings')}</p>
+              <button
+                onClick={() => setAlarmMenuOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
 
-            {alarmMenuOpen && (
-              <div className="absolute right-0 top-11 z-30 w-[272px] max-w-[calc(100vw-1.5rem)] p-3 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl">
-              <div className="flex items-center justify-between mb-3.5">
-                <p className="text-[12px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">{t('Alarm settings')}</p>
-                <button
-                  onClick={() => setAlarmMenuOpen(false)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
+            <p className="mb-3 text-[11px] leading-snug text-slate-400 dark:text-slate-500">
+              {t('Alarm settings intro')}
+            </p>
 
-              <p className="mb-3 text-[11px] leading-snug text-slate-400 dark:text-slate-500">
-                {t('Alarm settings intro')}
-              </p>
-
-              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">{t('Offline reasons')}</p>
-              <div className="space-y-1.5 mb-3.5">
-                {[
-                  { key: 'linkLoss', label: t('Link Loss'), bulletClass: 'bg-rose-500' },
-                  { key: 'dyingGasp', label: t('Dying Gasp'), bulletClass: 'bg-blue-500' },
-                  { key: 'unknown', label: t('Unknown'), bulletClass: 'bg-purple-500' },
-                ].map((reason) => {
-                  const isSelected = alarmReasons[reason.key]
-                  return (
-                    <button
-                      key={reason.key}
-                      type="button"
-                      onClick={() => toggleAlarmReason(reason.key)}
-                      className={`
-                        w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-colors
-                        ${isSelected
-                          ? 'bg-slate-50/80 border-slate-200 dark:bg-slate-800 dark:border-slate-700'
-                          : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300 dark:bg-slate-900/40 dark:border-slate-700/50 dark:hover:bg-slate-800 dark:hover:border-slate-700'}
-                      `}
-                    >
-                      <span className="h-4 w-4 shrink-0 flex items-center justify-center">
-                        {isSelected ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" strokeWidth={3} />
-                        ) : (
-                          <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
-                        )}
-                      </span>
-                      <span className={`h-2 w-2 shrink-0 rounded-full ${reason.bulletClass}`} />
-                      <span className="text-[10px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
-                        {reason.label}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div className="h-px bg-slate-200/80 dark:bg-slate-700/80 mb-3.5" />
-
-              <div className="grid grid-cols-2 items-end gap-3">
-                <div>
-                  <label className="flex min-h-[24px] items-end text-[10px] leading-[1.1] font-black uppercase tracking-wide text-slate-500 mb-2">
-                    {t('Minimum ONU count')}
-                  </label>
-                  <div className="h-9 flex items-center gap-1.5">
-                    <input
-                      type="number"
-                      min={1}
-                      max={128}
-                      step={1}
-                      value={alarmMinCountInput}
-                      onChange={(e) => {
-                        const nextValue = e.target.value
-                        if (!/^\d{0,3}$/.test(nextValue)) return
-                        setAlarmMinCountInput(nextValue)
-                      }}
-                      onBlur={() => {
-                        setAlarmMinCountInput(String(clampAlarmMinCount(alarmMinCountInput)))
-                      }}
-                      className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] text-compact font-bold leading-none text-slate-700 dark:text-slate-200"
-                    />
-                    <div className="h-9 w-8 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col">
-                      <button
-                        type="button"
-                        onClick={() => stepAlarmMinCount(1)}
-                        disabled={effectiveAlarmMinCount >= 128}
-                        className={`
-                          h-1/2 w-full flex items-center justify-center transition-colors
-                          ${effectiveAlarmMinCount >= 128
-                            ? 'text-slate-300 cursor-not-allowed'
-                            : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:hover:bg-slate-800'}
-                        `}
-                        aria-label="+1"
-                        title="+1"
-                      >
-                        <Plus className="w-3 h-3" />
-                      </button>
-                      <div className="h-px w-full bg-slate-200 dark:bg-slate-700" />
-                      <button
-                        type="button"
-                        onClick={() => stepAlarmMinCount(-1)}
-                        disabled={effectiveAlarmMinCount <= 1}
-                        className={`
-                          h-1/2 w-full flex items-center justify-center transition-colors
-                          ${effectiveAlarmMinCount <= 1
-                            ? 'text-slate-300 cursor-not-allowed'
-                            : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:hover:bg-slate-800'}
-                        `}
-                        aria-label="-1"
-                        title="-1"
-                      >
-                        <Minus className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex flex-col items-end">
-                  <p className="flex min-h-[24px] items-end text-right text-[10px] leading-[1.1] font-black uppercase tracking-wide text-slate-500 mb-2">
-                    {t('Alarm Mode')}
-                  </p>
-                  <div className="h-9 flex items-center justify-end gap-2.5">
-                    <span className={`text-[12px] font-black leading-none tabular-nums ${alarmEnabled ? 'text-rose-600' : 'text-slate-400'}`}>
-                      {alarmEnabled ? t('Enabled') : t('Disabled')}
+            <p className="text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">{t('Offline reasons')}</p>
+            <div className="space-y-1.5 mb-3.5">
+              {[
+                { key: 'linkLoss', label: t('Link Loss'), bulletClass: 'bg-rose-500' },
+                { key: 'dyingGasp', label: t('Dying Gasp'), bulletClass: 'bg-blue-500' },
+                { key: 'unknown', label: t('Unknown'), bulletClass: 'bg-purple-500' },
+              ].map((reason) => {
+                const isSelected = alarmReasons[reason.key]
+                return (
+                  <button
+                    key={reason.key}
+                    type="button"
+                    onClick={() => toggleAlarmReason(reason.key)}
+                    className={`
+                      w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-colors
+                      ${isSelected
+                        ? 'bg-slate-50/80 border-slate-200 dark:bg-slate-800 dark:border-slate-700'
+                        : 'bg-white border-slate-200 hover:bg-slate-50/70 hover:border-slate-300 dark:bg-slate-900/40 dark:border-slate-700/50 dark:hover:bg-slate-800 dark:hover:border-slate-700'}
+                    `}
+                  >
+                    <span className="h-4 w-4 shrink-0 flex items-center justify-center">
+                      {isSelected ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" strokeWidth={3} />
+                      ) : (
+                        <span className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" />
+                      )}
                     </span>
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${reason.bulletClass}`} />
+                    <span className="text-[10px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                      {reason.label}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="h-px bg-slate-200/80 dark:bg-slate-700/80 mb-3.5" />
+
+            <div className="grid grid-cols-2 items-end gap-3">
+              <div>
+                <label className="flex min-h-[24px] items-end text-[10px] leading-[1.1] font-black uppercase tracking-wide text-slate-500 mb-2">
+                  {t('Minimum ONU count')}
+                </label>
+                <div className="h-9 flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={1}
+                    max={128}
+                    step={1}
+                    value={alarmMinCountInput}
+                    onChange={(e) => {
+                      const nextValue = e.target.value
+                      if (!/^\d{0,3}$/.test(nextValue)) return
+                      setAlarmMinCountInput(nextValue)
+                    }}
+                    onBlur={() => {
+                      setAlarmMinCountInput(String(clampAlarmMinCount(alarmMinCountInput)))
+                    }}
+                    className="h-9 w-14 rounded-lg border border-slate-200 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800 px-0 text-center [text-align-last:center] [appearance:textfield] [-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none tabular-nums text-[12px] text-compact font-bold leading-none text-slate-700 dark:text-slate-200"
+                  />
+                  <div className="h-9 w-8 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col">
                     <button
                       type="button"
-                      role="switch"
-                      aria-checked={alarmEnabled}
-                      onClick={() => setAlarmEnabled((prev) => !prev)}
+                      onClick={() => stepAlarmMinCount(1)}
+                      disabled={effectiveAlarmMinCount >= 128}
                       className={`
-                        relative h-6 w-11 rounded-full border transition-colors shrink-0
-                        ${alarmEnabled
-                          ? 'bg-rose-500 border-rose-500'
-                          : 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600'}
+                        h-1/2 w-full flex items-center justify-center transition-colors
+                        ${effectiveAlarmMinCount >= 128
+                          ? 'text-slate-300 cursor-not-allowed'
+                          : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:hover:bg-slate-800'}
                       `}
+                      aria-label="+1"
+                      title="+1"
                     >
-                      <span
-                        className={`
-                          absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform
-                          ${alarmEnabled ? 'translate-x-5' : 'translate-x-0'}
-                        `}
-                      />
+                      <Plus className="w-3 h-3" />
+                    </button>
+                    <div className="h-px w-full bg-slate-200 dark:bg-slate-700" />
+                    <button
+                      type="button"
+                      onClick={() => stepAlarmMinCount(-1)}
+                      disabled={effectiveAlarmMinCount <= 1}
+                      className={`
+                        h-1/2 w-full flex items-center justify-center transition-colors
+                        ${effectiveAlarmMinCount <= 1
+                          ? 'text-slate-300 cursor-not-allowed'
+                          : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:hover:bg-slate-800'}
+                      `}
+                      aria-label="-1"
+                      title="-1"
+                    >
+                      <Minus className="w-3 h-3" />
                     </button>
                   </div>
                 </div>
               </div>
+
+              <div className="flex flex-col items-end">
+                <p className="flex min-h-[24px] items-end text-right text-[10px] leading-[1.1] font-black uppercase tracking-wide text-slate-500 mb-2">
+                  {t('Alarm Mode')}
+                </p>
+                <div className="h-9 flex items-center justify-end gap-2.5">
+                  <span className={`text-[12px] font-black leading-none tabular-nums ${alarmEnabled ? 'text-rose-600' : 'text-slate-400'}`}>
+                    {alarmEnabled ? t('Enabled') : t('Disabled')}
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={alarmEnabled}
+                    onClick={() => setAlarmEnabled((prev) => !prev)}
+                    className={`
+                      relative h-6 w-11 rounded-full border transition-colors shrink-0
+                      ${alarmEnabled
+                        ? 'bg-rose-500 border-rose-500'
+                        : 'bg-slate-200 dark:bg-slate-700 border-slate-300 dark:border-slate-600'}
+                    `}
+                  >
+                    <span
+                      className={`
+                        absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform
+                        ${alarmEnabled ? 'translate-x-5' : 'translate-x-0'}
+                      `}
+                    />
+                  </button>
+                </div>
               </div>
-            )}
-          </div>
+            </div>
+            </div>
+          )}
+        </div>
         </div>
       </div>
 
-      <div className="flex-1 mx-3 lg:mx-8 mb-6 rounded-2xl border border-slate-200/70 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-900/30">
-        <div className="flex flex-wrap items-start gap-12 p-4 lg:p-8 pb-40 animate-in fade-in duration-500">
+      <div className="flex-1 mx-3 lg:mx-8 rounded-t-2xl border border-b-0 border-slate-200/70 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-900/30 overflow-y-auto">
+        <div className="flex flex-wrap items-start gap-x-10 gap-y-6 p-4 lg:p-8 pb-10 animate-in fade-in duration-500">
           {loading && (
                 <div className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</div>
           )}
@@ -1111,7 +1104,7 @@ export const NetworkTopology = ({
             <div className="flex flex-col items-center justify-center w-full py-20 text-slate-300">
               <Search className="w-16 h-16 mb-4 opacity-10" />
               <p className="text-[12px] font-black uppercase tracking-[0.2em]">
-                {normalizedSearchTerm
+                {selectedSearchMatch?.ponId
                   ? t('No equipment matches your search')
                   : alarmEnabled
                     ? t('No PON matches alarm filter')

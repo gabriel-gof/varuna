@@ -214,8 +214,9 @@ const mergeBaseOltsPreservingTopology = (previousOlts, nextBaseOlts) => {
 
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
-const SEARCH_ROW_HIGHLIGHT_STYLE = {
-  boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.65)'
+const SEARCH_HIGHLIGHT_STYLE = {
+  boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.6)',
+  background: 'rgba(16, 185, 129, 0.06)',
 }
 
 const toIntOrNull = (value) => {
@@ -1890,10 +1891,10 @@ const App = () => {
                                   key={onu.id}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 transition-colors
-                                    ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
+                                    h-14 transition-colors
+                                    ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50'}
                                   `}
-                                  style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}
+                                  style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                                 >
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
@@ -1933,7 +1934,7 @@ const App = () => {
                         </table>
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             {selectedPonStats.online > 0 && (
                               <div className="flex items-center gap-1">
@@ -2007,8 +2008,8 @@ const App = () => {
                             <div
                               key={onu.id}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
-                              style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
+                              style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
@@ -2032,7 +2033,7 @@ const App = () => {
                         )}
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
                             <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
@@ -2132,10 +2133,10 @@ const App = () => {
                                   key={`power-${onu.id}`}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 transition-colors
-                                    ${isHighlightedFromSearch ? 'bg-emerald-50/90 dark:bg-emerald-900/25' : ''}
+                                    h-14 transition-colors
+                                    ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50'}
                                   `}
-                                  style={isHighlightedFromSearch ? SEARCH_ROW_HIGHLIGHT_STYLE : undefined}
+                                  style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                                 >
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
@@ -2185,7 +2186,7 @@ const App = () => {
                         </table>
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             {selectedPonStats.online > 0 && (
                               <div className="flex items-center gap-1">
@@ -2252,8 +2253,8 @@ const App = () => {
                             <div
                               key={`power-${onu.id}`}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-900/25' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
-                              style={isHighlightedFromSearch ? { boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.65)' } : undefined}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
+                              style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
@@ -2289,7 +2290,7 @@ const App = () => {
                         )}
                       </div>
                       {selectedPonStats.total > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-2 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-slate-50/80 dark:bg-slate-800/60 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-1.5">
                             <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
                             <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>

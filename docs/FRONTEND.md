@@ -56,9 +56,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
 - Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads.
 - Topology search suggestions are deduplicated by serial (when present) so the same ONU is shown once even if backend topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
-- Client search applies at PON level: topology renders only PONs containing matching ONU(s), and when a suggestion is selected the tree is pinned to that exact OLT/slot/PON path.
-- Alarm filtering is bypassed while a search term is active, ensuring the searched client PON remains visible even if it fails current alarm thresholds.
-- Desktop table ONU highlight uses a single inset stroke (`inset 0 0 0 2px`) so all four border edges render with uniform thickness.
+- Client search does not filter the topology tree while typing — the tree stays unchanged until a suggestion is selected. On selection, the tree pins to the exact OLT/slot/PON path containing the matched ONU.
+- Alarm filtering is bypassed while a search match is selected, ensuring the searched client PON remains visible even if it fails current alarm thresholds.
+- ONU search highlight is unified across desktop and mobile: `inset 0 0 0 2px` emerald box-shadow for a uniform 2px stroke on all sides, plus a subtle emerald background tint. Desktop table rows drop odd/even striping when highlighted; mobile cards use `border-transparent` so only the inset shadow renders the stroke.
 - Alarm mode state propagation from topology to app shell uses a stable callback and no-op equality guard to avoid render loops (`Maximum update depth exceeded`) during topology view startup.
 
 ## Resume-on-Focus Refresh
@@ -186,12 +186,21 @@ The UI remains topology-first. No dashboard page is required for current product
 - This toggle is independent of the PON status table footer (which always shows its own summary).
 
 ## Toolbar Layout
-- All five toolbar controls (filter, search, collapse, counters, alarm) render in a single row on all breakpoints.
-- The toolbar is sticky (`sticky top-0`) with a solid background (`bg-white dark:bg-slate-950`) and a subtle bottom border so it stays readable while scrolling through long OLT/slot lists.
-- Collapse, counters, and alarm buttons are icon-only (`h-9 w-9`) on all breakpoints. Tooltips provide labels on hover.
+- The topology area has two visual rows: a single toolbar row and the container surface below it.
+- The toolbar row contains filter button, search input, and action buttons (collapse, counters, alarm) all on one line. Action buttons are pushed to the right via `ml-auto`.
+- The toolbar is not sticky — it scrolls with the page.
 - The search input takes remaining space (`flex-1 min-w-0`) on mobile, capped at `lg:max-w-[268px]` on desktop.
 - Filter and search dropdowns open downward (`top-11`) on all breakpoints.
-- Toolbar horizontal padding is `px-4` on mobile, `lg:px-10` on desktop, matching the topology content area.
+- Toolbar horizontal padding is `px-3` on mobile, `lg:px-8` on desktop — matching the container margins for coherent alignment.
+
+## Topology Container Surface
+- The tree content area (OLT/Slot/PON nodes, loading, error, and empty states) is wrapped in a container surface below the action buttons.
+- Container uses `rounded-t-2xl` (top corners only) with subtle background (`bg-slate-50/50 dark:bg-slate-900/30`) and border (`border-slate-200/70 dark:border-slate-700/40`, no bottom border) so it extends seamlessly to the footer.
+- `flex-1` and `overflow-y-auto` make the container scroll internally while filling remaining viewport height.
+- Horizontal margins (`mx-3 lg:mx-8`) match toolbar padding for coherent alignment across all three rows.
+- Inner content padding is `p-4 lg:p-8 pb-10` (relative to the container, not the page).
+- OLT trees are laid out with `flex-wrap` and split horizontal/vertical gaps (`gap-x-10 gap-y-6`).
+- Child tree indentation uses balanced `ml-6 pl-6` (24px margin + 24px padding) with a 1.5px left border-line.
 
 ## Mobile PON Panel
 - The PON detail panel uses responsive CSS (`hidden lg:flex` / `lg:hidden`) to render separate desktop and mobile layouts at the `lg` (1024px) breakpoint.
