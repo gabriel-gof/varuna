@@ -9,9 +9,12 @@ if [ -n "$tz_name" ] && [ -f "/usr/share/zoneinfo/$tz_name" ]; then
     export TZ="$tz_name"
 fi
 
-# Select Apache configuration based on role
+# Select Apache configuration based on runtime mode
 apache_templates_dir="${APACHE_TEMPLATES_DIR:-/opt/varuna/apache}"
-if [ "${SNMP_API_ONLY:-0}" = "1" ]; then
+if [ "${BACKEND_BEHIND_FRONTEND_PROXY:-0}" = "1" ]; then
+    echo "Frontend proxy mode: Using HTTP-only configuration"
+    cp "${apache_templates_dir}/varuna.conf" /etc/apache2/sites-available/000-default.conf
+elif [ "${SNMP_API_ONLY:-0}" = "1" ]; then
     echo "SNMP API mode: Using HTTP-only configuration"
     cp "${apache_templates_dir}/varuna.conf" /etc/apache2/sites-available/000-default.conf
 elif [ "${DEBUG:-False}" = "True" ]; then

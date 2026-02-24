@@ -13,6 +13,15 @@
 - Backend runtime is currently single-tenant (no tenant_id partitioning across topology models/APIs).
 - Multi-client isolation strategy is stack-level deployment (one backend+db+redis per client), not shared-database tenancy.
 
+## Production Container Mode
+- In `docker-compose.prod.yml`, backend sets `BACKEND_BEHIND_FRONTEND_PROXY=1`.
+- Production backend command uses Gunicorn:
+  - `gunicorn varuna.wsgi:application --bind 0.0.0.0:80 ...`
+- Frontend proxies `/api` and `/admin` to backend internal HTTP (`backend:80`).
+- Django production settings trust `X-Forwarded-Proto=https` (`SECURE_PROXY_SSL_HEADER`) and `USE_X_FORWARDED_HOST=True` for correct secure redirect/cookie behavior behind host TLS termination.
+- Entry-point still runs migration/static bootstrap before executing the runtime command.
+- Apache templates remain in-repo for optional non-default runtimes, but default production stack path is Gunicorn behind frontend Nginx.
+
 ## Backend Layout
 - `backend/topology/models/models.py`: domain models.
 - `backend/topology/api/views.py`: REST endpoints/actions.

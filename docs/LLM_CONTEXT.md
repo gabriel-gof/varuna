@@ -25,7 +25,10 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - OLT freshness is interval-driven (`polling_interval_seconds`); stale topology must be rendered gray.
 - Documentation must be updated on every code change (see `/Users/gabriel/Documents/varuna/AGENTS.md`).
 - For multi-client hosting on one machine, isolate by container stack, DB, Redis, and credentials per client.
-- Production compose supports instance-level isolation knobs: `VARUNA_ENV_FILE`, `VARUNA_FRONTEND_HTTP_HOST_PORT`, `VARUNA_FRONTEND_HTTPS_HOST_PORT`, `VARUNA_BACKEND_HOST_PORT`, `VARUNA_TLS_CERTS_DIR`.
+- Production compose supports instance-level isolation knobs: `VARUNA_ENV_FILE`, `VARUNA_FRONTEND_BIND_IP`, `VARUNA_FRONTEND_HTTP_HOST_PORT`, `VARUNA_BACKEND_BIND_IP`, `VARUNA_BACKEND_HOST_PORT`, `VARUNA_TLS_CERTS_DIR`.
+- Production compose sets `BACKEND_BEHIND_FRONTEND_PROXY=1` so backend serves internal HTTP API for frontend `/api` proxying.
+- Production backend runtime is Gunicorn on internal port `80`; frontend serves Django `/static` from shared volume.
+- Production runtime expects forwarded proto propagation (`X-Forwarded-Proto`) from host ingress through frontend to backend for Django HTTPS/security middleware correctness.
 
 ## Where to Read First
 1. `docs/ARCHITECTURE.md`

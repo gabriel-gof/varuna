@@ -8,7 +8,8 @@
 
 ## Runtime Services
 - `frontend`: React + Vite (dev) or Nginx static app (prod).
-- `backend`: Django + DRF API, discovery and polling orchestration, built-in scheduler (`run_scheduler`).
+- `backend`: Django + DRF API, discovery/polling orchestration, built-in scheduler (`run_scheduler`).
+  - Production compose runs backend with Gunicorn on internal port `80`.
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
@@ -19,6 +20,7 @@ Backend SNMP runtime:
 Container/runtime health:
 - Backend exposes a public liveness endpoint at `GET /api/healthz/` (`{"status":"ok"}`).
 - Compose and image healthchecks should probe `/api/healthz/` instead of authenticated API roots to avoid false `unhealthy` states.
+- Production ingress assumes host TLS termination and forwarded-proto propagation (`X-Forwarded-Proto`) from host proxy -> frontend Nginx -> backend Django.
 
 ## Tenancy and Isolation Strategy
 - Current backend/API/data model are single-tenant at application level.
@@ -31,14 +33,18 @@ Container/runtime health:
 ### Multi-Instance on One Host
 - Running multiple Varuna instances on one machine is supported when each stack uses:
   - unique project name,
-  - unique host port bindings,
+  - unique host port bindings (typically localhost-only bind),
   - isolated env vars/secrets.
 - `docker-compose.prod.yml` is instance-parameterized via:
   - `VARUNA_ENV_FILE` (env file injected into `db` and `backend`),
+  - `VARUNA_FRONTEND_BIND_IP`,
   - `VARUNA_FRONTEND_HTTP_HOST_PORT`,
-  - `VARUNA_FRONTEND_HTTPS_HOST_PORT`,
+  - `VARUNA_BACKEND_BIND_IP`,
   - `VARUNA_BACKEND_HOST_PORT`,
   - `VARUNA_TLS_CERTS_DIR`.
+- Production compose pins backend to internal API proxy mode with `BACKEND_BEHIND_FRONTEND_PROXY=1` so frontend `/api` proxying stays HTTP inside the stack and avoids backend HTTPS redirect loops.
+- Frontend serves Django static assets from a shared `static` volume (`/var/www/static`) rather than proxying static requests back to backend.
+- Resource limits are per-instance tunable via env (`VARUNA_DB_LIMIT_*`, `VARUNA_REDIS_LIMIT_*`, `VARUNA_BACKEND_LIMIT_*`, `VARUNA_FRONTEND_LIMIT_*`).
 - Each instance should run with both:
   - a dedicated compose project namespace (`docker compose -p varuna_<client> ...`),
   - a dedicated env file passed with `--env-file` (and `VARUNA_ENV_FILE` pointing to that same file).

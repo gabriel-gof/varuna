@@ -33,21 +33,35 @@ cd /Users/gabriel/Documents/varuna
 docker compose -p varuna --env-file docker/prod.env -f docker-compose.prod.yml up -d --build
 ```
 
+Production ingress contract:
+- host-level reverse proxy terminates TLS and forwards `X-Forwarded-Proto` to frontend,
+- frontend forwards that header to backend `/api`,
+- backend trusts `X-Forwarded-Proto=https` for `SECURE_SSL_REDIRECT` and secure-cookie behavior.
+
 ## Multi-Instance Production (Per Client)
 Use one production Compose stack per client when serving different OLT fleets.
 
 Core rules:
 - one project name per client (`-p varuna_<client>`),
 - one env file per client (DB name, credentials, secrets, hostnames, and compose overrides),
-- one port mapping set per client for frontend/backend,
+- one localhost frontend/backend bind per client (`VARUNA_*_BIND_IP=127.0.0.1`),
+- one frontend host port per client (and optional backend host port),
 - one dedicated PostgreSQL/Redis data set per client.
 
 `docker-compose.prod.yml` reads these instance-specific compose variables:
 - `VARUNA_ENV_FILE`
+- `VARUNA_FRONTEND_BIND_IP`
 - `VARUNA_FRONTEND_HTTP_HOST_PORT`
-- `VARUNA_FRONTEND_HTTPS_HOST_PORT`
+- `VARUNA_BACKEND_BIND_IP`
 - `VARUNA_BACKEND_HOST_PORT`
 - `VARUNA_TLS_CERTS_DIR`
+- `VARUNA_DB_LIMIT_*`, `VARUNA_REDIS_LIMIT_*`, `VARUNA_BACKEND_LIMIT_*`, `VARUNA_FRONTEND_LIMIT_*`
+- `VARUNA_GUNICORN_WORKERS`, `VARUNA_GUNICORN_THREADS`, `VARUNA_GUNICORN_TIMEOUT_SECONDS`
+
+Production backend mode:
+- `BACKEND_BEHIND_FRONTEND_PROXY=1` is set in compose so backend serves API over internal HTTP (no 80->443 redirect loop when frontend proxies `/api`).
+- backend runtime command is Gunicorn on internal port `80`,
+- frontend serves `/static` from shared volume `/var/www/static`.
 
 Bring up a second instance on the same host:
 ```bash
@@ -57,7 +71,7 @@ cp docker/prod.env docker/prod.client-b.env
 
 Edit `docker/prod.client-b.env`:
 - `VARUNA_ENV_FILE=docker/prod.client-b.env`
-- unique host ports (for example `VARUNA_FRONTEND_HTTP_HOST_PORT=18080`, `VARUNA_FRONTEND_HTTPS_HOST_PORT=18443`, `VARUNA_BACKEND_HOST_PORT=18081`)
+- unique host ports (for example `VARUNA_FRONTEND_HTTP_HOST_PORT=18080`, `VARUNA_BACKEND_HOST_PORT=18081`)
 - unique DB identity (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`)
 - per-instance hostnames (`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `SERVER_NAME`, `SERVER_ALIASES`)
 - TLS mount base when needed (`VARUNA_TLS_CERTS_DIR`)
@@ -66,6 +80,21 @@ Start instance:
 ```bash
 cd /Users/gabriel/Documents/varuna
 docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml up -d --build
+```
+
+Example: `gabisat` instance on the same server (secrets outside repo):
+```bash
+cd /Users/gabriel/Documents/varuna
+# prepare secure runtime env (chmod 600) at /etc/varuna/prod.gabisat.env
+# keep binds local:
+# - VARUNA_FRONTEND_BIND_IP=127.0.0.1
+# - VARUNA_BACKEND_BIND_IP=127.0.0.1
+# and set domain:
+# - ALLOWED_HOSTS=varuna-gabisat.templa.tech
+# - CSRF_TRUSTED_ORIGINS=https://varuna-gabisat.templa.tech
+# - SERVER_NAME=varuna-gabisat.templa.tech
+
+docker compose -p varuna_gabisat --env-file /etc/varuna/prod.gabisat.env -f docker-compose.prod.yml up -d --build
 ```
 
 Daily operations for one instance:
@@ -85,6 +114,55 @@ Operational recommendations:
 - stagger discovery/polling intervals across clients to avoid synchronized SNMP bursts,
 - apply CPU/memory limits per stack so one tenant cannot starve others,
 - back up each client database independently.
+
+### HTTPS-Only Host Ingress (Gabisat)
+Bring certificate and host Nginx online:
+```bash
+# issue cert (temporary HTTP challenge via standalone)
+systemctl stop nginx
+certbot certonly --standalone --preferred-challenges http \
+  -d varuna-gabisat.templa.tech \
+  --agree-tos --register-unsafely-without-email --non-interactive
+
+# configure host Nginx 443-only reverse proxy -> localhost:18080
+cat > /etc/nginx/sites-available/varuna-gabisat.templa.tech <<'EOF'
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name varuna-gabisat.templa.tech;
+
+    ssl_certificate /etc/letsencrypt/live/varuna-gabisat.templa.tech/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/varuna-gabisat.templa.tech/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_tickets off;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location / {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+EOF
+
+rm -f /etc/nginx/sites-enabled/default
+ln -sfn /etc/nginx/sites-available/varuna-gabisat.templa.tech /etc/nginx/sites-enabled/varuna-gabisat.templa.tech
+nginx -t
+systemctl start nginx
+systemctl reload nginx
+```
+
+Validation:
+```bash
+curl -I https://varuna-gabisat.templa.tech
+curl https://varuna-gabisat.templa.tech/api/healthz/
+ss -tulpn | rg ':22|:80|:443|:18080|:18081'
+```
 
 If service names appear stale in Docker UI, recreate stack:
 ```bash

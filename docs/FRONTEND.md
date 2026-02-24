@@ -46,6 +46,8 @@ The UI remains topology-first. No dashboard page is required for current product
 - Topology view fetches OLTs with topology (`/api/olts/?include_topology=true`).
 - Settings view prefers lightweight OLT fetches (`/api/olts/`) and preserves previously loaded topology trees in memory, reducing save/action latency on large deployments.
 - Refresh periodically.
+- Production frontend Nginx preserves incoming `X-Forwarded-Proto` when proxying `/api` and `/admin` to backend so Django security middleware can correctly detect HTTPS behind host-level TLS termination.
+- In production compose, frontend also serves `/static` directly from shared volume mount `/var/www/static` (populated by backend `collectstatic`).
 - OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable when `snmp_reachable === false` and `snmp_failure_count >= 2`.
 - Render unreachable or stale OLT nodes in gray.
 - When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and offline red-hyphen indicators are all forced to gray to signal that displayed data may be outdated.

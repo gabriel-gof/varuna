@@ -21,10 +21,14 @@ Manual maintenance actions (discovery, polling, power refresh) are queued as per
 - Multi-client hosting is stack-level isolation: one `frontend + backend + db + redis` stack per client.
 - `docker-compose.prod.yml` now supports per-instance overrides through env vars:
   - `VARUNA_ENV_FILE` (container env file used by `db` and `backend`)
+  - `VARUNA_FRONTEND_BIND_IP`
   - `VARUNA_FRONTEND_HTTP_HOST_PORT`
-  - `VARUNA_FRONTEND_HTTPS_HOST_PORT`
+  - `VARUNA_BACKEND_BIND_IP`
   - `VARUNA_BACKEND_HOST_PORT`
   - `VARUNA_TLS_CERTS_DIR`
+- In production compose, backend runs in internal HTTP mode (`BACKEND_BEHIND_FRONTEND_PROXY=1`) so frontend proxying `/api` does not hit backend HTTPS redirects.
+- Frontend Nginx preserves upstream `X-Forwarded-Proto` when proxying `/api`, and Django trusts it in production for secure redirect/cookie behavior behind host TLS termination.
+- Production backend serves with Gunicorn (container command) and frontend serves Django `/static` from a shared volume.
 - Always use a unique Compose project name (`-p varuna_<client>`) per instance.
 
 Example (same host, second production instance):
@@ -33,14 +37,17 @@ cd /Users/gabriel/Documents/varuna
 cp docker/prod.env docker/prod.client-b.env
 # Edit docker/prod.client-b.env:
 # - VARUNA_ENV_FILE=docker/prod.client-b.env
-# - unique ports (for example 18080/18443/18081)
+# - unique ports (for example 18080/18081)
 # - unique DB credentials/name
 # - domain/host settings (ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, SERVER_NAME, SERVER_ALIASES)
 
 docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml up -d --build
 ```
 
-Use one host-level reverse proxy/load balancer to route subdomains to each instance's frontend host ports.
+For `gabisat`, a ready instance template is included at `docker/prod.gabisat.env`.
+Production recommendation: keep real client secrets in root-owned files outside repo, for example `/etc/varuna/prod.<client>.env`.
+
+Use one host-level reverse proxy/load balancer to route subdomains to each instance's localhost frontend host port, exposing only `443` publicly.
 
 ## Naming
 - Database (PostgreSQL) can be `varuna_dev` / `varuna_prod` (configured by `POSTGRES_DB`).
