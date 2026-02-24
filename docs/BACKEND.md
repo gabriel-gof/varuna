@@ -4,7 +4,7 @@
 - Django + DRF
 - PostgreSQL
 - Redis
-- PySNMP
+- pureSNMP (`puresnmp`)
 
 ## Naming and Boundaries
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
@@ -109,6 +109,11 @@ Create semantics were also hardened:
 - Reactivation resets runtime health/scheduling fields so discovery/polling restarts from a clean state.
 
 ## SNMP Walk Safety
+SNMP transport is implemented with `puresnmp`:
+- SNMP `v2c` uses `bulkwalk` for discovery-scale table reads.
+- SNMP `v1` falls back to `walk` (no bulk requests).
+- Transport timeout/retry values are injected per request via the UDP sender wrapper.
+
 SNMP walks include a configurable iteration cap (`max_walk_rows`, default `20000`). If a walk exceeds this limit, it stops early and logs a warning. This prevents infinite loops from buggy OLT firmware returning cyclic or unbounded OID trees.
 
 Walk operations use a dedicated timeout (default 30s, `retries=0`) separate from the short GET timeout (2s, `retries=1`). This prevents walk timeouts on slow OLTs (e.g. MAXPRINT) where string-valued OID walks take 3-5s per bulk batch. The walk timeout is configurable per vendor via `discovery.walk_timeout_seconds`.

@@ -2139,7 +2139,7 @@ class DiscoveryBatchOperationsTests(TestCase):
 
 class WalkTimeoutTests(TestCase):
     def test_walk_uses_custom_timeout_parameter(self):
-        """walk() passes timeout/retries to UdpTransportTarget.create()."""
+        """walk() forwards timeout/retries to SNMP client construction."""
         service = SNMPService()
 
         class MockOLT:
@@ -2149,37 +2149,15 @@ class WalkTimeoutTests(TestCase):
             snmp_version = 'v2c'
             name = 'test-olt'
 
-        from unittest.mock import AsyncMock, MagicMock
+        class MockClient:
+            async def bulkwalk(self, _oids, bulk_size=25):
+                if False:
+                    yield bulk_size
 
-        create_mock = AsyncMock(return_value=MagicMock())
-        mock_transport = MagicMock()
-        mock_transport.create = create_mock
-
-        async def mock_bulk_cmd(engine, auth, transport, ctx, non_rep, max_rep, *var_binds, **kwargs):
-            return None, None, None, []
-
-        original_modules = service._pysnmp
-        try:
-            service._pysnmp = {
-                'SnmpEngine': MagicMock,
-                'CommunityData': lambda *a, **kw: MagicMock(),
-                'UdpTransportTarget': mock_transport,
-                'ContextData': MagicMock,
-                'ObjectType': lambda *a: MagicMock(),
-                'ObjectIdentity': lambda *a: MagicMock(),
-                'getCmd': None,
-                'nextCmd': None,
-                'bulkCmd': mock_bulk_cmd,
-            }
-
-            service.walk(MockOLT(), '1.3.6.1.4.1.test.1', timeout=45.0, retries=2)
-
-            create_mock.assert_called_once()
-            call_kwargs = create_mock.call_args
-            self.assertEqual(call_kwargs.kwargs.get('timeout') or call_kwargs[1].get('timeout'), 45.0)
-            self.assertEqual(call_kwargs.kwargs.get('retries') or call_kwargs[1].get('retries'), 2)
-        finally:
-            service._pysnmp = original_modules
+        olt = MockOLT()
+        with patch.object(service, '_build_client', return_value=MockClient()) as mock_build_client:
+            service.walk(olt, '1.3.6.1.4.1.test.1', timeout=45.0, retries=2)
+            mock_build_client.assert_called_once_with(olt, timeout=45.0, retries=2)
 
     def test_walk_default_timeout_is_30s(self):
         """walk() defaults to timeout=30.0, retries=0."""
@@ -2192,37 +2170,15 @@ class WalkTimeoutTests(TestCase):
             snmp_version = 'v2c'
             name = 'test-olt'
 
-        from unittest.mock import AsyncMock, MagicMock
+        class MockClient:
+            async def bulkwalk(self, _oids, bulk_size=25):
+                if False:
+                    yield bulk_size
 
-        create_mock = AsyncMock(return_value=MagicMock())
-        mock_transport = MagicMock()
-        mock_transport.create = create_mock
-
-        async def mock_bulk_cmd(engine, auth, transport, ctx, non_rep, max_rep, *var_binds, **kwargs):
-            return None, None, None, []
-
-        original_modules = service._pysnmp
-        try:
-            service._pysnmp = {
-                'SnmpEngine': MagicMock,
-                'CommunityData': lambda *a, **kw: MagicMock(),
-                'UdpTransportTarget': mock_transport,
-                'ContextData': MagicMock,
-                'ObjectType': lambda *a: MagicMock(),
-                'ObjectIdentity': lambda *a: MagicMock(),
-                'getCmd': None,
-                'nextCmd': None,
-                'bulkCmd': mock_bulk_cmd,
-            }
-
-            service.walk(MockOLT(), '1.3.6.1.4.1.test.1')
-
-            create_mock.assert_called_once()
-            call_kwargs = create_mock.call_args
-            self.assertEqual(call_kwargs.kwargs.get('timeout') or call_kwargs[1].get('timeout'), 30.0)
-            self.assertEqual(call_kwargs.kwargs.get('retries') or call_kwargs[1].get('retries'), 0)
-        finally:
-            service._pysnmp = original_modules
+        olt = MockOLT()
+        with patch.object(service, '_build_client', return_value=MockClient()) as mock_build_client:
+            service.walk(olt, '1.3.6.1.4.1.test.1')
+            mock_build_client.assert_called_once_with(olt, timeout=30.0, retries=0)
 
 
 class DiscoveryGhostFilteringTests(TestCase):
@@ -2405,6 +2361,8 @@ class DiscoveryDefaultMinSafeRatioTests(TestCase):
 
 class WalkIterationCapTests(TestCase):
     def test_walk_stops_at_max_walk_rows(self):
+        from types import SimpleNamespace
+
         service = SNMPService()
 
         # Build a mock OLT
@@ -2416,46 +2374,15 @@ class WalkIterationCapTests(TestCase):
             name = 'test-olt'
 
         base_oid = '1.3.6.1.4.1.test.99'
-        counter = {'i': 0}
 
-        async def mock_bulk_cmd(engine, auth, transport, ctx, non_rep, max_rep, *var_binds, **kwargs):
-            binds = []
-            for _ in range(max_rep):
-                counter['i'] += 1
-                from unittest.mock import MagicMock
-                vb = MagicMock()
-                vb.__getitem__ = lambda self, idx: (
-                    MagicMock(
-                        __str__=lambda s: f'{base_oid}.{counter["i"]}',
-                    ) if idx == 0 else MagicMock(prettyPrint=lambda: str(counter['i']))
-                )
-                binds.append(vb)
-            return None, None, None, binds
+        class MockClient:
+            async def bulkwalk(self, _oids, bulk_size=25):
+                for i in range(1, 201):
+                    yield SimpleNamespace(oid=f'{base_oid}.{i}', value=i)
 
-        # Patch the modules to use our mock
-        original_modules = service._pysnmp
-        try:
-            from unittest.mock import AsyncMock, MagicMock
-            mock_transport = MagicMock()
-            mock_transport.create = AsyncMock(return_value=MagicMock())
-
-            service._pysnmp = {
-                'SnmpEngine': MagicMock,
-                'CommunityData': lambda *a, **kw: MagicMock(),
-                'UdpTransportTarget': mock_transport,
-                'ContextData': MagicMock,
-                'ObjectType': lambda *a: MagicMock(),
-                'ObjectIdentity': lambda *a: MagicMock(),
-                'getCmd': None,
-                'nextCmd': None,
-                'bulkCmd': mock_bulk_cmd,
-            }
-
+        with patch.object(service, '_build_client', return_value=MockClient()):
             results = service.walk(MockOLT(), base_oid, max_walk_rows=50)
-            self.assertLessEqual(len(results), 75)  # may overshoot by one bulk batch
-            self.assertGreaterEqual(len(results), 50)
-        finally:
-            service._pysnmp = original_modules
+            self.assertEqual(len(results), 50)
 
 
 class NormalizeSerialTests(TestCase):

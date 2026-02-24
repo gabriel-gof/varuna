@@ -12,6 +12,10 @@
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
+Backend SNMP runtime:
+- Uses `puresnmp` as the SNMP transport client.
+- Discovery prefers SNMP bulk-walk (`v2c`) and falls back to regular walk for `v1`.
+
 Container/runtime health:
 - Backend exposes a public liveness endpoint at `GET /api/healthz/` (`{"status":"ok"}`).
 - Compose and image healthchecks should probe `/api/healthz/` instead of authenticated API roots to avoid false `unhealthy` states.

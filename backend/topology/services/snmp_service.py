@@ -1,36 +1,38 @@
 """
-Serviço SNMP para comunicação com OLTs
-SNMP Service for OLT communication
+Servico SNMP para comunicacao com OLTs.
 """
-import logging
+
 import asyncio
+import logging
 import threading
 import time
-from typing import List, Dict, Any, Optional
-
-# Use explicit imports inside methods to avoid asyncio loop conflicts with mod_wsgi
-# during module initialization
+from functools import partial
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
 class SNMPService:
     """
-    Serviço para executar operações SNMP
-    Service for executing SNMP operations
+    Service for executing SNMP operations.
     """
-    
+
     def __init__(self):
         self.timeout = 2.0
         self.retries = 1
         self.error_log_throttle_seconds = 30.0
-        self._pysnmp = None
+        self._puresnmp = None
         self._error_log_lock = threading.Lock()
         self._last_error_log_at: Dict[str, float] = {}
 
     def _build_error_key(self, op: str, olt: Any, reason: str) -> str:
-        olt_id = getattr(olt, 'id', None)
-        identifier = f"id:{olt_id}" if olt_id is not None else f"name:{getattr(olt, 'name', '<unknown>')}"
-        normalized_reason = str(reason or '').strip()[:160]
+        olt_id = getattr(olt, "id", None)
+        identifier = (
+            f"id:{olt_id}"
+            if olt_id is not None
+            else f"name:{getattr(olt, 'name', '<unknown>')}"
+        )
+        normalized_reason = str(reason or "").strip()[:160]
         return f"{op}:{identifier}:{normalized_reason}"
 
     def _log_error_throttled(self, level: str, key: str, message: str, *args) -> None:
@@ -58,57 +60,32 @@ class SNMPService:
             logger.debug(message, *args)
 
     @property
-    def pysnmp_modules(self):
+    def puresnmp_modules(self):
         """
-        Lazy load pysnmp modules to avoid import-time side effects.
-        Returns a dictionary or object containing the necessary symbols.
+        Lazy load puresnmp modules to avoid import-time side effects.
         """
-        if self._pysnmp is None:
+        if self._puresnmp is None:
             try:
-                from pysnmp.hlapi.asyncio import (
-                    SnmpEngine, CommunityData, UdpTransportTarget, ContextData,
-                    ObjectType, ObjectIdentity, getCmd, nextCmd, bulkCmd
-                )
-                self._pysnmp = {
-                    'SnmpEngine': SnmpEngine,
-                    'CommunityData': CommunityData,
-                    'UdpTransportTarget': UdpTransportTarget,
-                    'ContextData': ContextData,
-                    'ObjectType': ObjectType,
-                    'ObjectIdentity': ObjectIdentity,
-                    'getCmd': getCmd,
-                    'nextCmd': nextCmd,
-                    'bulkCmd': bulkCmd,
+                from puresnmp import Client, ObjectIdentifier
+                from puresnmp.credentials import V1, V2C
+                from puresnmp.exc import SnmpError, Timeout
+                from puresnmp.transport import send_udp
+
+                self._puresnmp = {
+                    "Client": Client,
+                    "ObjectIdentifier": ObjectIdentifier,
+                    "V1": V1,
+                    "V2C": V2C,
+                    "SnmpError": SnmpError,
+                    "Timeout": Timeout,
+                    "send_udp": send_udp,
                 }
             except ImportError:
-                # Try alternate names for newer pysnmp versions
-                try:
-                    from pysnmp.hlapi.asyncio import (
-                        SnmpEngine, CommunityData, UdpTransportTarget, ContextData,
-                        ObjectType, ObjectIdentity, get_cmd as getCmd, next_cmd as nextCmd,
-                        bulk_cmd as bulkCmd
-                    )
-                    self._pysnmp = {
-                        'SnmpEngine': SnmpEngine,
-                        'CommunityData': CommunityData,
-                        'UdpTransportTarget': UdpTransportTarget,
-                        'ContextData': ContextData,
-                        'ObjectType': ObjectType,
-                        'ObjectIdentity': ObjectIdentity,
-                        'getCmd': getCmd,
-                        'nextCmd': nextCmd,
-                        'bulkCmd': bulkCmd,
-                    }
-                except ImportError:
-                    logger.error("Failed to import pysnmp.hlapi.asyncio. Please verify pysnmp version.")
-                    raise
-        return self._pysnmp
-
-    @property
-    def engine(self):
-        # pysnmp asyncio engine is event-loop bound; create per request
-        # to avoid cross-loop deadlocks when sync wrappers spawn loops.
-        return self.pysnmp_modules['SnmpEngine']()
+                logger.error(
+                    "Failed to import puresnmp modules. Please verify puresnmp version."
+                )
+                raise
+        return self._puresnmp
 
     def _run(self, coro):
         try:
@@ -122,20 +99,40 @@ class SNMPService:
         finally:
             loop.close()
 
-    def _build_auth_data(self, olt: Any):
-        snmp_version = str(getattr(olt, 'snmp_version', 'v2c')).lower()
-        if snmp_version == 'v2c':
-            return self.pysnmp_modules['CommunityData'](olt.snmp_community, mpModel=1)
-        if snmp_version == 'v1':
-            return self.pysnmp_modules['CommunityData'](olt.snmp_community, mpModel=0)
+    def _build_credentials(self, olt: Any):
+        snmp_version = str(getattr(olt, "snmp_version", "v2c")).lower()
+        community = getattr(olt, "snmp_community", "")
+        if snmp_version == "v2c":
+            return self.puresnmp_modules["V2C"](community)
+        if snmp_version == "v1":
+            return self.puresnmp_modules["V1"](community)
 
         # SNMP v3 needs auth/priv fields that are not yet represented in OLT model.
         logger.error(
             "SNMP v3 requested for OLT %s but credentials are not configured in model fields.",
-            getattr(olt, 'name', '<unknown>'),
+            getattr(olt, "name", "<unknown>"),
         )
         return None
-    
+
+    def _build_client(self, olt: Any, *, timeout: float, retries: int):
+        credentials = self._build_credentials(olt)
+        if credentials is None:
+            return None
+
+        # puresnmp send_udp uses a total-attempt counter; map retries=0 to one try.
+        sender_retries = max(int(retries), 0) + 1
+        sender = partial(
+            self.puresnmp_modules["send_udp"],
+            timeout=max(float(timeout), 0.1),
+            retries=sender_retries,
+        )
+        return self.puresnmp_modules["Client"](
+            str(getattr(olt, "ip_address", "")),
+            credentials,
+            port=int(getattr(olt, "snmp_port", 161) or 161),
+            sender=sender,
+        )
+
     def get(
         self,
         olt: Any,
@@ -145,69 +142,75 @@ class SNMPService:
         retries: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Executa SNMP GET para múltiplas OIDs
-        Executes SNMP GET for multiple OIDs
+        Execute SNMP GET for multiple OIDs.
         """
         if not oids:
             return None
 
-        m = self.pysnmp_modules
-        var_binds = [m['ObjectType'](m['ObjectIdentity'](oid)) for oid in oids]
         timeout_value = self.timeout if timeout is None else float(timeout)
         retries_value = self.retries if retries is None else int(retries)
 
-        auth_data = self._build_auth_data(olt)
-        if auth_data is None:
-            return None
-
         async def _get():
-            engine = self.engine
+            client = self._build_client(
+                olt,
+                timeout=timeout_value,
+                retries=retries_value,
+            )
+            if client is None:
+                return None
+
+            m = self.puresnmp_modules
             try:
-                # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
-                transport = await m['UdpTransportTarget'].create(
-                    (olt.ip_address, olt.snmp_port),
-                    timeout=timeout_value,
-                    retries=retries_value
-                )
-
-                errorIndication, errorStatus, errorIndex, varBinds = await m['getCmd'](
-                    engine,
-                    auth_data,
-                    transport,
-                    m['ContextData'](),
-                    *var_binds
-                )
-
-                if errorIndication or errorStatus:
-                    reason = errorIndication or errorStatus.prettyPrint()
+                parsed_oids = [m["ObjectIdentifier"](oid) for oid in oids]
+                values = await client.multiget(parsed_oids)
+                if len(values) != len(oids):
                     self._log_error_throttled(
                         "warning",
-                        self._build_error_key("get", olt, reason),
-                        "SNMP GET error em %s: %s",
-                        getattr(olt, 'name', '<unknown>'),
-                        reason,
+                        self._build_error_key(
+                            "get_partial",
+                            olt,
+                            f"expected={len(oids)} got={len(values)}",
+                        ),
+                        "SNMP GET partial response em %s: expected=%s got=%s",
+                        getattr(olt, "name", "<unknown>"),
+                        len(oids),
+                        len(values),
                     )
-                    return None
 
-                results = {}
-                for varBind in varBinds:
-                    oid_str = str(varBind[0])
-                    val_obj = varBind[1]
-                    results[oid_str] = self._parse_value(val_obj)
-
+                results: Dict[str, Any] = {}
+                for oid, value in zip(oids, values):
+                    results[oid] = self._parse_value(value)
                 return results
-            except Exception as e:
+            except m["Timeout"] as exc:
+                self._log_error_throttled(
+                    "warning",
+                    self._build_error_key("get_timeout", olt, str(exc)),
+                    "SNMP GET timeout em %s: %s",
+                    getattr(olt, "name", "<unknown>"),
+                    exc,
+                )
+                return None
+            except m["SnmpError"] as exc:
+                self._log_error_throttled(
+                    "warning",
+                    self._build_error_key("get", olt, str(exc)),
+                    "SNMP GET error em %s: %s",
+                    getattr(olt, "name", "<unknown>"),
+                    exc,
+                )
+                return None
+            except Exception as exc:
                 self._log_error_throttled(
                     "error",
-                    self._build_error_key("get_exception", olt, str(e)),
+                    self._build_error_key("get_exception", olt, str(exc)),
                     "SNMP GET exception em %s: %s",
-                    getattr(olt, 'name', '<unknown>'),
-                    e,
+                    getattr(olt, "name", "<unknown>"),
+                    exc,
                 )
                 return None
 
         return self._run(_get())
-    
+
     def walk(
         self,
         olt: Any,
@@ -218,133 +221,107 @@ class SNMPService:
         retries: int = 0,
     ) -> List[Dict[str, Any]]:
         """
-        Executa SNMP WALK para uma OID
-        Executes SNMP WALK for an OID
-
-        Walk uses a generous per-request timeout (default 30s, retries=0)
-        instead of the short GET timeout, because walks involve many
-        sequential bulk requests and slow OLTs may need several seconds
-        per bulk batch.
+        Execute SNMP WALK for an OID.
         """
         base_oid = oid.rstrip(".")
-        results = []
-        m = self.pysnmp_modules
-        auth_data = self._build_auth_data(olt)
-        if auth_data is None:
-            return results
-
-        walk_timeout = float(timeout)
-        walk_retries = int(retries)
+        results: List[Dict[str, Any]] = []
 
         async def _walk():
-            engine = self.engine
-            # pysnmp 7.x requires using the create() factory method for UdpTransportTarget
-            transport = await m['UdpTransportTarget'].create(
-                (olt.ip_address, olt.snmp_port),
-                timeout=walk_timeout,
-                retries=walk_retries
+            client = self._build_client(
+                olt,
+                timeout=timeout,
+                retries=retries,
             )
+            if client is None:
+                return results
 
-            current_oid = base_oid
-            bulk_cmd = m.get('bulkCmd')
-            max_repetitions = 25
-            while True:
-                try:
-                    if bulk_cmd:
-                        errorIndication, errorStatus, errorIndex, varBinds = await bulk_cmd(
-                            engine,
-                            auth_data,
-                            transport,
-                            m['ContextData'](),
-                            0,
-                            max_repetitions,
-                            m['ObjectType'](m['ObjectIdentity'](current_oid)),
-                            lexicographicMode=False
-                        )
-                    else:
-                        errorIndication, errorStatus, errorIndex, varBinds = await m['nextCmd'](
-                            engine,
-                            auth_data,
-                            transport,
-                            m['ContextData'](),
-                            m['ObjectType'](m['ObjectIdentity'](current_oid)),
-                            lexicographicMode=False
-                        )
-                except Exception as e:
-                    self._log_error_throttled(
-                        "error",
-                        self._build_error_key("walk_exception", olt, str(e)),
-                        "SNMP WALK exception em %s: %s",
-                        getattr(olt, 'name', '<unknown>'),
-                        e,
-                    )
-                    break
+            m = self.puresnmp_modules
+            try:
+                parsed_base_oid = m["ObjectIdentifier"](base_oid)
+                snmp_version = str(getattr(olt, "snmp_version", "v2c")).lower()
+                if snmp_version == "v1":
+                    walker = client.walk(parsed_base_oid, errors="warn")
+                else:
+                    walker = client.bulkwalk([parsed_base_oid], bulk_size=25)
 
-                if errorIndication:
-                    self._log_error_throttled(
-                        "warning",
-                        self._build_error_key("walk", olt, str(errorIndication)),
-                        "SNMP WALK error em %s: %s",
-                        getattr(olt, 'name', '<unknown>'),
-                        errorIndication,
-                    )
-                    break
-                elif errorStatus:
-                    reason = errorStatus.prettyPrint()
-                    self._log_error_throttled(
-                        "warning",
-                        self._build_error_key("walk", olt, reason),
-                        "SNMP WALK error em %s: %s",
-                        getattr(olt, 'name', '<unknown>'),
-                        reason,
-                    )
-                    break
+                async for varbind in walker:
+                    bind_oid = getattr(varbind, "oid", None)
+                    bind_value = getattr(varbind, "value", None)
+                    if bind_oid is None and isinstance(varbind, (tuple, list)) and len(varbind) >= 2:
+                        bind_oid = varbind[0]
+                        bind_value = varbind[1]
 
-                if not varBinds:
-                    break
-
-                advanced = False
-                for varBind in varBinds:
-                    oid_str = str(varBind[0])
+                    oid_str = str(bind_oid)
                     if not oid_str.startswith(f"{base_oid}."):
-                        return results
-                    val_obj = varBind[1]
-                    results.append({
-                        "oid": oid_str,
-                        "value": self._parse_value(val_obj)
-                    })
-                    if oid_str != current_oid:
-                        current_oid = oid_str
-                        advanced = True
+                        break
 
-                if not advanced:
-                    break
-
-                if len(results) >= max_walk_rows:
-                    logger.warning(
-                        "SNMP WALK on %s hit max_walk_rows cap (%s); stopping walk for OID %s.",
-                        getattr(olt, 'name', '<unknown>'),
-                        max_walk_rows,
-                        base_oid,
+                    results.append(
+                        {
+                            "oid": oid_str,
+                            "value": self._parse_value(bind_value),
+                        }
                     )
-                    break
+                    if len(results) >= max_walk_rows:
+                        logger.warning(
+                            "SNMP WALK on %s hit max_walk_rows cap (%s); stopping walk for OID %s.",
+                            getattr(olt, "name", "<unknown>"),
+                            max_walk_rows,
+                            base_oid,
+                        )
+                        break
+            except m["Timeout"] as exc:
+                self._log_error_throttled(
+                    "warning",
+                    self._build_error_key("walk_timeout", olt, str(exc)),
+                    "SNMP WALK timeout em %s: %s",
+                    getattr(olt, "name", "<unknown>"),
+                    exc,
+                )
+            except m["SnmpError"] as exc:
+                self._log_error_throttled(
+                    "warning",
+                    self._build_error_key("walk", olt, str(exc)),
+                    "SNMP WALK error em %s: %s",
+                    getattr(olt, "name", "<unknown>"),
+                    exc,
+                )
+            except Exception as exc:
+                self._log_error_throttled(
+                    "error",
+                    self._build_error_key("walk_exception", olt, str(exc)),
+                    "SNMP WALK exception em %s: %s",
+                    getattr(olt, "name", "<unknown>"),
+                    exc,
+                )
 
             return results
 
         return self._run(_walk())
-    
+
     def _parse_value(self, val_obj: Any) -> Optional[Any]:
         """
-        Parse valor SNMP
-        Parse SNMP value
+        Parse SNMP value to application-friendly format.
         """
         if val_obj is None:
             return None
-        
-        try:
-            return val_obj.prettyPrint()
-        except Exception:
-            return str(val_obj)
+
+        value = val_obj
+        if hasattr(val_obj, "pythonize"):
+            try:
+                value = val_obj.pythonize()
+            except Exception:
+                value = val_obj
+
+        if isinstance(value, (bytes, bytearray)):
+            raw = bytes(value).rstrip(b"\x00")
+            if not raw:
+                return ""
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return f"0x{raw.hex()}"
+
+        return str(value)
 
 
 snmp_service = SNMPService()
