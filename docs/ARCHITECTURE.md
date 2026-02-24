@@ -12,6 +12,10 @@
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
+Container/runtime health:
+- Backend exposes a public liveness endpoint at `GET /api/healthz/` (`{"status":"ok"}`).
+- Compose and image healthchecks should probe `/api/healthz/` instead of authenticated API roots to avoid false `unhealthy` states.
+
 ## Tenancy and Isolation Strategy
 - Current backend/API/data model are single-tenant at application level.
 - Multi-client deployment direction is stack-per-client isolation, not shared-db multitenancy.

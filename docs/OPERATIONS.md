@@ -25,6 +25,7 @@ docker compose -f docker-compose.dev.yml up -d --build
 Development service URLs:
 - Frontend: `http://localhost:4000`
 - Backend API: `http://localhost:8000/api/`
+- Backend health endpoint: `http://localhost:8000/api/healthz/`
 
 Production:
 ```bash
@@ -108,6 +109,16 @@ If running with Docker, also recreate the stack so containers pick up new code a
 ```bash
 docker compose -f docker-compose.dev.yml down
 docker compose -f docker-compose.dev.yml up -d --build --force-recreate
+```
+
+If backend appears `unhealthy`, verify health endpoint directly:
+```bash
+docker compose -f docker-compose.dev.yml exec backend \
+  curl -fsS http://localhost:8000/api/healthz/
+```
+Expected response:
+```json
+{"status":"ok"}
 ```
 
 ## Authentication Bootstrap

@@ -36,7 +36,7 @@ EXPOSE 80 8000
 RUN a2enmod wsgi rewrite ssl headers expires proxy_http
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:80/api/ || curl -f http://localhost:8000/api/ || exit 1
+    CMD curl -fsS http://localhost:8000/api/healthz/ || curl -fsS http://localhost:80/api/healthz/ || exit 1
 
 ENTRYPOINT ["/usr/local/bin/varuna-entrypoint.sh"]
 CMD ["apache2ctl", "-D", "FOREGROUND"]

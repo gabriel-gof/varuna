@@ -444,6 +444,19 @@ class Command(BaseCommand):
                 "reason": mapped.get("reason", ""),
             })
 
+        parsed_count = len(parsed_onus)
+        if active_count > 0 and parsed_count < active_count * min_safe_ratio:
+            logger.critical(
+                "OLT %s discovery parsed %s ONUs from %s SNMP indices, but %s ONUs are active (%.0f%%). "
+                "Skipping deactivation to avoid mass false removal.",
+                olt.id,
+                parsed_count,
+                len(indices),
+                active_count,
+                (parsed_count / active_count) * 100 if active_count else 0,
+            )
+            skip_deactivation = True
+
         # Total index-parse failure guard: SNMP returned ONUs but none could be
         # parsed — likely a vendor profile indexing misconfiguration, not real
         # absence.  Skip deactivation and mark discovery unhealthy so the

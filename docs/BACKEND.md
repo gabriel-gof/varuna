@@ -37,6 +37,7 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
   - `pause_between_walks_seconds` (default `0.5`, range `0.0-5.0`): delay between the main discovery walks (name, serial, status) to reduce burst SNMP load on the OLT.
   - `walk_timeout_seconds` (default `30`, range `5-120`): per-request timeout for SNMP walk operations during discovery. Walks use a generous timeout (separate from the short 2s GET timeout) because slow OLTs may need several seconds per bulk batch. Healthy OLTs respond in <100ms (zero impact); slow OLTs with 3-5s responses complete fine; dead OLTs timeout after one request and existing `mark_olt_unreachable` handles it.
   - `min_safe_ratio` (default `0.3`, range `0.0-1.0`): minimum ratio of discovered ONUs to existing active ONUs. If the walk returns fewer ONUs than `active_count * min_safe_ratio`, deactivation is skipped and a critical log is emitted. Guard only applies when `active_count > 0` (first discovery always proceeds). ONU upserts still run.
+  - Parse-skip safety uses the same `min_safe_ratio`: if many SNMP indices are returned but only a low number are parseable (`parse_onu_index` success), deactivation is also skipped. This prevents mass false removal when indexing parse fails for a large portion of a discovery snapshot.
 - `status`: status OID, `status_map`, and optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause). Optional `disconnect_reason_oid` and `disconnect_reason_map` enable a second-pass fetch of disconnect reasons for offline ONUs (used by Huawei where status and disconnect cause are separate OIDs).
 - `power`: OIDs/suffix for RX reads plus optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause, bounded online retry pass). Optional `onu_rx_formula` and `olt_rx_formula` select named formulas from the power formula registry (e.g. `hundredths_dbm`, `huawei_olt_rx`); defaults to ZTE normalization when absent.
 
@@ -233,6 +234,7 @@ Environment variable fallbacks: `VARUNA_AUTH_USERNAME`, `VARUNA_AUTH_PASSWORD`, 
 
 ## API Notes
 Main endpoints:
+- `GET /api/healthz/` (public container health endpoint, returns `{"status":"ok"}`)
 - `GET /api/olts/`
 - `GET /api/olts/?include_topology=true`
 - `GET /api/olts/{id}/topology/`

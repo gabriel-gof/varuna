@@ -1787,6 +1787,49 @@ class DiscoveryPartialWalkGuardTests(TestCase):
         # All 20 still active
         self.assertEqual(ONU.objects.filter(olt=self.olt, is_active=True).count(), 20)
 
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_parse_skip_heavy_discovery_skips_deactivation(self, mock_walk):
+        """
+        If most returned indices fail parse_onu_index, do not mass-deactivate active ONUs.
+        """
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+
+        for i in range(1, 21):
+            ONU.objects.create(
+                olt=self.olt,
+                slot_id=1,
+                pon_id=1,
+                onu_id=i,
+                snmp_index=f'285278465.{i}',
+                name=f'client-{i}',
+                serial=f'SERIAL-{i}',
+                status=ONU.STATUS_ONLINE,
+                is_active=True,
+            )
+
+        name_rows = []
+        serial_rows = []
+        status_rows = []
+        for i in range(1, 6):
+            index = f'285278465.{i}'
+            name_rows.append({'oid': f'{base_name_oid}.{index}', 'value': f'client-{i}'})
+            serial_rows.append({'oid': f'{base_serial_oid}.{index}', 'value': f'vendor,SERIAL-{i}'})
+            status_rows.append({'oid': f'{base_status_oid}.{index}', 'value': '4'})
+
+        for i in range(6, 21):
+            index = f'invalid-{i}'
+            name_rows.append({'oid': f'{base_name_oid}.{index}', 'value': f'client-{i}'})
+            serial_rows.append({'oid': f'{base_serial_oid}.{index}', 'value': f'vendor,SERIAL-{i}'})
+            status_rows.append({'oid': f'{base_status_oid}.{index}', 'value': '4'})
+
+        mock_walk.side_effect = [name_rows, serial_rows, status_rows]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        self.assertEqual(ONU.objects.filter(olt=self.olt, is_active=True).count(), 20)
+
 
 class ReaderRolePermissionTests(TestCase):
     def setUp(self):
@@ -2552,6 +2595,14 @@ class AuthenticationApiTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('errors', response.data)
+
+
+class HealthEndpointTests(TestCase):
+    def test_healthz_is_public_and_returns_ok(self):
+        client = APIClient()
+        response = client.get('/api/healthz/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertJSONEqual(response.content.decode('utf-8'), {'status': 'ok'})
 
 
 class EnsureAuthUserCommandTests(TestCase):
