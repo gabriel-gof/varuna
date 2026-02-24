@@ -56,6 +56,11 @@
   background: transparent;
 }
 
+@keyframes cooldown-ring {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: 40.841; }
+}
+
 @media (max-width: 1023px) {
   input:not(.text-compact),
   select:not(.text-compact),

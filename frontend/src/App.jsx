@@ -597,9 +597,12 @@ const App = () => {
   const [settingsActionMessage, setSettingsActionMessage] = useState(null)
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
   const [isRefreshingPonPanel, setIsRefreshingPonPanel] = useState(false)
+  const [refreshCooldownActive, setRefreshCooldownActive] = useState(false)
+  const refreshCooldownTimerRef = useRef(null)
   const [ponPanelError, setPonPanelError] = useState('')
   const ponPanelErrorTimerRef = useRef(null)
   useEffect(() => () => clearTimeout(ponPanelErrorTimerRef.current), [])
+  useEffect(() => { setRefreshCooldownActive(false); clearTimeout(refreshCooldownTimerRef.current) }, [selectedPonId])
   const [healthTick, setHealthTick] = useState(() => Date.now())
   const oltsRef = useRef([])
   const selectedPonMissingCyclesRef = useRef(0)
@@ -966,7 +969,7 @@ const App = () => {
   }, [selectedPonData, t])
 
   const handleRefreshPonPanel = useCallback(async () => {
-    if (isRefreshingPonPanel) return
+    if (isRefreshingPonPanel || refreshCooldownActive) return
 
     setPonPanelError('')
     setIsRefreshingPonPanel(true)
@@ -1003,8 +1006,11 @@ const App = () => {
       showPonPanelError(getApiErrorMessage(err, fallback, t))
     } finally {
       setIsRefreshingPonPanel(false)
+      setRefreshCooldownActive(true)
+      clearTimeout(refreshCooldownTimerRef.current)
+      refreshCooldownTimerRef.current = setTimeout(() => setRefreshCooldownActive(false), 5000)
     }
-  }, [activeTab, canManageSettings, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, showPonPanelError, t])
+  }, [activeTab, canManageSettings, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, refreshCooldownActive, showPonPanelError, t])
 
   useEffect(() => {
     if (!selectedPonId) {
@@ -1207,7 +1213,7 @@ const App = () => {
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
   const currentSortLabel = activeSortOptions.find((option) => option.id === currentSortMode)?.label || activeSortOptions[0]?.label || t('ONU ID')
-  const isSidebarRefreshBusy = isRefreshingPonPanel
+  const isSidebarRefreshBusy = isRefreshingPonPanel || refreshCooldownActive
   const setCurrentSortMode = (mode) => {
     if (activeTab === 'power') {
       setPowerSortMode(mode)
@@ -1815,11 +1821,26 @@ const App = () => {
                       <button
                         onClick={handleRefreshPonPanel}
                         disabled={isSidebarRefreshBusy}
-                        className="shrink-0 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95 disabled:opacity-55 disabled:cursor-not-allowed"
+                        className="shrink-0 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95 disabled:cursor-not-allowed"
                         aria-label={t('Refresh')}
-                        title={t('Refresh')}
+                        title={refreshCooldownActive ? t('Cooldown') : t('Refresh')}
                       >
-                        <RotateCw className={`w-4 h-4 ${isRefreshingPonPanel ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+                        {refreshCooldownActive ? (
+                          <svg className="w-4 h-4" viewBox="0 0 16 16">
+                            <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-slate-200 dark:text-slate-700" />
+                            <circle
+                              cx="8" cy="8" r="6.5"
+                              fill="none"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeDasharray={`${2 * Math.PI * 6.5}`}
+                              className="origin-center -rotate-90 text-emerald-500 dark:text-emerald-400"
+                              style={{ animation: 'cooldown-ring 5s linear forwards', stroke: 'currentColor' }}
+                            />
+                          </svg>
+                        ) : (
+                          <RotateCw className={`w-4 h-4 ${isRefreshingPonPanel ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+                        )}
                       </button>
                     </div>
                   </div>

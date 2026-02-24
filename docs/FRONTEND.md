@@ -105,6 +105,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - displays `—` when the exact disconnection window is unknown.
   - when `—` is shown for non-online rows, its color follows the ONU status palette (red/link loss-offline, blue/dying gasp, purple/unknown); online and gray-tree rows keep neutral gray.
 - Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
+- PON sidebar refresh has a 5-second cooldown after each collection completes. During cooldown the button is disabled and shows a depleting SVG ring animation around the icon (CSS `cooldown-ring` keyframe in `index.css`). Cooldown resets when the selected PON changes.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
