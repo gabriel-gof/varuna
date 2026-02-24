@@ -1230,6 +1230,13 @@ const App = () => {
     setStatusSortMode((prev) => (prev === nextMode ? prev : nextMode))
   }, [alarmSortConfig.enabled, availableStatusCounts])
 
+  useEffect(() => {
+    if (!selectedPonId || !alarmSortConfig.enabled) return
+    const nextMode = resolveStatusSortMode('offline')
+    setStatusSortMode((prev) => (prev === nextMode ? prev : nextMode))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPonId])
+
   const statusRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
       const classification = classifyOnu(onu)
@@ -1666,7 +1673,7 @@ const App = () => {
               return (
               <div className="h-full min-h-0 flex flex-col">
                 {/* Desktop header */}
-                <div className="hidden lg:flex pl-8 pr-4 py-2.5 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 items-center">
+                <div className="hidden lg:flex pl-8 pr-4 py-3.5 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 items-center">
                   <div className="w-full flex items-start justify-between gap-3">
                     <div className="min-w-0 flex flex-col">
                       <div className="flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">

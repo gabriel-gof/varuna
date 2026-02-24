@@ -307,7 +307,7 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       </div>
 
       {isOpen && children && (
-        <div className="relative mt-2.5 ml-6 pl-6 border-l-[1.5px] border-slate-100 dark:border-slate-700/50 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
+        <div className="relative mt-2.5 ml-4 pl-8 border-l-[1.5px] border-slate-100 dark:border-slate-700/50 flex flex-col gap-2.5 animate-in slide-in-from-top-2 duration-300">
           {children}
         </div>
       )}
@@ -373,6 +373,14 @@ export const NetworkTopology = ({
   const oltFilterContainerRef = useRef(null)
   const alarmMenuContainerRef = useRef(null)
   const normalizedSearchTerm = normalizeSearch(searchTerm)
+
+  useEffect(() => {
+    if (selectedSearchMatch?.searchTerm) {
+      setSearchTerm(selectedSearchMatch.searchTerm)
+    } else if (!selectedSearchMatch) {
+      setSearchTerm('')
+    }
+  }, [selectedSearchMatch])
 
   useEffect(() => {
     if (!olts.length) return
@@ -759,7 +767,7 @@ export const NetworkTopology = ({
 
   return (
     <div className="flex flex-col w-full h-full">
-      <div className="flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-6 pb-4">
+      <div className="flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-4 pb-4">
         <div ref={oltFilterContainerRef} className="relative shrink-0">
           <button
             title={t('Filter OLTs')}

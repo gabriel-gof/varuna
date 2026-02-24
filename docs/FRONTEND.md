@@ -54,7 +54,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Settings mutations (`updateOlt`, `deleteOlt`) trigger `fetchOlts` without `await`, so the success toast shows immediately and the topology refreshes silently in the background (same pattern as `createOlt`).
 - Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
-- Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads.
+- Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads. The local `searchTerm` state syncs with `selectedSearchMatch` changes so the input always reflects the active filter state (clearing when the match is dismissed, restoring when remounting after a tab switch).
 - Topology search suggestions are deduplicated by serial (when present) so the same ONU is shown once even if backend topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
 - Client search does not filter the topology tree while typing — the tree stays unchanged until a suggestion is selected. On selection, the tree pins to the exact OLT/slot/PON path containing the matched ONU.
 - Alarm filtering is bypassed while a search match is selected, ensuring the searched client PON remains visible even if it fails current alarm thresholds.
@@ -115,7 +115,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
 - In PON detail tables (`Status` and `Potência`), the second column label is `Name`/`Nome` because it represents ONU name (not customer account/login).
 - Alarm mode no longer injects hidden reason-specific sort modes into the PON table (`link_loss`/`dying_gasp`/`unknown`). Status sorting remains canonical (`Default`, `Offline`, `Online`) to keep dropdown label and row order coherent.
-- When alarm mode is enabled, PON status rows default to `Offline` ordering (inactive-first). If specific alarm reasons are selected, those reasons are prioritized only within the offline group; online rows stay last.
+- When alarm mode is enabled, PON status rows default to `Offline` ordering (inactive-first). Selecting a new PON while alarm is already active also resets sort to offline ordering. If specific alarm reasons are selected, those reasons are prioritized only within the offline group; online rows stay last.
 - Alarm configuration (enabled, reasons, minCount) is persisted in `localStorage` (`varuna.alarmConfig`) per browser. Defaults: enabled=true, reasons=linkLoss only, minOnus=4. Users can change settings freely; preferences survive page reloads.
 
 ## Settings Panel Design
@@ -188,10 +188,10 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Toolbar Layout
 - The topology area has two visual rows: a single toolbar row and the container surface below it.
 - The toolbar row contains filter button, search input, and action buttons (collapse, counters, alarm) all on one line. Action buttons are pushed to the right via `ml-auto`.
-- The toolbar is not sticky — it scrolls with the page.
+- The toolbar is not sticky — it scrolls with the page. Toolbar bottom padding (`pb-2`) is compact so the container surface top edge aligns with the bottom of the PON sidebar header.
 - The search input takes remaining space (`flex-1 min-w-0`) on mobile, capped at `lg:max-w-[268px]` on desktop.
 - Filter and search dropdowns open downward (`top-11`) on all breakpoints.
-- Toolbar horizontal padding is `px-3` on mobile, `lg:px-8` on desktop — matching the container margins for coherent alignment.
+- Toolbar vertical padding is `pt-4 pb-4`, centering the controls between the nav header and the container surface. Horizontal padding is `px-3` on mobile, `lg:px-8` on desktop — matching the container margins for coherent alignment.
 
 ## Topology Container Surface
 - The tree content area (OLT/Slot/PON nodes, loading, error, and empty states) is wrapped in a container surface below the action buttons.
@@ -200,11 +200,11 @@ The UI remains topology-first. No dashboard page is required for current product
 - Horizontal margins (`mx-3 lg:mx-8`) match toolbar padding for coherent alignment across all three rows.
 - Inner content padding is `p-4 lg:p-8 pb-10` (relative to the container, not the page).
 - OLT trees are laid out with `flex-wrap` and split horizontal/vertical gaps (`gap-x-10 gap-y-6`).
-- Child tree indentation uses balanced `ml-6 pl-6` (24px margin + 24px padding) with a 1.5px left border-line.
+- Child tree indentation uses `ml-4 pl-8` (16px margin + 32px padding) with a 1.5px left border-line.
 
 ## Mobile PON Panel
 - The PON detail panel uses responsive CSS (`hidden lg:flex` / `lg:hidden`) to render separate desktop and mobile layouts at the `lg` (1024px) breakpoint.
-- Desktop (>=1024px): breadcrumb header uses `py-2.5` with description on a second line below the breadcrumb (matching mobile stacked layout), table layout with `minWidth: 520px` for both Status and Power tabs.
+- Desktop (>=1024px): breadcrumb header uses `py-3.5` with description on a second line below the breadcrumb, matching the vertical presence of the topology toolbar buttons. Table layout with `minWidth: 520px` for both Status and Power tabs.
 - Mobile (<1024px): card-based layout with compact header (back arrow + breadcrumb + PON description nested inside breadcrumb's flex container for natural alignment).
   - Cards use `rounded-md` (6px) inside `rounded-xl` (12px) containers for geometric nesting.
   - Card spacing: `space-y-1.5` (6px) between cards, `py-1.5` vertical padding inside cards.
