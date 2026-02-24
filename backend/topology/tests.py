@@ -2385,6 +2385,16 @@ class WalkIterationCapTests(TestCase):
             self.assertEqual(len(results), 50)
 
 
+class SNMPValueParsingTests(TestCase):
+    def test_parse_value_strips_nul_bytes(self):
+        service = SNMPService()
+        self.assertEqual(service._parse_value(b'AB\x00CD\x00EF'), 'ABCDEF')
+
+    def test_parse_value_strips_nul_chars(self):
+        service = SNMPService()
+        self.assertEqual(service._parse_value('AB\x00CD\x00EF'), 'ABCDEF')
+
+
 class NormalizeSerialTests(TestCase):
     def test_normalize_serial_uppercases(self):
         self.assertEqual(_normalize_serial("FHTT6a0e1cfa"), "FHTT6A0E1CFA")

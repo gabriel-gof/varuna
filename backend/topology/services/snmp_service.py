@@ -313,7 +313,7 @@ class SNMPService:
                 value = val_obj
 
         if isinstance(value, (bytes, bytearray)):
-            raw = bytes(value).rstrip(b"\x00")
+            raw = bytes(value).replace(b"\x00", b"").rstrip(b"\x00")
             if not raw:
                 return ""
             try:
@@ -321,7 +321,7 @@ class SNMPService:
             except UnicodeDecodeError:
                 return f"0x{raw.hex()}"
 
-        return str(value)
+        return str(value).replace("\x00", "")
 
 
 snmp_service = SNMPService()

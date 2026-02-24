@@ -113,6 +113,7 @@ SNMP transport is implemented with `puresnmp`:
 - SNMP `v2c` uses `bulkwalk` for discovery-scale table reads.
 - SNMP `v1` falls back to `walk` (no bulk requests).
 - Transport timeout/retry values are injected per request via the UDP sender wrapper.
+- String values are sanitized to remove embedded `NUL` bytes (`\x00`) before persistence, preventing database write errors from vendor-padded SNMP octet strings.
 
 SNMP walks include a configurable iteration cap (`max_walk_rows`, default `20000`). If a walk exceeds this limit, it stops early and logs a warning. This prevents infinite loops from buggy OLT firmware returning cyclic or unbounded OID trees.
 
