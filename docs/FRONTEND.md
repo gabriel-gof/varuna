@@ -90,9 +90,10 @@ The UI remains topology-first. No dashboard page is required for current product
 - Discovery, polling, and power collection are scheduled by the backend `run_scheduler` management command. The frontend no longer submits automatic maintenance requests.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
 - PON sidebar refresh is tab-aware and collection-first:
-  - `Status`: triggers `POST /api/olts/:id/run_polling/` for the selected OLT.
+  - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`).
   - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`).
-  - After collection, both paths reload topology (`GET /api/olts/?include_topology=true`) to keep tree + panel in sync.
+  - Both paths patch only the selected PON ONU rows in-memory (no forced full-topology reload on success).
+  - Backend also exposes single-ONU status refresh (`POST /api/onu/:id/refresh-status/`) for targeted operations.
 - Status table disconnection column is interval-aware:
   - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.

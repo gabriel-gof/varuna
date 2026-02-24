@@ -719,6 +719,85 @@ class PollingCommandTests(TestCase):
         self.assertEqual(self.onu.status, ONU.STATUS_ONLINE)
         self.assertEqual(weird_index_onu.status, ONU.STATUS_ONLINE)
 
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_scoped_polling_updates_only_selected_pon_and_keeps_schedule_fields(self, mock_get):
+        status_oid = self.vendor.oid_templates['status']['onu_status_oid']
+        target_onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='285278465.2',
+            name='client-target',
+            serial='SERIAL-TARGET',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+        untouched_onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=1,
+            snmp_index='285278466.1',
+            name='client-untouched',
+            serial='SERIAL-UNTOUCHED',
+            status=ONU.STATUS_UNKNOWN,
+            is_active=True,
+        )
+        previous_poll_at = timezone.now() - timezone.timedelta(minutes=7)
+        self.olt.last_poll_at = previous_poll_at
+        self.olt.snmp_reachable = True
+        self.olt.snmp_failure_count = 0
+        self.olt.save(update_fields=['last_poll_at', 'snmp_reachable', 'snmp_failure_count'])
+
+        def _side_effect(_olt, oids, **_kwargs):
+            return {oid: '4' for oid in oids}
+
+        mock_get.side_effect = _side_effect
+
+        call_command(
+            'poll_onu_status',
+            olt_id=self.olt.id,
+            slot_id=1,
+            pon_id=1,
+            force=True,
+        )
+
+        self.onu.refresh_from_db()
+        target_onu.refresh_from_db()
+        untouched_onu.refresh_from_db()
+        self.olt.refresh_from_db()
+
+        self.assertEqual(self.onu.status, ONU.STATUS_ONLINE)
+        self.assertEqual(target_onu.status, ONU.STATUS_ONLINE)
+        self.assertEqual(untouched_onu.status, ONU.STATUS_UNKNOWN)
+        self.assertEqual(self.olt.last_poll_at, previous_poll_at)
+        requested_oids = [oid for call in mock_get.call_args_list for oid in call.args[1]]
+        self.assertTrue(any(oid.endswith(f'.{self.onu.snmp_index}') for oid in requested_oids))
+        self.assertTrue(any(oid.endswith(f'.{target_onu.snmp_index}') for oid in requested_oids))
+        self.assertFalse(any(oid.endswith(f'.{untouched_onu.snmp_index}') for oid in requested_oids))
+        self.assertIsNotNone(self.olt.snmp_reachable)
+        self.assertEqual(self.olt.snmp_failure_count, 0)
+
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_scoped_polling_no_data_does_not_mark_olt_unreachable(self, mock_get):
+        self.olt.snmp_reachable = True
+        self.olt.snmp_failure_count = 0
+        self.olt.save(update_fields=['snmp_reachable', 'snmp_failure_count'])
+        mock_get.return_value = None
+
+        call_command(
+            'poll_onu_status',
+            olt_id=self.olt.id,
+            slot_id=1,
+            pon_id=1,
+            force=True,
+        )
+
+        self.olt.refresh_from_db()
+        self.assertTrue(self.olt.snmp_reachable)
+        self.assertEqual(self.olt.snmp_failure_count, 0)
+
 
 class PowerServiceResilienceTests(TestCase):
     def setUp(self):
@@ -1956,6 +2035,33 @@ class ReaderRolePermissionTests(TestCase):
         )
         self.assertEqual(cached_response.status_code, status.HTTP_200_OK)
         self.assertEqual(cached_response.data['count'], 1)
+
+    def test_viewer_cannot_force_status_refresh_but_can_read_cached_status(self):
+        refresh_response = self.viewer_client.post(
+            '/api/onu/batch-status/',
+            {
+                'olt_id': self.olt.id,
+                'slot_id': self.slot.slot_id,
+                'pon_id': self.pon.pon_id,
+                'refresh': True,
+            },
+            format='json',
+        )
+        self.assertEqual(refresh_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        cached_response = self.viewer_client.post(
+            '/api/onu/batch-status/',
+            {
+                'olt_id': self.olt.id,
+                'slot_id': self.slot.slot_id,
+                'pon_id': self.pon.pon_id,
+                'refresh': False,
+            },
+            format='json',
+        )
+        self.assertEqual(cached_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(cached_response.data['count'], 1)
+        self.assertEqual(cached_response.data['results'][0]['status'], ONU.STATUS_ONLINE)
 
 
 class DiscoveryBatchOperationsTests(TestCase):

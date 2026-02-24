@@ -3,10 +3,10 @@ import math
 import time
 from collections import defaultdict
 from datetime import timedelta
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
@@ -85,6 +85,14 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--olt-id", type=int, help="Run polling for a specific OLT id")
+        parser.add_argument("--slot-id", type=int, help="Limit polling to this slot id (requires --olt-id)")
+        parser.add_argument("--pon-id", type=int, help="Limit polling to this PON id (requires --olt-id)")
+        parser.add_argument(
+            "--onu-id",
+            action="append",
+            type=int,
+            help="Limit polling to specific ONU database id(s); can be repeated (requires --olt-id)",
+        )
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore polling_enabled for the selected OLT(s)")
         parser.add_argument(
@@ -208,6 +216,18 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         force = bool(options.get("force", False))
+        olt_id = options.get("olt_id")
+        scope_slot_id = options.get("slot_id")
+        scope_pon_id = options.get("pon_id")
+        scope_onu_ids_raw = options.get("onu_id") or []
+        scope_onu_ids: Set[int] = {int(value) for value in scope_onu_ids_raw if value is not None}
+        has_scope = bool(scope_onu_ids) or scope_slot_id is not None or scope_pon_id is not None
+
+        if has_scope and not olt_id:
+            raise CommandError(
+                "Scoped polling filters (--slot-id/--pon-id/--onu-id) require --olt-id."
+            )
+
         if force:
             olt_qs = OLT.objects.filter(
                 is_active=True,
@@ -220,7 +240,6 @@ class Command(BaseCommand):
                 vendor_profile__is_active=True,
             ).select_related("vendor_profile")
 
-        olt_id = options.get("olt_id")
         if olt_id:
             olt_qs = olt_qs.filter(id=olt_id)
 
@@ -252,21 +271,53 @@ class Command(BaseCommand):
             due_olts = due_olts[: int(max_olts)]
 
         for olt in due_olts:
-            self._poll_for_olt(olt, dry_run=options.get("dry_run", False))
+            self._poll_for_olt(
+                olt,
+                dry_run=options.get("dry_run", False),
+                scope_slot_id=scope_slot_id,
+                scope_pon_id=scope_pon_id,
+                scope_onu_ids=scope_onu_ids,
+            )
 
-    def _poll_for_olt(self, olt: OLT, dry_run: bool = False) -> None:
+    def _poll_for_olt(
+        self,
+        olt: OLT,
+        dry_run: bool = False,
+        *,
+        scope_slot_id: Optional[int] = None,
+        scope_pon_id: Optional[int] = None,
+        scope_onu_ids: Optional[Set[int]] = None,
+    ) -> None:
         oid_templates = olt.vendor_profile.oid_templates or {}
         status_cfg = oid_templates.get("status", {})
         status_oid = status_cfg.get("onu_status_oid")
         status_map = status_cfg.get("status_map", {})
         previous_poll_at = olt.last_poll_at
         previous_snmp_reachable = bool(olt.snmp_reachable)
+        scoped_refresh = bool(scope_onu_ids) or scope_slot_id is not None or scope_pon_id is not None
 
         if not status_oid:
             self.stdout.write(f"OLT {olt.id} missing status OID, skipping.")
             return
 
-        onus = list(ONU.objects.filter(olt=olt, is_active=True))
+        onus_qs = ONU.objects.filter(olt=olt, is_active=True)
+        if scope_slot_id is not None:
+            onus_qs = onus_qs.filter(slot_id=scope_slot_id)
+        if scope_pon_id is not None:
+            onus_qs = onus_qs.filter(pon_id=scope_pon_id)
+        if scope_onu_ids:
+            onus_qs = onus_qs.filter(id__in=scope_onu_ids)
+
+        onus = list(onus_qs.order_by("slot_id", "pon_id", "onu_id"))
+        if not onus:
+            if scoped_refresh:
+                self.stdout.write(
+                    f"OLT {olt.id}: no active ONUs matched scoped polling filters."
+                )
+            else:
+                self.stdout.write(f"OLT {olt.id}: no active ONUs found.")
+            return
+
         onu_index_map: Dict[int, str] = {}
         for onu in onus:
             normalized_index = _normalize_snmp_index(onu.snmp_index)
@@ -435,7 +486,7 @@ class Command(BaseCommand):
         ttl = getattr(settings, "STATUS_CACHE_TTL", 180)
 
         if not statuses:
-            if not dry_run:
+            if not dry_run and not scoped_refresh:
                 mark_olt_unreachable(
                     olt,
                     error=(
@@ -448,24 +499,26 @@ class Command(BaseCommand):
             self.stdout.write(f"OLT {olt.id}: no status data returned.")
             return
 
-        if not dry_run:
+        if not dry_run and not scoped_refresh:
             mark_olt_reachable(olt)
-            if len(statuses) < len(status_oids):
-                logger.warning(
-                    "Status polling OLT %s: partial snapshot received (%s/%s indexes, failed_chunks=%s); preserving previous state for missing ONUs.",
-                    olt.id,
-                    len(statuses),
-                    len(status_oids),
-                    failed_chunks,
-                )
+        if len(statuses) < len(status_oids):
+            logger.warning(
+                "Status polling OLT %s: partial snapshot received (%s/%s indexes, failed_chunks=%s); preserving previous state for missing ONUs.",
+                olt.id,
+                len(statuses),
+                len(status_oids),
+                failed_chunks,
+            )
 
         open_logs_by_onu: Dict[int, ONULog] = {}
-        open_logs = ONULog.objects.filter(
+        open_logs_qs = ONULog.objects.filter(
             onu__olt=olt,
             onu__is_active=True,
             offline_until__isnull=True,
-        ).order_by('-offline_since')
-        for log in open_logs:
+        )
+        if scoped_refresh:
+            open_logs_qs = open_logs_qs.filter(onu_id__in=[onu.id for onu in onus])
+        for log in open_logs_qs.order_by('-offline_since'):
             open_logs_by_onu.setdefault(log.onu_id, log)
 
         updated = online = offline = unknown = missing = missing_preserved = 0
@@ -607,7 +660,8 @@ class Command(BaseCommand):
                     ONULog.objects.bulk_update(logs_to_reason_update, ['disconnect_reason'])
                 if onus_to_update:
                     ONU.objects.bulk_update(onus_to_update, ['status'])
-                self._mark_poll_result(olt, now)
+                if not scoped_refresh:
+                    self._mark_poll_result(olt, now)
             try:
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:

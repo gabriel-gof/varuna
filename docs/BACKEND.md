@@ -147,6 +147,7 @@ Default global policy (any OLT/vendor profile):
 - Status runtime pacing is vendor-tunable through `oid_templates.status` (chunk size, timeout, retries/backoff, call-budget multiplier, inter-PON pause), enabling conservative profiles for sensitive OLTs.
 - Missing status for one ONU in a partial snapshot: preserve last known ONU status/log state (do not force `unknown` on transient SNMP gaps).
 - Full SNMP status failure for OLT: mark OLT unreachable and stop status mutation.
+- Scoped polling filters are supported (`slot`/`pon`/`onu_ids`): scoped runs update only selected ONUs and do not move OLT-wide polling schedule fields or OLT SNMP reachability flags.
 - Offline/online transitions create/close `ONULog` correctly.
 - Disconnection timestamp reliability contract:
   - on a proven `online -> offline` transition, polling stores a disconnection window in `ONULog`:
@@ -251,7 +252,9 @@ Main endpoints:
 - `GET /api/olts/{id}/maintenance_status/`
 - `POST /api/olts/refresh_power/`
 - `GET /api/onu/`
+- `POST /api/onu/{id}/refresh-status/`
 - `GET /api/onu/{id}/power/`
+- `POST /api/onu/batch-status/`
 - `POST /api/onu/batch-power/`
 
 `GET /api/olts/?include_topology=true` now also returns:

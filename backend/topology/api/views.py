@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from io import StringIO
 
 from django.core.management import call_command
@@ -585,6 +586,135 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
     def _ensure_status_snapshot_for_power(self, olt: OLT):
         ensure_status_snapshot_for_power(olt)
 
+    def _resolve_onu_batch_selection(self, request):
+        onu_ids = request.data.get('onu_ids') or []
+        olt_id = request.data.get('olt_id')
+        slot_id = request.data.get('slot_id')
+        pon_id = request.data.get('pon_id')
+
+        queryset = ONU.objects.filter(is_active=True).select_related('olt', 'olt__vendor_profile')
+        selection_scope = None
+
+        if isinstance(onu_ids, list) and onu_ids:
+            try:
+                parsed_onu_ids = [int(value) for value in onu_ids]
+            except (TypeError, ValueError):
+                return None, None, Response(
+                    {'detail': 'onu_ids must contain only integers.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            queryset = queryset.filter(id__in=parsed_onu_ids)
+            selection_scope = {'mode': 'onu_ids'}
+        elif olt_id is not None and slot_id is not None and pon_id is not None:
+            try:
+                parsed_olt_id = int(olt_id)
+                parsed_slot_id = int(slot_id)
+                parsed_pon_id = int(pon_id)
+            except (TypeError, ValueError):
+                return None, None, Response(
+                    {'detail': 'olt_id, slot_id and pon_id must be integers.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            queryset = queryset.filter(
+                olt_id=parsed_olt_id,
+                slot_id=parsed_slot_id,
+                pon_id=parsed_pon_id,
+            )
+            selection_scope = {
+                'mode': 'pon',
+                'olt_id': parsed_olt_id,
+                'slot_id': parsed_slot_id,
+                'pon_id': parsed_pon_id,
+            }
+        else:
+            return None, None, Response(
+                {'detail': 'Provide onu_ids or (olt_id + slot_id + pon_id).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        onus = list(queryset.order_by('slot_id', 'pon_id', 'onu_id'))
+        return onus, selection_scope, None
+
+    def _run_scoped_status_refresh(self, onus, selection_scope):
+        if not onus:
+            return
+
+        by_olt = defaultdict(list)
+        for onu in onus:
+            by_olt[onu.olt_id].append(onu)
+
+        for olt_onus in by_olt.values():
+            olt = olt_onus[0].olt
+            status_templates = (olt.vendor_profile.oid_templates or {}).get('status', {})
+            status_oid = status_templates.get('onu_status_oid')
+            if not olt.vendor_profile.supports_onu_status or not status_oid:
+                logger.warning(
+                    "Scoped status refresh OLT %s skipped: status polling capability unavailable.",
+                    olt.id,
+                )
+                continue
+
+            kwargs = {
+                'olt_id': olt.id,
+                'force': True,
+                'stdout': StringIO(),
+            }
+            if selection_scope.get('mode') == 'pon' and int(selection_scope.get('olt_id')) == int(olt.id):
+                kwargs['slot_id'] = int(selection_scope.get('slot_id'))
+                kwargs['pon_id'] = int(selection_scope.get('pon_id'))
+            else:
+                kwargs['onu_id'] = [int(onu.id) for onu in olt_onus]
+
+            call_command('poll_onu_status', **kwargs)
+
+    def _serialize_status_rows(self, onus):
+        if not onus:
+            return []
+
+        onu_ids = [int(onu.id) for onu in onus]
+        active_logs = {}
+        for log in ONULog.objects.filter(
+            onu_id__in=onu_ids,
+            offline_until__isnull=True,
+        ).order_by('-offline_since'):
+            active_logs.setdefault(int(log.onu_id), log)
+
+        rows = []
+        for onu in onus:
+            active_log = active_logs.get(int(onu.id))
+            if active_log:
+                disconnect_reason = active_log.disconnect_reason
+                offline_since = active_log.offline_since.isoformat() if active_log.offline_since else None
+                disconnect_window_start = (
+                    active_log.disconnect_window_start.isoformat()
+                    if active_log.disconnect_window_start else None
+                )
+                disconnect_window_end = (
+                    active_log.disconnect_window_end.isoformat()
+                    if active_log.disconnect_window_end else None
+                )
+            else:
+                disconnect_reason = None if onu.status == ONU.STATUS_ONLINE else ONULog.REASON_UNKNOWN
+                offline_since = None
+                disconnect_window_start = None
+                disconnect_window_end = None
+
+            rows.append(
+                {
+                    'id': onu.id,
+                    'olt_id': onu.olt_id,
+                    'slot_id': onu.slot_id,
+                    'pon_id': onu.pon_id,
+                    'onu_number': onu.onu_id,
+                    'status': onu.status,
+                    'disconnect_reason': disconnect_reason,
+                    'offline_since': offline_since,
+                    'disconnect_window_start': disconnect_window_start,
+                    'disconnect_window_end': disconnect_window_end,
+                }
+            )
+        return rows
+
     def get_queryset(self):
         include_inactive = _is_true(self.request.query_params.get('include_inactive', 'false'))
         queryset = ONU.objects.select_related('olt', 'olt__vendor_profile', 'slot_ref', 'pon_ref')
@@ -627,6 +757,54 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         )
         return Response(data)
 
+    @action(detail=True, methods=['post'], url_path='refresh-status')
+    def refresh_status(self, request, pk=None):
+        """
+        Returns status information for one ONU.
+        Body/query option: refresh=true/false controls SNMP refresh vs cached DB/log read.
+        """
+        onu = self.get_object()
+        refresh = _is_true(request.data.get('refresh', request.query_params.get('refresh', 'true')))
+        if refresh and not can_modify_settings(request.user):
+            return _settings_forbidden_response()
+
+        if refresh:
+            self._run_scoped_status_refresh([onu], {'mode': 'onu_ids'})
+            onu.refresh_from_db(fields=['status'])
+
+        payload = self._serialize_status_rows([onu])[0]
+        return Response(payload)
+
+    @action(detail=False, methods=['post'], url_path='batch-status')
+    def batch_status(self, request):
+        """
+        Returns status information for multiple ONUs.
+        Body options:
+        - onu_ids: [1,2,3]
+        - or olt_id + slot_id + pon_id to refresh one PON quickly
+        """
+        refresh = _is_true(request.data.get('refresh', True))
+        if refresh and not can_modify_settings(request.user):
+            return _settings_forbidden_response()
+
+        onus, selection_scope, error_response = self._resolve_onu_batch_selection(request)
+        if error_response is not None:
+            return error_response
+        if not onus:
+            return Response({'count': 0, 'results': []})
+
+        if refresh:
+            self._run_scoped_status_refresh(onus, selection_scope)
+            refreshed_ids = [int(onu.id) for onu in onus]
+            onus = list(
+                ONU.objects.filter(id__in=refreshed_ids, is_active=True)
+                .select_related('olt', 'olt__vendor_profile')
+                .order_by('slot_id', 'pon_id', 'onu_id')
+            )
+
+        results = self._serialize_status_rows(onus)
+        return Response({'count': len(results), 'results': results})
+
     @action(detail=False, methods=['post'], url_path='batch-power')
     def batch_power(self, request):
         """
@@ -638,38 +816,25 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         refresh = _is_true(request.data.get('refresh', True))
         if refresh and not can_modify_settings(request.user):
             return _settings_forbidden_response()
-        onu_ids = request.data.get('onu_ids') or []
-        olt_id = request.data.get('olt_id')
-        slot_id = request.data.get('slot_id')
-        pon_id = request.data.get('pon_id')
-
-        queryset = ONU.objects.filter(is_active=True).select_related('olt', 'olt__vendor_profile')
-
-        if isinstance(onu_ids, list) and onu_ids:
-            queryset = queryset.filter(id__in=onu_ids)
-        elif olt_id is not None and slot_id is not None and pon_id is not None:
-            queryset = queryset.filter(
-                olt_id=olt_id,
-                slot_id=slot_id,
-                pon_id=pon_id,
-            )
-        else:
-            return Response(
-                {'detail': 'Provide onu_ids or (olt_id + slot_id + pon_id).'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        onus = list(queryset.order_by('slot_id', 'pon_id', 'onu_id'))
+        onus, selection_scope, error_response = self._resolve_onu_batch_selection(request)
+        if error_response is not None:
+            return error_response
         if not onus:
             return Response({'count': 0, 'results': []})
 
         if refresh:
-            seen_olts = set()
+            refreshable_olts = {}
             for onu in onus:
-                if onu.olt_id in seen_olts:
+                if onu.olt_id in refreshable_olts:
                     continue
-                seen_olts.add(onu.olt_id)
-                self._ensure_status_snapshot_for_power(onu.olt)
+                refreshable_olts[onu.olt_id] = not self._has_usable_status_snapshot(onu.olt)
+
+            onus_requiring_status_refresh = [
+                onu for onu in onus
+                if refreshable_olts.get(onu.olt_id)
+            ]
+            if onus_requiring_status_refresh:
+                self._run_scoped_status_refresh(onus_requiring_status_refresh, selection_scope)
 
         result_map = power_service.refresh_for_onus(onus, force_refresh=refresh)
         results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]

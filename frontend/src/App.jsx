@@ -284,6 +284,63 @@ const patchPonPowerRows = (olts, target, rows) => {
   return changed ? nextOlts : olts
 }
 
+const patchPonStatusRows = (olts, target, rows) => {
+  const rowMap = new Map(
+    asList(rows)
+      .filter((row) => row?.id != null)
+      .map((row) => [String(row.id), row])
+  )
+  if (!rowMap.size) return olts
+
+  let changed = false
+
+  const nextOlts = asList(olts).map((olt) => {
+    if (String(olt?.id) !== String(target.oltId)) return olt
+
+    const nextSlots = asList(olt?.slots).map((slot) => {
+      const slotNumber = slot?.slot_number ?? slot?.slot_id
+      if (String(slotNumber) !== String(target.slotNumber)) return slot
+
+      const nextPons = asList(slot?.pons).map((pon) => {
+        const ponNumber = pon?.pon_number ?? pon?.pon_id
+        if (String(ponNumber) !== String(target.ponNumber)) return pon
+
+        const nextOnus = asList(pon?.onus).map((onu) => {
+          const row = rowMap.get(String(onu?.id))
+          if (!row) return onu
+
+          changed = true
+          return {
+            ...onu,
+            status: row.status ?? onu.status,
+            disconnect_reason: row.disconnect_reason ?? null,
+            offline_since: row.offline_since ?? null,
+            disconnect_window_start: row.disconnect_window_start ?? null,
+            disconnect_window_end: row.disconnect_window_end ?? null,
+          }
+        })
+
+        return {
+          ...pon,
+          onus: nextOnus
+        }
+      })
+
+      return {
+        ...slot,
+        pons: nextPons
+      }
+    })
+
+    return {
+      ...olt,
+      slots: nextSlots
+    }
+  })
+
+  return changed ? nextOlts : olts
+}
+
 const formatDisconnectionWindow = (startValue, endValue, language) => {
   if (!startValue || !endValue) return '—'
 
@@ -1004,27 +1061,60 @@ const App = () => {
     return { ok: true }
   }, [selectedPonData, t])
 
+  const collectStatusForSelectedPon = useCallback(async () => {
+    const oltId = toIntOrNull(selectedPonData?.olt?.id)
+    const slotNumber = toIntOrNull(selectedPonData?.slot?.slot_number ?? selectedPonData?.slot?.slot_id)
+    const ponNumber = toIntOrNull(selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id)
+
+    if (!oltId || slotNumber == null || ponNumber == null) {
+      return { ok: false, message: t('Failed to refresh status data') }
+    }
+
+    const response = await api.post(
+      '/onu/batch-status/',
+      {
+        olt_id: oltId,
+        slot_id: slotNumber,
+        pon_id: ponNumber,
+        refresh: true
+      },
+      { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
+    )
+    const rows = asList(response.data?.results)
+    setOlts((previous) => patchPonStatusRows(previous, { oltId, slotNumber, ponNumber }, rows))
+    return { ok: true }
+  }, [selectedPonData, t])
+
   const handleRefreshPonPanel = useCallback(async () => {
     if (isRefreshingPonPanel) return
 
     setPonPanelError('')
     setIsRefreshingPonPanel(true)
     try {
+      let shouldReloadTopology = true
       if (canManageSettings) {
-        const selectedOltId = toIntOrNull(selectedPonData?.olt?.id)
-        if (selectedOltId && activeTab === 'status') {
-          await api.post(`/olts/${selectedOltId}/run_polling/`, {}, { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS })
+        if (activeTab === 'status') {
+          const statusResult = await collectStatusForSelectedPon()
+          if (!statusResult?.ok) {
+            showPonPanelError(statusResult?.message || t('Failed to refresh status data'))
+          } else {
+            shouldReloadTopology = false
+          }
         } else if (activeTab === 'power') {
           const powerResult = await collectPowerForSelectedPon()
           if (!powerResult?.ok) {
             showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
+          } else {
+            shouldReloadTopology = false
           }
         }
       }
 
-      const result = await fetchOlts({ surfaceError: false })
-      if (!result?.ok) {
-        showPonPanelError(result?.message || t('Failed to refresh panel data'))
+      if (shouldReloadTopology) {
+        const result = await fetchOlts({ surfaceError: false })
+        if (!result?.ok) {
+          showPonPanelError(result?.message || t('Failed to refresh panel data'))
+        }
       }
     } catch (err) {
       const fallback = activeTab === 'power'
@@ -1034,7 +1124,7 @@ const App = () => {
     } finally {
       setIsRefreshingPonPanel(false)
     }
-  }, [activeTab, canManageSettings, collectPowerForSelectedPon, fetchOlts, isRefreshingPonPanel, selectedPonData, showPonPanelError, t])
+  }, [activeTab, canManageSettings, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, showPonPanelError, t])
 
   useEffect(() => {
     if (!selectedPonId) {
