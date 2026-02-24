@@ -83,7 +83,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - `red` when all ONUs are offline,
   - `yellow` when there is a mix of online and offline ONUs,
   - `green` when all ONUs are online.
-- PON status table includes a pinned footer bar below the scrollable area. Desktop shows clean text: `{total} ONUs / {offline} Offline` — no dots, since the topology tree is visible alongside. Mobile shows colored status dots with counts plus `total / offline`, since the topology tree is hidden. Footer uses `bg-slate-50/80 dark:bg-slate-800/60` with `border-t`. Offline count appears in `text-rose-500` only when > 0. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
+- Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop shows numeric-only text: `{total} / {offline}` — no labels, matching the topology tree counter style. Mobile shows colored status dots with counts plus `total / offline`, since the topology tree is hidden. Footer uses `bg-slate-50/80 dark:bg-slate-800/60` with `border-t`. Offline count appears in `text-rose-500` only when > 0. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
@@ -176,7 +176,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - A toolbar toggle button (`Hash` icon) between Collapse and Alarm enables an optional `total / online / offline` counter displayed to the right of each node card (OLT, Slot, and PON).
 - State is persisted in `localStorage` key `varuna.showPonCounts` (boolean, default `false`).
 - When off (default): node cards show no counters.
-- When on: a compact `total / online / offline` text appears beside each card. OLT and Slot counters aggregate all descendant PON ONU stats. PON counters show that PON's own stats. Offline count is only shown when > 0. Gray-tree nodes (unreachable OLTs) do not show counters.
+- When on: a compact `total / offline` text appears beside each card. OLT and Slot counters aggregate all descendant PON ONU stats. PON counters show that PON's own stats. Offline count is only shown when > 0 (healthy nodes show just the total). Gray-tree nodes (unreachable OLTs) do not show counters.
 - Button uses emerald tint when active (matching the OLT filter button pattern), neutral when off.
 - Mobile: icon-only; desktop: icon + "Counters"/"Contadores" label.
 - This toggle is independent of the PON status table footer (which always shows its own summary).

@@ -169,11 +169,10 @@ const aggregateStats = (entity, level) => {
   const children = level === 'olt'
     ? asList(entity?.slots).filter(isActiveEntity).flatMap((slot) => asList(slot?.pons).filter(isActiveEntity))
     : asList(entity?.pons).filter(isActiveEntity)
-  const totals = { total: 0, online: 0, offline: 0 }
+  const totals = { total: 0, offline: 0 }
   children.forEach((pon) => {
     const s = pon?.stats || getOnuStats(pon?.onus || [])
     totals.total += asCount(s.total)
-    totals.online += asCount(s.online)
     totals.offline += asCount(s.offline)
   })
   return totals
@@ -272,8 +271,6 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       {counters && (
         <p className="text-[10px] font-semibold tabular-nums leading-none text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0">
           {asCount(counters.total)}
-          <span className="text-slate-300 dark:text-slate-600"> / </span>
-          <span className="text-emerald-600 dark:text-emerald-400">{asCount(counters.online)}</span>
           {asCount(counters.offline) > 0 && (
             <>
               <span className="text-slate-300 dark:text-slate-600"> / </span>
@@ -722,7 +719,7 @@ export const NetworkTopology = ({
                           active={String(selectedPonId) === String(ponId)}
                           onToggle={() => onPonSelect(ponId)}
                           healthState={ponHealth.state}
-                          counters={showPonCounts && !isGrayTree ? { total: stats.total, online: stats.online, offline: stats.offline } : null}
+                          counters={showPonCounts && !isGrayTree ? { total: stats.total, offline: stats.offline } : null}
                         />
                       )
                     })}
