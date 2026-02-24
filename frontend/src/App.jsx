@@ -1638,7 +1638,7 @@ const App = () => {
         {activeNav === 'topology' && (
           <aside
             className={`
-              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-950 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width,opacity,transform] duration-300 ease-out'}
+              h-full min-h-0 flex flex-col flex-shrink-0 bg-slate-100 dark:bg-slate-900/40 overflow-hidden ${isResizingPonPanel ? '' : 'transition-[width,opacity,transform] duration-300 ease-out'}
               ${isPonPanelOpen
                 ? 'w-full lg:w-[var(--pon-panel-width)] opacity-100 translate-x-0 border-l border-slate-100 dark:border-slate-700/50'
                 : 'w-0 opacity-0 translate-x-full pointer-events-none border-l-0'}
@@ -1731,7 +1731,7 @@ const App = () => {
                   </div>
                 </div>
 
-                <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-950 overflow-hidden">
+                <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-900/40 overflow-hidden">
                   <div className="flex items-center gap-2 mb-3">
                     <div className="inline-flex h-9 items-center gap-1 p-1 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-900/70">
                       {[
