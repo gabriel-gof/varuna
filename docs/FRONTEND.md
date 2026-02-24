@@ -180,7 +180,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - A toolbar toggle button (`Hash` icon) between Collapse and Alarm enables an optional `total / online / offline` counter displayed to the right of each node card (OLT, Slot, and PON).
 - State is persisted in `localStorage` key `varuna.showPonCounts` (boolean, default `false`).
 - When off (default): node cards show no counters.
-- When on: a compact `total / offline` text appears beside each card. OLT and Slot counters aggregate all descendant PON ONU stats. PON counters show that PON's own stats. Offline count is only shown when > 0 (healthy nodes show just the total). Gray-tree nodes (unreachable OLTs) do not show counters.
+- When on: a compact `total / offline` text appears beside each card. OLT and Slot counters aggregate all descendant PON ONU stats. PON counters show that PON's own stats. Offline count is only shown when > 0 (healthy nodes show just the total). Reason breakdown (link loss, dying gasp, unknown) is only shown at the PON level via dots inside the card — not repeated at OLT/Slot level to keep the layout clean. Gray-tree nodes (unreachable OLTs) do not show counters.
 - Button uses emerald tint when active (matching the OLT filter button pattern), neutral when off.
 - Mobile: icon-only; desktop: icon + "Counters"/"Contadores" label.
 - This toggle is independent of the PON status table footer (which always shows its own summary).

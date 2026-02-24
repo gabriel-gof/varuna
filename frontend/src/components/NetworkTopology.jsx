@@ -169,11 +169,14 @@ const aggregateStats = (entity, level) => {
   const children = level === 'olt'
     ? asList(entity?.slots).filter(isActiveEntity).flatMap((slot) => asList(slot?.pons).filter(isActiveEntity))
     : asList(entity?.pons).filter(isActiveEntity)
-  const totals = { total: 0, offline: 0 }
+  const totals = { total: 0, offline: 0, linkLoss: 0, dyingGasp: 0, unknown: 0 }
   children.forEach((pon) => {
     const s = pon?.stats || getOnuStats(pon?.onus || [])
     totals.total += asCount(s.total)
     totals.offline += asCount(s.offline)
+    totals.linkLoss += asCount(s.linkLoss)
+    totals.dyingGasp += asCount(s.dyingGasp)
+    totals.unknown += asCount(s.unknown)
   })
   return totals
 }
@@ -277,15 +280,29 @@ const NetworkNode = ({ type, label, isOpen, onToggle, active, children, stats, s
       </div>
 
       {counters && (
-        <p className="text-[10px] font-semibold tabular-nums leading-none text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0">
-          {asCount(counters.total)}
-          {asCount(counters.offline) > 0 && (
+        <div className="flex items-center gap-1.5 text-[10px] font-bold tabular-nums leading-none whitespace-nowrap shrink-0">
+          <span>
+            <span className="text-slate-600 dark:text-slate-300">{asCount(counters.total)}</span>
+            {asCount(counters.offline) > 0 && (
+              <>
+                <span className="text-slate-400 dark:text-slate-500">{' / '}</span>
+                <span className="text-amber-600 dark:text-amber-400">{asCount(counters.offline)}</span>
+              </>
+            )}
+          </span>
+          {counters.linkLoss != null && asCount(counters.offline) > 0 && (
             <>
-              <span className="text-slate-300 dark:text-slate-600"> / </span>
-              <span className="text-rose-500 dark:text-rose-400">{asCount(counters.offline)}</span>
+              <span className="w-px h-2.5 bg-slate-300 dark:bg-slate-600" />
+              <span>
+                {asCount(counters.linkLoss) > 0 && <span className="text-rose-600 dark:text-rose-400">{asCount(counters.linkLoss)}</span>}
+                {asCount(counters.linkLoss) > 0 && asCount(counters.dyingGasp) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
+                {asCount(counters.dyingGasp) > 0 && <span className="text-blue-600 dark:text-blue-400">{asCount(counters.dyingGasp)}</span>}
+                {(asCount(counters.linkLoss) > 0 || asCount(counters.dyingGasp) > 0) && asCount(counters.unknown) > 0 && <span className="text-slate-400 dark:text-slate-500">{' / '}</span>}
+                {asCount(counters.unknown) > 0 && <span className="text-purple-600 dark:text-purple-400">{asCount(counters.unknown)}</span>}
+              </span>
             </>
           )}
-        </p>
+        </div>
       )}
       </div>
 
