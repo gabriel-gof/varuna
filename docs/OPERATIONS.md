@@ -27,6 +27,11 @@ Development service URLs:
 - Backend API: `http://localhost:8000/api/`
 - Backend health endpoint: `http://localhost:8000/api/healthz/`
 
+Backend collection contract:
+- `ENABLE_SCHEDULER=1` must stay enabled in runtime env so discovery, polling, SNMP checks, and power collection run without any frontend session.
+- Collections are shared backend state for all users; frontend reads snapshots and does not need to trigger SNMP collection for normal topology usage.
+- Recommended topology cache TTL for fast first load is `300s` (`OLT_TOPOLOGY_LIST_CACHE_TTL` and `OLT_TOPOLOGY_DETAIL_CACHE_TTL`).
+
 Production:
 ```bash
 cd /Users/gabriel/Documents/varuna

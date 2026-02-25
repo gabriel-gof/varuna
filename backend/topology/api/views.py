@@ -123,6 +123,189 @@ class OLTViewSet(viewsets.ModelViewSet):
     def _dt_to_iso(value):
         return value.isoformat() if value else None
 
+    @staticmethod
+    def _as_list(value):
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return list(value.values())
+        return []
+
+    @staticmethod
+    def _to_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _iter_topology_onus_from_list_row(self, row):
+        if not isinstance(row, dict):
+            return
+        for slot in self._as_list(row.get('slots')):
+            if not isinstance(slot, dict):
+                continue
+            for pon in self._as_list(slot.get('pons')):
+                if not isinstance(pon, dict):
+                    continue
+                for onu in self._as_list(pon.get('onus')):
+                    if isinstance(onu, dict):
+                        yield onu
+
+    def _build_list_olt_onu_map(self, payload):
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict) and isinstance(payload.get('results'), list):
+            rows = payload.get('results') or []
+        else:
+            return {}
+
+        per_olt_ids = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            olt_id = self._to_int(row.get('id'))
+            if olt_id is None:
+                continue
+            onu_ids = per_olt_ids.setdefault(olt_id, set())
+            for onu in self._iter_topology_onus_from_list_row(row):
+                onu_id = self._to_int(onu.get('id'))
+                if onu_id is not None:
+                    onu_ids.add(onu_id)
+        return {olt_id: sorted(list(onu_ids)) for olt_id, onu_ids in per_olt_ids.items() if onu_ids}
+
+    def _build_detail_olt_onu_map(self, payload, *, olt_id=None):
+        if not isinstance(payload, dict):
+            return {}
+        olt_block = payload.get('olt')
+        if not isinstance(olt_block, dict):
+            return {}
+
+        resolved_olt_id = self._to_int(olt_block.get('id')) or self._to_int(olt_id)
+        if resolved_olt_id is None:
+            return {}
+
+        onu_ids = set()
+        for slot in self._as_list(payload.get('slots')):
+            if not isinstance(slot, dict):
+                continue
+            for pon in self._as_list(slot.get('pons')):
+                if not isinstance(pon, dict):
+                    continue
+                for onu in self._as_list(pon.get('onus')):
+                    if not isinstance(onu, dict):
+                        continue
+                    onu_id = self._to_int(onu.get('id'))
+                    if onu_id is not None:
+                        onu_ids.add(onu_id)
+        if not onu_ids:
+            return {}
+        return {resolved_olt_id: sorted(list(onu_ids))}
+
+    def _build_runtime_onu_overlay_map(self, olt_to_onu_ids):
+        status_map_by_olt = {}
+        power_map_by_olt = {}
+        for olt_id, onu_ids in olt_to_onu_ids.items():
+            if not onu_ids:
+                continue
+            status_map_by_olt[olt_id] = cache_service.get_many_onu_status(olt_id, onu_ids)
+            power_map_by_olt[olt_id] = cache_service.get_many_onu_power(olt_id, onu_ids)
+        return status_map_by_olt, power_map_by_olt
+
+    @staticmethod
+    def _overlay_runtime_onu_payload(
+        onu_payload,
+        *,
+        status_payload,
+        power_payload,
+    ):
+        if not isinstance(onu_payload, dict):
+            return
+
+        if isinstance(status_payload, dict) and status_payload:
+            if 'status' in onu_payload and status_payload.get('status'):
+                onu_payload['status'] = status_payload.get('status')
+            if 'disconnect_reason' in onu_payload and 'disconnect_reason' in status_payload:
+                reason = status_payload.get('disconnect_reason')
+                onu_payload['disconnect_reason'] = reason or None
+            if 'offline_since' in onu_payload and 'offline_since' in status_payload:
+                offline_since = status_payload.get('offline_since')
+                onu_payload['offline_since'] = offline_since or None
+            if 'disconnect_window_start' in onu_payload and 'disconnect_window_start' in status_payload:
+                window_start = status_payload.get('disconnect_window_start')
+                onu_payload['disconnect_window_start'] = window_start or None
+            if 'disconnect_window_end' in onu_payload and 'disconnect_window_end' in status_payload:
+                window_end = status_payload.get('disconnect_window_end')
+                onu_payload['disconnect_window_end'] = window_end or None
+
+        if isinstance(power_payload, dict) and power_payload:
+            if 'onu_rx_power' in onu_payload and 'onu_rx_power' in power_payload:
+                onu_payload['onu_rx_power'] = power_payload.get('onu_rx_power')
+            if 'olt_rx_power' in onu_payload and 'olt_rx_power' in power_payload:
+                onu_payload['olt_rx_power'] = power_payload.get('olt_rx_power')
+            if 'power_read_at' in onu_payload and 'power_read_at' in power_payload:
+                onu_payload['power_read_at'] = power_payload.get('power_read_at')
+
+    def _overlay_runtime_onu_data_on_list_payload(self, payload):
+        olt_to_onu_ids = self._build_list_olt_onu_map(payload)
+        if not olt_to_onu_ids:
+            return payload
+
+        status_map_by_olt, power_map_by_olt = self._build_runtime_onu_overlay_map(olt_to_onu_ids)
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict) and isinstance(payload.get('results'), list):
+            rows = payload.get('results') or []
+        else:
+            return payload
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            olt_id = self._to_int(row.get('id'))
+            if olt_id is None:
+                continue
+            status_map = status_map_by_olt.get(olt_id, {})
+            power_map = power_map_by_olt.get(olt_id, {})
+            for onu in self._iter_topology_onus_from_list_row(row):
+                onu_id = self._to_int(onu.get('id'))
+                if onu_id is None:
+                    continue
+                self._overlay_runtime_onu_payload(
+                    onu,
+                    status_payload=status_map.get(onu_id),
+                    power_payload=power_map.get(onu_id),
+                )
+        return payload
+
+    def _overlay_runtime_onu_data_on_detail_payload(self, payload, *, olt_id=None):
+        olt_to_onu_ids = self._build_detail_olt_onu_map(payload, olt_id=olt_id)
+        if not olt_to_onu_ids:
+            return payload
+
+        status_map_by_olt, power_map_by_olt = self._build_runtime_onu_overlay_map(olt_to_onu_ids)
+        resolved_olt_id = next(iter(olt_to_onu_ids.keys()))
+        status_map = status_map_by_olt.get(resolved_olt_id, {})
+        power_map = power_map_by_olt.get(resolved_olt_id, {})
+
+        for slot in self._as_list(payload.get('slots')):
+            if not isinstance(slot, dict):
+                continue
+            for pon in self._as_list(slot.get('pons')):
+                if not isinstance(pon, dict):
+                    continue
+                for onu in self._as_list(pon.get('onus')):
+                    if not isinstance(onu, dict):
+                        continue
+                    onu_id = self._to_int(onu.get('id'))
+                    if onu_id is None:
+                        continue
+                    self._overlay_runtime_onu_payload(
+                        onu,
+                        status_payload=status_map.get(onu_id),
+                        power_payload=power_map.get(onu_id),
+                    )
+        return payload
+
     def _build_runtime_overlay_map(self, olt_ids):
         ids = []
         seen = set()
@@ -242,6 +425,8 @@ class OLTViewSet(viewsets.ModelViewSet):
             cached_payload = cache_service.get(cache_key)
             if cached_payload is not None:
                 cached_payload = self._overlay_runtime_health_on_list_payload(cached_payload)
+                if include_topology:
+                    cached_payload = self._overlay_runtime_onu_data_on_list_payload(cached_payload)
                 return Response(cached_payload)
 
         queryset = self.filter_queryset(self.get_queryset())
@@ -436,6 +621,7 @@ class OLTViewSet(viewsets.ModelViewSet):
             cached_payload = cache_service.get(cache_key)
             if isinstance(cached_payload, dict):
                 cached_payload = self._overlay_runtime_health_on_detail_payload(cached_payload, olt_id=olt.id)
+                cached_payload = self._overlay_runtime_onu_data_on_detail_payload(cached_payload, olt_id=olt.id)
                 return Response(cached_payload)
         service = TopologyService()
         topology = service.build_topology(olt)
@@ -714,7 +900,6 @@ class OLTViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        cache_service.invalidate_topology_api_cache(olt.id)
         return Response({'status': 'completed', 'olt_id': olt.id, 'output': output.getvalue().strip()})
 
 

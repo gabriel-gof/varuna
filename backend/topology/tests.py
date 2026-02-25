@@ -799,6 +799,20 @@ class PollingCommandTests(TestCase):
         self.assertTrue(self.olt.snmp_reachable)
         self.assertEqual(self.olt.snmp_failure_count, 0)
 
+    @patch('topology.management.commands.poll_onu_status.cache_service.set_many_onu_status', return_value=True)
+    @patch('topology.management.commands.poll_onu_status.snmp_service.get')
+    def test_poll_uses_interval_aware_status_cache_ttl(self, mock_get, mock_set_many_status):
+        self.olt.polling_interval_seconds = 900
+        self.olt.save(update_fields=['polling_interval_seconds'])
+        status_oid = self.vendor.oid_templates['status']['onu_status_oid']
+        mock_get.return_value = {f'{status_oid}.{self.onu.snmp_index}': '4'}
+
+        call_command('poll_onu_status', olt_id=self.olt.id, force=True)
+
+        self.assertTrue(mock_set_many_status.called)
+        called_ttl = mock_set_many_status.call_args.kwargs.get('ttl')
+        self.assertEqual(called_ttl, 1800)
+
 
 class PowerServiceResilienceTests(TestCase):
     def setUp(self):
@@ -1363,6 +1377,115 @@ class SettingsApiContractTests(TestCase):
 
     @override_settings(OLT_TOPOLOGY_LIST_CACHE_TTL=60)
     @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get_many_onu_power')
+    @patch('topology.api.views.cache_service.get_many_onu_status')
+    @patch('topology.api.views.cache_service.get')
+    def test_include_topology_cache_hit_overlays_runtime_onu_fields(
+        self,
+        mock_cache_get,
+        mock_get_many_onu_status,
+        mock_get_many_onu_power,
+        mock_cache_set,
+    ):
+        olt = self._create_olt(name='OLT-TOPOLOGY-CACHE-ONU-OVERLAY')
+        slot = OLTSlot.objects.create(
+            olt=olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=olt,
+            slot=slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        offline_since = (timezone.now() - timezone.timedelta(minutes=1)).isoformat()
+        power_read_at = timezone.now().isoformat()
+        cached_payload = {
+            'count': 1,
+            'results': [
+                {
+                    'id': olt.id,
+                    'name': olt.name,
+                    'snmp_reachable': True,
+                    'snmp_failure_count': 0,
+                    'last_snmp_error': '',
+                    'last_snmp_check_at': timezone.now().isoformat(),
+                    'slots': [
+                        {
+                            'id': slot.id,
+                            'slot_number': 1,
+                            'pons': [
+                                {
+                                    'id': pon.id,
+                                    'pon_number': 1,
+                                    'onus': [
+                                        {
+                                            'id': onu.id,
+                                            'status': ONU.STATUS_ONLINE,
+                                            'disconnect_reason': None,
+                                            'offline_since': None,
+                                            'disconnect_window_start': None,
+                                            'disconnect_window_end': None,
+                                            'onu_rx_power': None,
+                                            'olt_rx_power': None,
+                                            'power_read_at': None,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        mock_cache_get.return_value = cached_payload
+        mock_get_many_onu_status.return_value = {
+            onu.id: {
+                'status': ONU.STATUS_OFFLINE,
+                'disconnect_reason': ONULog.REASON_LINK_LOSS,
+                'offline_since': offline_since,
+                'disconnect_window_start': offline_since,
+                'disconnect_window_end': offline_since,
+            }
+        }
+        mock_get_many_onu_power.return_value = {
+            onu.id: {
+                'onu_rx_power': -21.5,
+                'olt_rx_power': -22.0,
+                'power_read_at': power_read_at,
+            }
+        }
+
+        response = self.client.get('/api/olts/?include_topology=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        onu_payload = response.data['results'][0]['slots'][0]['pons'][0]['onus'][0]
+        self.assertEqual(onu_payload['status'], ONU.STATUS_OFFLINE)
+        self.assertEqual(onu_payload['disconnect_reason'], ONULog.REASON_LINK_LOSS)
+        self.assertEqual(onu_payload['offline_since'], offline_since)
+        self.assertEqual(onu_payload['disconnect_window_start'], offline_since)
+        self.assertEqual(onu_payload['disconnect_window_end'], offline_since)
+        self.assertEqual(onu_payload['onu_rx_power'], -21.5)
+        self.assertEqual(onu_payload['olt_rx_power'], -22.0)
+        self.assertEqual(onu_payload['power_read_at'], power_read_at)
+        mock_cache_set.assert_not_called()
+
+    @override_settings(OLT_TOPOLOGY_LIST_CACHE_TTL=60)
+    @patch('topology.api.views.cache_service.set')
     @patch('topology.api.views.cache_service.get', return_value=None)
     def test_include_topology_writes_api_cache(self, _mock_cache_get, mock_cache_set):
         olt = self._create_olt(name='OLT-TOPOLOGY-CACHE-WRITE')
@@ -1456,6 +1579,111 @@ class SettingsApiContractTests(TestCase):
         self.assertIsNotNone(response.data['olt']['last_snmp_check_at'])
         self.assertIsNotNone(response.data['olt']['last_poll'])
         self.assertIsNotNone(response.data['olt']['last_discovery'])
+        mock_cache_set.assert_not_called()
+
+    @override_settings(OLT_TOPOLOGY_DETAIL_CACHE_TTL=45)
+    @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get_many_onu_power')
+    @patch('topology.api.views.cache_service.get_many_onu_status')
+    @patch('topology.api.views.cache_service.get')
+    def test_topology_detail_cache_hit_overlays_runtime_onu_fields(
+        self,
+        mock_cache_get,
+        mock_get_many_onu_status,
+        mock_get_many_onu_power,
+        mock_cache_set,
+    ):
+        olt = self._create_olt(name='OLT-TOPOLOGY-DETAIL-ONU-OVERLAY')
+        slot = OLTSlot.objects.create(
+            olt=olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=olt,
+            slot=slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        offline_since = (timezone.now() - timezone.timedelta(minutes=2)).isoformat()
+        power_read_at = timezone.now().isoformat()
+        cached_payload = {
+            'olt': {
+                'id': olt.id,
+                'name': olt.name,
+                'snmp_reachable': True,
+                'snmp_failure_count': 0,
+                'last_snmp_error': '',
+                'last_snmp_check_at': timezone.now().isoformat(),
+            },
+            'slots': {
+                '1': {
+                    'slot_id': 1,
+                    'pons': {
+                        '1/1': {
+                            'pon_id': 1,
+                            'onus': [
+                                {
+                                    'id': onu.id,
+                                    'status': ONU.STATUS_ONLINE,
+                                    'disconnect_reason': None,
+                                    'offline_since': None,
+                                    'disconnect_window_start': None,
+                                    'disconnect_window_end': None,
+                                    'onu_rx_power': None,
+                                    'olt_rx_power': None,
+                                    'power_read_at': None,
+                                }
+                            ],
+                        }
+                    },
+                }
+            },
+            'generated_at': timezone.now().isoformat(),
+        }
+        mock_cache_get.return_value = cached_payload
+        mock_get_many_onu_status.return_value = {
+            onu.id: {
+                'status': ONU.STATUS_OFFLINE,
+                'disconnect_reason': ONULog.REASON_DYING_GASP,
+                'offline_since': offline_since,
+                'disconnect_window_start': offline_since,
+                'disconnect_window_end': offline_since,
+            }
+        }
+        mock_get_many_onu_power.return_value = {
+            onu.id: {
+                'onu_rx_power': -19.2,
+                'olt_rx_power': -20.8,
+                'power_read_at': power_read_at,
+            }
+        }
+
+        response = self.client.get(f'/api/olts/{olt.id}/topology/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        onu_payload = response.data['slots']['1']['pons']['1/1']['onus'][0]
+        self.assertEqual(onu_payload['status'], ONU.STATUS_OFFLINE)
+        self.assertEqual(onu_payload['disconnect_reason'], ONULog.REASON_DYING_GASP)
+        self.assertEqual(onu_payload['offline_since'], offline_since)
+        self.assertEqual(onu_payload['disconnect_window_start'], offline_since)
+        self.assertEqual(onu_payload['disconnect_window_end'], offline_since)
+        self.assertEqual(onu_payload['onu_rx_power'], -19.2)
+        self.assertEqual(onu_payload['olt_rx_power'], -20.8)
+        self.assertEqual(onu_payload['power_read_at'], power_read_at)
         mock_cache_set.assert_not_called()
 
     @override_settings(OLT_TOPOLOGY_DETAIL_CACHE_TTL=45)

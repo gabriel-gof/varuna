@@ -9,7 +9,6 @@ from django.db import close_old_connections, transaction
 from django.utils import timezone
 
 from topology.models import MaintenanceJob, OLT
-from topology.services.cache_service import cache_service
 from topology.services.maintenance_runtime import collect_power_for_olt
 
 
@@ -268,7 +267,6 @@ class MaintenanceJobService:
         output = StringIO()
         call_command('discover_onus', olt_id=job.olt_id, force=True, stdout=output)
         self._progress_update(job.id, 92, 'Finalizing discovery.')
-        cache_service.invalidate_topology_api_cache(job.olt_id)
         return 'Discovery completed.', output.getvalue().strip()
 
     def _run_polling(self, job: MaintenanceJob) -> Tuple[str, str]:
@@ -276,7 +274,6 @@ class MaintenanceJobService:
         output = StringIO()
         call_command('poll_onu_status', olt_id=job.olt_id, force=True, stdout=output)
         self._progress_update(job.id, 92, 'Finalizing polling.')
-        cache_service.invalidate_topology_api_cache(job.olt_id)
         return 'Polling completed.', output.getvalue().strip()
 
     def _run_power(self, job: MaintenanceJob) -> Tuple[str, str]:
@@ -289,7 +286,6 @@ class MaintenanceJobService:
             progress_callback=lambda percent, detail: self._progress_update(job.id, percent, detail),
         )
         self._progress_update(job.id, 92, 'Finalizing power collection.')
-        cache_service.invalidate_topology_api_cache(job.olt_id)
         summary = (
             f"count={payload.get('count', 0)} "
             f"attempted={payload.get('attempted_count', 0)} "

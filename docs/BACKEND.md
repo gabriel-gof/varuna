@@ -86,7 +86,7 @@ Updated from:
 - discovery command,
 - polling command,
 - `run_scheduler` periodic SNMP checks.
-- each connectivity state update also invalidates topology API response cache for the affected OLT.
+- connectivity state is overlaid at response time on cached topology payloads (no topology-cache flush required for pure runtime SNMP reachability updates).
 
 `snmp_check` is maintenance-aware: if a background job (discovery/polling/power) is in-flight for the OLT when the SNMP check times out, the check returns `reachable: true, busy: true` instead of marking the OLT unreachable. This prevents false gray-state on slower OLTs (e.g. VSOL-like) whose SNMP agent cannot serve concurrent requests during heavy power collection.
 
@@ -275,15 +275,13 @@ To reduce load time and repeated serialization cost for large topology trees:
   - `OLT_LIST_CACHE_TTL` (base list)
   - `OLT_TOPOLOGY_LIST_CACHE_TTL` (include_topology list)
   - `OLT_TOPOLOGY_DETAIL_CACHE_TTL` (single OLT topology endpoint)
-- Cache invalidation is triggered by runtime updates that can change rendered topology/status/power/health:
+- Cache invalidation is focused on topology structure changes:
   - discovery (`discover_onus`)
-  - polling (`poll_onu_status`)
-  - power collection (`collect_power_for_olt` and scheduler power pass)
-  - SNMP reachability transitions (`mark_olt_reachable` / `mark_olt_unreachable`)
   - OLT create/update/delete settings actions
 - Cache-hit freshness guard:
   - topology list/detail responses now overlay runtime OLT health/schedule fields from DB (`snmp_*`, polling/discovery/power timestamps and intervals) before returning payloads.
-  - this prevents stale SNMP health metadata from lingering on cached topology trees and keeps list/detail health fields coherent under active scheduler updates.
+  - topology list/detail cache hits also overlay per-ONU status and power fields from Redis (`varuna:onu:*:status` and `varuna:onu:*:power`) so dynamic telemetry stays fresh without rebuilding full topology trees.
+  - this keeps topology caches hot for first-page loads while still reflecting backend runtime collection updates.
 
 `GET /api/olts/?include_topology=true` now also returns:
 - `discovery_interval_minutes`
@@ -327,6 +325,7 @@ Power refresh contract:
   - per-OLT SNMP call budget is derived from OLT size (`estimated_calls * multiplier`) instead of a fixed low cap, so large OLTs (e.g. 4k ONUs) are still fully attempted.
 - Power runtime pacing is vendor-tunable through `oid_templates.power` (chunk size, timeout, retries/backoff, call-budget multiplier, inter-PON pause, retry cap), allowing slower but safer collection profiles when OLT load protection is preferred over speed.
 - Status and power cache writes use Redis pipelines (`set_many_onu_status`/`set_many_onu_power`) to batch all per-OLT entries into a single pipeline execution, reducing Redis round-trips.
+- Status cache TTL is interval-aware per OLT (`max(STATUS_CACHE_TTL, polling_interval_seconds * 2, 300)`), preventing status snapshots from expiring before the next scheduled polling cycle.
 - Power cache TTL is interval-aware per OLT (`max(POWER_CACHE_TTL, power_interval_seconds * 2, 300)`), preventing early expiry during long full-OLT collections.
   This reduces partial-power gaps where a full OLT run timed out while single-PON refresh succeeded.
 - OLT RX is optional by vendor:
@@ -417,6 +416,8 @@ Current tests validate:
 - discovery `walk_timeout_seconds` vendor config integration,
 - serial normalization (uppercase, sentinel stripping, vendor prefix handling, empty preservation),
 - cached power retention on failed forced refresh,
+- topology cache-hit overlays for per-ONU status/power runtime fields (list and detail endpoints),
+- interval-aware polling status cache TTL,
 - reader/viewer role permission enforcement (read allowed, write/actions denied),
 - authentication API contract (login payload, invalid creds, me, logout, change-password, token rotation),
 - `ensure_auth_user` management command (create with profile, superuser promotion, force-password),

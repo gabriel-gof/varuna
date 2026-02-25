@@ -9,7 +9,6 @@ from django.db import close_old_connections
 from django.utils import timezone
 
 from topology.models import OLT, ONU
-from topology.services.cache_service import cache_service
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.power_service import power_service
 from topology.services.snmp_service import snmp_service
@@ -75,7 +74,6 @@ def _collect_power_for_olt(olt):
     now = timezone.now()
     next_at = now + timedelta(seconds=olt.power_interval_seconds or 0)
     OLT.objects.filter(id=olt.id).update(last_power_at=now, next_power_at=next_at)
-    cache_service.invalidate_topology_api_cache(olt.id)
     logger.info(
         "scheduler: power collected for OLT %s (%s/%s ONUs with readings).",
         olt.id, collected, len(onus),

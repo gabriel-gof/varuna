@@ -483,7 +483,9 @@ class Command(BaseCommand):
                             disconnect_reasons[index] = "" if value is None else str(value).strip()
 
         now = timezone.now()
-        ttl = getattr(settings, "STATUS_CACHE_TTL", 180)
+        configured_ttl = int(getattr(settings, "STATUS_CACHE_TTL", 180) or 180)
+        interval_ttl = int((olt.polling_interval_seconds or 0) * 2)
+        ttl = max(configured_ttl, interval_ttl, 300)
 
         if not statuses:
             if not dry_run and not scoped_refresh:
@@ -666,8 +668,6 @@ class Command(BaseCommand):
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:
                 logger.exception("OLT %s polling: failed to refresh cached topology counters.", olt.id)
-            cache_service.invalidate_topology_api_cache(olt.id)
-
         self.stdout.write(
             f"OLT {olt.id}: polled {updated} ONUs "
             f"(online={online}, offline={offline}, unknown={unknown}, missing={missing}, missing_preserved={missing_preserved}, failed_chunks={failed_chunks})."
