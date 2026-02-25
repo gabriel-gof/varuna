@@ -49,6 +49,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Production frontend Nginx preserves incoming `X-Forwarded-Proto` when proxying `/api` and `/admin` to backend so Django security middleware can correctly detect HTTPS behind host-level TLS termination.
 - In production compose, frontend also serves `/static` directly from shared volume mount `/var/www/static` (populated by backend `collectstatic`).
 - OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable when `snmp_reachable === false` and `snmp_failure_count >= 2`.
+- Both topology list (`/api/olts/?include_topology=true`) and topology detail (`/api/olts/{id}/topology/`) payloads expose the same SNMP health fields so gray-state logic remains consistent on fallback loads.
 - Render unreachable or stale OLT nodes in gray.
 - When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and offline red-hyphen indicators are all forced to gray to signal that displayed data may be outdated.
 - `loading` is only `true` during the initial fetch when no OLT data exists. Background refreshes silently update `olts` state without toggling `loading`, keeping the topology tree mounted. If a background refresh fails, existing data is preserved.
@@ -73,6 +74,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Stale status data is considered unreliable and forced to gray:
   - if `now - last_poll_at > polling_interval_seconds` plus an additional grace window.
   - A minimum tolerance of 10 minutes is enforced so short polling intervals do not cause premature gray state.
+  - transient SNMP failures that are below the unreachable threshold still converge to gray when this stale window is exceeded.
 - OLT color semantics follow slot health:
   - `red` when all active slots are offline (`red`),
   - `yellow` when at least one slot is offline (`red`) and at least one other slot is not offline,
@@ -97,11 +99,11 @@ The UI remains topology-first. No dashboard page is required for current product
   - `power_interval_seconds`
 - Discovery, polling, and power collection are scheduled by the backend `run_scheduler` management command. The frontend no longer submits automatic maintenance requests.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
-- PON sidebar refresh is tab-aware and collection-first:
-  - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`).
-  - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`).
+- PON sidebar refresh is tab-aware and snapshot-first:
+  - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=false` for the selected PON (`olt_id + slot_id + pon_id`) to read the latest backend snapshot without triggering live SNMP.
+  - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=false` for the selected PON (`olt_id + slot_id + pon_id`) to read cached power snapshots without triggering live SNMP.
   - Both paths patch only the selected PON ONU rows in-memory (no forced full-topology reload on success).
-  - Backend also exposes single-ONU status refresh (`POST /api/onu/:id/refresh-status/`) for targeted operations.
+  - Explicit collection remains a backend maintenance action (`run_polling` / `refresh_power`) from settings, keeping collection decoupled from topology panel visibility/open state.
 - Status table disconnection column is interval-aware:
   - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.
@@ -149,7 +151,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Dirty detection is per-card: each card compares its own `editForm` values against current OLT data with special duration-aware comparison, and also compares its `thresholdForm` against its original snapshot to detect threshold changes. The Save button activates for any change — device fields, intervals, or thresholds. Saving or discarding one card does not affect other expanded cards.
 - Cancel/Discard resets a single card's device/interval form and threshold form to their original values without affecting other expanded cards.
 - Vendor dropdown re-selection (same vendor) is guarded to prevent Radix `onSelect` from resetting `vendor_profile` and falsely marking the form dirty.
-- Card header shows OLT name with total ONU count and online (green) / offline (red) breakdown as subtitle. IP:port, vendor, and model are not shown in the header — they live in the Device tab form fields.
+- Card header shows OLT name with metadata subtitle: `{ip}  ·  {vendor}  ·  {model}` on one line (no ONU counts in header). Full device details live in the Device tab form fields.
 - OLT cards start collapsed; expanded state is persisted in `localStorage` but no auto-expand on initial load. Background topology refreshes silently update non-dirty forms; mid-edit forms are preserved.
 - Error and success messages render in normal document flow between the tab content area and the action bar, with a translucent backdrop blur. They do not overlay tab content (e.g. threshold inputs). Auto-dismiss after 5 seconds.
 - Manual interval action buttons (`Run` for discovery/polling/power) are non-blocking:
@@ -267,6 +269,14 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Status Tab Refresh
 - When a status refresh is triggered from the PON sidebar, a translucent overlay with a centered spinner covers the status content area during the operation. Existing data stays visible underneath.
+
+## Frontend Health Tests
+- Deterministic unit coverage exists in `frontend/src/utils/oltHealth.test.js` (Node test runner).
+- Covered behaviors:
+  - gray on repeated SNMP failures (`snmp_failure_count >= 2`);
+  - transient failures are not immediately gray;
+  - stale polling data becomes gray by interval window;
+  - `last_discovery_at` fallback drives stale detection when `last_poll_at` is absent.
 
 ## Frontend Invariants
 - Do not change visual identity without explicit product request.

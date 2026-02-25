@@ -10,6 +10,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from topology.models import OLT, OLTSlot, OLTPON, ONU, ONULog
+from topology.services.cache_service import cache_service
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.snmp_service import snmp_service
 from topology.services.topology_counter_service import topology_counter_service
@@ -657,6 +658,7 @@ class Command(BaseCommand):
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:
                 logger.exception("OLT %s discovery: failed to refresh cached topology counters.", olt.id)
+            cache_service.invalidate_topology_api_cache(olt.id)
 
         # Discovery is unhealthy when SNMP returned indices but none parsed
         all_skipped = indices and skipped == len(indices)

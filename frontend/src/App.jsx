@@ -935,7 +935,7 @@ const App = () => {
         olt_id: oltId,
         slot_id: slotNumber,
         pon_id: ponNumber,
-        refresh: true
+        refresh: false
       },
       { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
     )
@@ -959,7 +959,7 @@ const App = () => {
         olt_id: oltId,
         slot_id: slotNumber,
         pon_id: ponNumber,
-        refresh: true
+        refresh: false
       },
       { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
     )

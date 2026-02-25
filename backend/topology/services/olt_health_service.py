@@ -3,6 +3,8 @@ SNMP health helpers for OLT runtime availability tracking.
 """
 from django.utils import timezone
 
+from topology.services.cache_service import cache_service
+
 
 def mark_olt_reachable(olt, save: bool = True):
     olt.snmp_reachable = True
@@ -11,6 +13,7 @@ def mark_olt_reachable(olt, save: bool = True):
     olt.snmp_failure_count = 0
     if save:
         olt.save(update_fields=['snmp_reachable', 'last_snmp_check_at', 'last_snmp_error', 'snmp_failure_count'])
+        cache_service.invalidate_topology_api_cache(olt.id)
 
 
 def mark_olt_unreachable(olt, error: str = '', save: bool = True):
@@ -20,3 +23,4 @@ def mark_olt_unreachable(olt, error: str = '', save: bool = True):
     olt.snmp_failure_count = (olt.snmp_failure_count or 0) + 1
     if save:
         olt.save(update_fields=['snmp_reachable', 'last_snmp_check_at', 'last_snmp_error', 'snmp_failure_count'])
+        cache_service.invalidate_topology_api_cache(olt.id)

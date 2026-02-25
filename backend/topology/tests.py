@@ -18,6 +18,7 @@ from topology.services.power_service import (
     power_service,
     resolve_power_formula,
 )
+from topology.services.cache_service import cache_service
 from topology.services.snmp_service import SNMPService
 from topology.services.topology_counter_service import topology_counter_service
 from topology.management.commands.discover_onus import _normalize_serial
@@ -1068,6 +1069,7 @@ class PowerServiceResilienceTests(TestCase):
 
 class SettingsApiContractTests(TestCase):
     def setUp(self):
+        cache_service.invalidate_topology_api_cache()
         self.user = User.objects.create_user(username='testuser', password='testpass')
         UserProfile.objects.create(user=self.user, role=UserProfile.ROLE_ADMIN)
         self.client = APIClient()
@@ -1212,6 +1214,7 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(onu.status, ONU.STATUS_UNKNOWN)
         self.assertIsNotNone(log.offline_until)
 
+    @override_settings(OLT_TOPOLOGY_LIST_CACHE_TTL=0)
     def test_include_topology_returns_disconnect_window_fields(self):
         olt = self._create_olt(name='OLT-TOPOLOGY-DISCONNECT-WINDOW')
         slot = OLTSlot.objects.create(
@@ -1253,13 +1256,303 @@ class SettingsApiContractTests(TestCase):
 
         rows = response.data if isinstance(response.data, list) else response.data.get('results', [])
         self.assertTrue(rows)
-        payload = rows[0]
+        payload = next((item for item in rows if item.get('id') == olt.id), None)
+        self.assertIsNotNone(payload)
         onu_payload = payload['slots'][0]['pons'][0]['onus'][0]
         self.assertEqual(onu_payload['id'], onu.id)
         self.assertIn('disconnect_window_start', onu_payload)
         self.assertIn('disconnect_window_end', onu_payload)
         self.assertEqual(onu_payload['disconnect_window_start'], window_start.isoformat())
         self.assertEqual(onu_payload['disconnect_window_end'], window_end.isoformat())
+
+    def test_include_topology_includes_snmp_failure_metadata(self):
+        olt = self._create_olt(
+            name='OLT-TOPOLOGY-SNMP-META',
+            snmp_reachable=False,
+            snmp_failure_count=3,
+            last_snmp_error='timeout',
+            last_snmp_check_at=timezone.now() - timezone.timedelta(minutes=2),
+        )
+
+        response = self.client.get('/api/olts/?include_topology=true')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        rows = response.data if isinstance(response.data, list) else response.data.get('results', [])
+        self.assertTrue(rows)
+        payload = next((item for item in rows if item.get('id') == olt.id), None)
+        self.assertIsNotNone(payload)
+        self.assertFalse(payload['snmp_reachable'])
+        self.assertEqual(payload['snmp_failure_count'], 3)
+        self.assertEqual(payload['last_snmp_error'], 'timeout')
+
+    def test_topology_detail_includes_snmp_failure_metadata(self):
+        olt = self._create_olt(
+            name='OLT-TOPOLOGY-DETAIL-SNMP-META',
+            snmp_reachable=False,
+            snmp_failure_count=2,
+            last_snmp_error='no response',
+            last_snmp_check_at=timezone.now() - timezone.timedelta(minutes=3),
+        )
+
+        response = self.client.get(f'/api/olts/{olt.id}/topology/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['olt']['id'], olt.id)
+        self.assertFalse(response.data['olt']['snmp_reachable'])
+        self.assertEqual(response.data['olt']['snmp_failure_count'], 2)
+        self.assertEqual(response.data['olt']['last_snmp_error'], 'no response')
+        self.assertTrue(response.data['olt']['last_snmp_check_at'])
+
+    @override_settings(OLT_TOPOLOGY_LIST_CACHE_TTL=60)
+    @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get')
+    def test_include_topology_reads_from_api_cache(self, mock_cache_get, mock_cache_set):
+        cached_payload = {
+            'count': 1,
+            'results': [
+                {
+                    'id': 999,
+                    'name': 'CACHED-OLT',
+                    'slots': [],
+                }
+            ],
+        }
+        mock_cache_get.return_value = cached_payload
+
+        response = self.client.get('/api/olts/?include_topology=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, cached_payload)
+        mock_cache_set.assert_not_called()
+
+    @override_settings(OLT_TOPOLOGY_LIST_CACHE_TTL=60)
+    @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get')
+    def test_include_topology_cache_hit_overlays_runtime_health(self, mock_cache_get, mock_cache_set):
+        olt = self._create_olt(
+            name='OLT-TOPOLOGY-CACHE-OVERLAY',
+            snmp_reachable=True,
+            snmp_failure_count=0,
+            last_snmp_error='',
+            last_snmp_check_at=timezone.now() - timezone.timedelta(seconds=5),
+        )
+        cached_payload = {
+            'count': 1,
+            'results': [
+                {
+                    'id': olt.id,
+                    'name': olt.name,
+                    'snmp_reachable': None,
+                    'snmp_failure_count': 99,
+                    'last_snmp_error': 'stale',
+                    'last_snmp_check_at': None,
+                    'slots': [],
+                }
+            ],
+        }
+        mock_cache_get.return_value = cached_payload
+
+        response = self.client.get('/api/olts/?include_topology=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        row = response.data['results'][0]
+        self.assertTrue(row['snmp_reachable'])
+        self.assertEqual(row['snmp_failure_count'], 0)
+        self.assertEqual(row['last_snmp_error'], '')
+        self.assertIsNotNone(row['last_snmp_check_at'])
+        mock_cache_set.assert_not_called()
+
+    @override_settings(OLT_TOPOLOGY_LIST_CACHE_TTL=60)
+    @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get', return_value=None)
+    def test_include_topology_writes_api_cache(self, _mock_cache_get, mock_cache_set):
+        olt = self._create_olt(name='OLT-TOPOLOGY-CACHE-WRITE')
+        slot = OLTSlot.objects.create(
+            olt=olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=olt,
+            slot=slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        ONU.objects.create(
+            olt=olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        response = self.client.get('/api/olts/?include_topology=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(mock_cache_set.called)
+        self.assertEqual(mock_cache_set.call_args.kwargs.get('ttl'), 60)
+
+    @override_settings(OLT_TOPOLOGY_DETAIL_CACHE_TTL=45)
+    @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get')
+    def test_topology_detail_reads_from_api_cache(self, mock_cache_get, mock_cache_set):
+        olt = self._create_olt(name='OLT-TOPOLOGY-DETAIL-CACHED')
+        cached_payload = {
+            'olt': {
+                'id': olt.id,
+                'name': 'CACHED-DETAIL',
+            },
+            'slots': {},
+            'generated_at': timezone.now().isoformat(),
+        }
+        mock_cache_get.return_value = cached_payload
+
+        response = self.client.get(f'/api/olts/{olt.id}/topology/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, cached_payload)
+        mock_cache_set.assert_not_called()
+
+    @override_settings(OLT_TOPOLOGY_DETAIL_CACHE_TTL=45)
+    @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get')
+    def test_topology_detail_cache_hit_overlays_runtime_health(self, mock_cache_get, mock_cache_set):
+        olt = self._create_olt(
+            name='OLT-TOPOLOGY-DETAIL-OVERLAY',
+            snmp_reachable=True,
+            snmp_failure_count=1,
+            last_snmp_error='',
+            last_snmp_check_at=timezone.now() - timezone.timedelta(seconds=10),
+            last_poll_at=timezone.now() - timezone.timedelta(seconds=20),
+            last_discovery_at=timezone.now() - timezone.timedelta(seconds=30),
+        )
+        cached_payload = {
+            'olt': {
+                'id': olt.id,
+                'name': 'CACHED-DETAIL-OVERLAY',
+                'snmp_reachable': None,
+                'snmp_failure_count': 77,
+                'last_snmp_error': 'stale',
+                'last_snmp_check_at': None,
+                'last_poll': None,
+                'last_discovery': None,
+            },
+            'slots': {},
+            'generated_at': timezone.now().isoformat(),
+        }
+        mock_cache_get.return_value = cached_payload
+
+        response = self.client.get(f'/api/olts/{olt.id}/topology/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['olt']['snmp_reachable'])
+        self.assertEqual(response.data['olt']['snmp_failure_count'], 1)
+        self.assertEqual(response.data['olt']['last_snmp_error'], '')
+        self.assertIsNotNone(response.data['olt']['last_snmp_check_at'])
+        self.assertIsNotNone(response.data['olt']['last_poll'])
+        self.assertIsNotNone(response.data['olt']['last_discovery'])
+        mock_cache_set.assert_not_called()
+
+    @override_settings(OLT_TOPOLOGY_DETAIL_CACHE_TTL=45)
+    @patch('topology.api.views.cache_service.set')
+    @patch('topology.api.views.cache_service.get', return_value=None)
+    def test_topology_detail_writes_api_cache(self, _mock_cache_get, mock_cache_set):
+        olt = self._create_olt(name='OLT-TOPOLOGY-DETAIL-WRITE')
+
+        response = self.client.get(f'/api/olts/{olt.id}/topology/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(mock_cache_set.called)
+        self.assertEqual(mock_cache_set.call_args.kwargs.get('ttl'), 45)
+
+    @patch('topology.api.views.call_command')
+    def test_batch_status_defaults_to_cached_mode_when_refresh_omitted(self, mock_call_command):
+        olt = self._create_olt(name='OLT-BATCH-STATUS-DEFAULT')
+        slot = OLTSlot.objects.create(
+            olt=olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=olt,
+            slot=slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        ONU.objects.create(
+            olt=olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        response = self.client.post(
+            '/api/onu/batch-status/',
+            {
+                'olt_id': olt.id,
+                'slot_id': 1,
+                'pon_id': 1,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_call_command.assert_not_called()
+
+    @patch('topology.api.views.power_service.refresh_for_onus')
+    def test_batch_power_defaults_to_cached_mode_when_refresh_omitted(self, mock_refresh_for_onus):
+        olt = self._create_olt(name='OLT-BATCH-POWER-DEFAULT')
+        slot = OLTSlot.objects.create(
+            olt=olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=olt,
+            slot=slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        onu = ONU.objects.create(
+            olt=olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        mock_refresh_for_onus.return_value = {onu.id: {'onu_id': onu.id}}
+
+        response = self.client.post(
+            '/api/onu/batch-power/',
+            {
+                'olt_id': olt.id,
+                'slot_id': 1,
+                'pon_id': 1,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(mock_refresh_for_onus.called)
+        self.assertEqual(mock_refresh_for_onus.call_args.kwargs.get('force_refresh'), False)
 
     def test_run_polling_rejects_unsupported_vendor_capability(self):
         vendor = build_vendor_profile(

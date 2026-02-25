@@ -30,6 +30,7 @@ pnpm-debug.log*
 # Build artifacts
 dist/
 frontend/dist/
+artifacts/
 
 # Environment files
 .env

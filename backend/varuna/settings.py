@@ -130,6 +130,10 @@ POWER_CACHE_TTL = config('POWER_CACHE_TTL', default=60, cast=int)
 
 OLT_LIST_CACHE_TTL = config('OLT_LIST_CACHE_TTL', default=300, cast=int)
 
+OLT_TOPOLOGY_LIST_CACHE_TTL = config('OLT_TOPOLOGY_LIST_CACHE_TTL', default=30, cast=int)
+
+OLT_TOPOLOGY_DETAIL_CACHE_TTL = config('OLT_TOPOLOGY_DETAIL_CACHE_TTL', default=30, cast=int)
+
 if DEBUG:
     SECURE_SSL_REDIRECT = False
     SECURE_HSTS_SECONDS = 0

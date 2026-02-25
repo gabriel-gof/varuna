@@ -187,9 +187,7 @@ const getOltHealth = (olt, oltHealthById) => {
 /* ─── OLT Card header ─── */
 
 const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy, t, children }) => {
-  const total = Number(olt.onu_count || 0)
-  const online = Number(olt.online_count || 0)
-  const offline = Number(olt.offline_count || 0)
+  const meta = [olt.ip_address, olt.vendor_display, olt.vendor_profile_name].filter(Boolean).join('  ·  ')
 
   return (
     <div className={`
@@ -217,15 +215,9 @@ const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy,
           }`}>
             {olt.name || '\u2014'}
           </p>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-black text-slate-700 dark:text-slate-300 tabular-nums">{total} <span className="text-[9px] uppercase font-bold text-slate-400 dark:text-slate-500">{t('ONUs')}</span></span>
-            <span className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
-            <div className="flex items-center gap-1">
-              <span className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 tabular-nums">{online}</span>
-              <span className="text-[9px] font-bold text-slate-300 dark:text-slate-600">/</span>
-              <span className="text-[11px] font-black text-rose-500 dark:text-rose-400 tabular-nums">{offline}</span>
-            </div>
-          </div>
+          <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide leading-none mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">
+            {meta || '\u2014'}
+          </p>
         </div>
 
         <div className="mr-2" />

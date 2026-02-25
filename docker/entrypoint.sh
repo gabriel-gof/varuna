@@ -81,5 +81,10 @@ if [ "${SNMP_API_ONLY:-0}" = "1" ] && [ -n "${SNMP_LOG_PATH:-}" ]; then
     tail -n 0 -F "$SNMP_LOG_PATH" &
 fi
 
-echo "Starting Apache..."
+if [ "${ENABLE_SCHEDULER:-0}" = "1" ] && [ "${SNMP_API_ONLY:-0}" != "1" ]; then
+    echo "Starting backend scheduler..."
+    python manage.py run_scheduler &
+fi
+
+echo "Starting service: $*"
 exec "$@"

@@ -86,6 +86,7 @@ Updated from:
 - discovery command,
 - polling command,
 - `run_scheduler` periodic SNMP checks.
+- each connectivity state update also invalidates topology API response cache for the affected OLT.
 
 `snmp_check` is maintenance-aware: if a background job (discovery/polling/power) is in-flight for the OLT when the SNMP check times out, the check returns `reachable: true, busy: true` instead of marking the OLT unreachable. This prevents false gray-state on slower OLTs (e.g. VSOL-like) whose SNMP agent cannot serve concurrent requests during heavy power collection.
 
@@ -266,12 +267,35 @@ Main endpoints:
 - `POST /api/onu/batch-status/`
 - `POST /api/onu/batch-power/`
 
+## Topology API Response Cache
+To reduce load time and repeated serialization cost for large topology trees:
+- `GET /api/olts/` and `GET /api/olts/?include_topology=true` now support Redis-backed response cache keyed by request query signature.
+- `GET /api/olts/{id}/topology/` also supports per-OLT response cache.
+- Cache TTL settings:
+  - `OLT_LIST_CACHE_TTL` (base list)
+  - `OLT_TOPOLOGY_LIST_CACHE_TTL` (include_topology list)
+  - `OLT_TOPOLOGY_DETAIL_CACHE_TTL` (single OLT topology endpoint)
+- Cache invalidation is triggered by runtime updates that can change rendered topology/status/power/health:
+  - discovery (`discover_onus`)
+  - polling (`poll_onu_status`)
+  - power collection (`collect_power_for_olt` and scheduler power pass)
+  - SNMP reachability transitions (`mark_olt_reachable` / `mark_olt_unreachable`)
+  - OLT create/update/delete settings actions
+- Cache-hit freshness guard:
+  - topology list/detail responses now overlay runtime OLT health/schedule fields from DB (`snmp_*`, polling/discovery/power timestamps and intervals) before returning payloads.
+  - this prevents stale SNMP health metadata from lingering on cached topology trees and keeps list/detail health fields coherent under active scheduler updates.
+
 `GET /api/olts/?include_topology=true` now also returns:
 - `discovery_interval_minutes`
 - `polling_interval_seconds`
 - `power_interval_seconds`
 - `last_power_at`
 - `next_power_at`
+- SNMP health metadata required for gray-state derivation on topology surfaces:
+  - `snmp_reachable`
+  - `last_snmp_check_at`
+  - `snmp_failure_count`
+  - `last_snmp_error`
 - per-ONU disconnection window fields:
   - `disconnect_window_start`
   - `disconnect_window_end`
@@ -279,6 +303,8 @@ Main endpoints:
   - `supports_olt_rx_power` (`true` only when vendor template has `power.olt_rx_oid`)
 
 These fields are used by the frontend for stale-data validation and interval-driven refresh behavior.
+
+`GET /api/olts/{id}/topology/` includes the same SNMP health metadata under `olt`, so fallback detail fetches and list fetches remain behaviorally consistent.
 
 Power refresh contract:
 - Power readings displayed in topology are read from Redis cache (no per-PON live SNMP read required in normal view flow).
@@ -304,9 +330,15 @@ Power refresh contract:
 - Power cache TTL is interval-aware per OLT (`max(POWER_CACHE_TTL, power_interval_seconds * 2, 300)`), preventing early expiry during long full-OLT collections.
   This reduces partial-power gaps where a full OLT run timed out while single-PON refresh succeeded.
 - OLT RX is optional by vendor:
-  - when `power.olt_rx_oid` is absent, backend collects only ONU RX;
-  - `olt_rx_power` is returned as `null` and no OLT RX SNMP requests are executed;
-  - ONU RX parser supports both legacy integer formats and string values like `-27.214(dBm)`.
+- when `power.olt_rx_oid` is absent, backend collects only ONU RX;
+- `olt_rx_power` is returned as `null` and no OLT RX SNMP requests are executed;
+- ONU RX parser supports both legacy integer formats and string values like `-27.214(dBm)`.
+
+ONU batch refresh default behavior:
+- `POST /api/onu/batch-status/` now defaults to cached DB/log snapshot reads (`refresh=false` unless explicitly set).
+- `POST /api/onu/batch-power/` now defaults to cached power snapshot reads (`refresh=false` unless explicitly set).
+- `GET /api/onu/{id}/power/` and `POST /api/onu/{id}/refresh-status/` also default to snapshot reads unless `refresh=true` is explicitly requested.
+- This avoids accidental UI-coupled SNMP collection from panel refresh flows; explicit live collection remains available only when `refresh=true` is sent by authorized users.
 
 ## Polling Atomicity (Huawei)
 When `disconnect_reason_oid` is configured (Huawei), both status and disconnect reason are collected before any writes. Cache and DB writes include all ONU data in single atomic operations. The serializer also ensures offline ONUs without an active `ONULog` return `disconnect_reason='unknown'` instead of `null`, preventing the frontend from showing a bare "Offline" label.
@@ -327,6 +359,10 @@ Arguments:
 - optional per-tick caps: `--max-poll-olts-per-tick`, `--max-discovery-olts-per-tick`, `--max-power-olts-per-tick`
 
 Scheduler writes operational timing lines to stdout for each cycle (`poll_onu_status`, `discover_onus`, SNMP summary, power summary) so Docker logs can be used directly for tuning.
+
+Container startup contract:
+- Backend container startup supports `ENABLE_SCHEDULER=1` to launch `python manage.py run_scheduler` in background before starting the main web process.
+- This keeps discovery/polling/power/SNMP checks backend-managed in both dev and production runtime modes.
 Each tick calls `close_old_connections()` and wraps work in try/except for resilience.
 
 **SNMP-first design**: The scheduler checks SNMP reachability before dispatching any collection jobs. This prevents wasted time and log spam from unreachable OLTs. When an OLT comes back online, the next SNMP check (every 180s) detects it and re-enables collection automatically.

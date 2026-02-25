@@ -2,6 +2,7 @@
 Serviço de Cache Redis
 Redis Cache Service
 """
+import hashlib
 import json
 import logging
 from typing import Optional, Dict, Any, Iterable, List
@@ -120,6 +121,11 @@ class CacheService:
         }
         return self.set_many(items, ttl=ttl)
 
+    @staticmethod
+    def _hash_signature(signature: str) -> str:
+        normalized = str(signature or '')
+        return hashlib.sha1(normalized.encode('utf-8')).hexdigest()[:16]
+
     def delete(self, key: str) -> bool:
         """
         Remove valor do cache
@@ -178,6 +184,48 @@ class CacheService:
     @staticmethod
     def get_onu_power_key(olt_id: int, onu_id: int) -> str:
         return f"varuna:onu:{olt_id}:{onu_id}:power"
+
+    @classmethod
+    def get_api_olts_key(cls, *, include_topology: bool, query_signature: str = '') -> str:
+        mode = 'topology' if include_topology else 'base'
+        return f"varuna:api:olts:{mode}:{cls._hash_signature(query_signature)}"
+
+    @staticmethod
+    def get_api_olt_topology_key(olt_id: int) -> str:
+        return f"varuna:api:olt:{olt_id}:topology"
+
+    def _delete_by_patterns(self, patterns: Iterable[str]) -> int:
+        if not self.redis_client:
+            return 0
+
+        deleted = 0
+        try:
+            batch: List[str] = []
+            for pattern in patterns:
+                for key in self.redis_client.scan_iter(match=pattern, count=200):
+                    batch.append(key)
+                    if len(batch) >= 200:
+                        deleted += self.redis_client.delete(*batch)
+                        batch = []
+            if batch:
+                deleted += self.redis_client.delete(*batch)
+        except Exception as e:
+            logger.error("Erro ao deletar cache por padrão (%s): %s", ','.join(patterns), e)
+        return deleted
+
+    def invalidate_topology_api_cache(self, olt_id: int | None = None):
+        if not self.redis_client:
+            return
+
+        patterns = ['varuna:api:olts:*']
+        if olt_id is None:
+            patterns.append('varuna:api:olt:*')
+        else:
+            patterns.append(f'varuna:api:olt:{olt_id}:*')
+
+        deleted = self._delete_by_patterns(patterns)
+        if deleted:
+            logger.info("API topology cache invalidated (olt=%s, keys=%s)", olt_id, deleted)
     
     def invalidate_olt_cache(self, olt_id: int):
         """
@@ -186,22 +234,15 @@ class CacheService:
         """
         if not self.redis_client:
             return
-        
-        try:
-            pattern = f"varuna:onu:{olt_id}:*"
-            deleted = 0
-            batch: List[str] = []
-            for key in self.redis_client.scan_iter(match=pattern, count=200):
-                batch.append(key)
-                if len(batch) >= 200:
-                    deleted += self.redis_client.delete(*batch)
-                    batch = []
-            if batch:
-                deleted += self.redis_client.delete(*batch)
-            if deleted:
-                logger.info(f"Cache invalidado para OLT {olt_id}: {deleted} chaves")
-        except Exception as e:
-            logger.error(f"Erro ao invalidar cache OLT {olt_id}: {e}")
+
+        patterns = [
+            f"varuna:onu:{olt_id}:*",
+            "varuna:api:olts:*",
+            f"varuna:api:olt:{olt_id}:*",
+        ]
+        deleted = self._delete_by_patterns(patterns)
+        if deleted:
+            logger.info("Cache invalidado para OLT %s: %s chaves", olt_id, deleted)
 
 
 cache_service = CacheService()

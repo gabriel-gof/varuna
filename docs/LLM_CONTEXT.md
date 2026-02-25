@@ -12,7 +12,11 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Multi-client strategy is deployment-level isolation (one Varuna stack per client), not shared-db tenancy.
 - Role-based access: `admin`/`operator` (full), `viewer` (read-only). Enforce via `can_modify_settings()` on backend, `canManageSettings` on frontend.
 - Discovery, polling, power collection, and SNMP checks are scheduled by the backend `run_scheduler` command. The frontend does not submit automatic maintenance; it relies on backend scheduling and provides manual trigger buttons.
+- Backend container runtime starts scheduler automatically when `ENABLE_SCHEDULER=1` (enabled in current dev/prod env templates).
 - Manual settings maintenance actions use a persistent `MaintenanceJob` queue (PostgreSQL), not volatile in-memory flags.
+- Topology-heavy API reads (`/api/olts/`, `/api/olts/?include_topology=true`, `/api/olts/{id}/topology/`) use Redis response cache with short TTLs and runtime invalidation.
+- Topology list/detail payloads expose SNMP health metadata used by frontend gray-state logic (`snmp_reachable`, `last_snmp_check_at`, `snmp_failure_count`, `last_snmp_error`).
+- ONU batch status/power endpoints default to snapshot mode (`refresh=false` unless explicitly provided), so opening/refreshing topology panels does not implicitly trigger SNMP collection.
 
 ## Core Data/Behavior Rules
 - `ONU` is scoped to `OLT`; SNMP index uniqueness is `(olt, snmp_index)`.

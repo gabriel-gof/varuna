@@ -7,6 +7,7 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from topology.models import OLT, ONU
+from topology.services.cache_service import cache_service
 from topology.services.power_service import power_service
 
 
@@ -125,6 +126,7 @@ def collect_power_for_olt(
     )
     attempted_count = max(0, len(results) - skipped_not_online_count)
     mark_power_collection_schedule(olt)
+    cache_service.invalidate_topology_api_cache(olt.id)
 
     payload = {
         'status': 'completed',

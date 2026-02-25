@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict
 from io import StringIO
 
+from django.conf import settings
 from django.core.management import call_command
 from django.db import transaction
 from django.db.models import Prefetch
@@ -118,8 +119,131 @@ class OLTViewSet(viewsets.ModelViewSet):
             return OLTTopologySerializer
         return OLTSerializer
 
+    @staticmethod
+    def _dt_to_iso(value):
+        return value.isoformat() if value else None
+
+    def _build_runtime_overlay_map(self, olt_ids):
+        ids = []
+        seen = set()
+        for raw in olt_ids:
+            if raw in (None, ''):
+                continue
+            try:
+                normalized = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ids.append(normalized)
+
+        if not ids:
+            return {}
+
+        overlays = {}
+        runtime_rows = OLT.objects.filter(id__in=ids).values(
+            'id',
+            'snmp_reachable',
+            'snmp_failure_count',
+            'last_snmp_error',
+            'last_snmp_check_at',
+            'discovery_interval_minutes',
+            'polling_interval_seconds',
+            'power_interval_seconds',
+            'last_discovery_at',
+            'last_poll_at',
+            'last_power_at',
+            'next_discovery_at',
+            'next_poll_at',
+            'next_power_at',
+        )
+        for row in runtime_rows:
+            overlays[str(row['id'])] = {
+                'snmp_reachable': row['snmp_reachable'],
+                'snmp_failure_count': int(row['snmp_failure_count'] or 0),
+                'last_snmp_error': row['last_snmp_error'] or '',
+                'last_snmp_check_at': self._dt_to_iso(row['last_snmp_check_at']),
+                'discovery_interval_minutes': row['discovery_interval_minutes'],
+                'polling_interval_seconds': row['polling_interval_seconds'],
+                'power_interval_seconds': row['power_interval_seconds'],
+                'last_discovery_at': self._dt_to_iso(row['last_discovery_at']),
+                'last_poll_at': self._dt_to_iso(row['last_poll_at']),
+                'last_power_at': self._dt_to_iso(row['last_power_at']),
+                'next_discovery_at': self._dt_to_iso(row['next_discovery_at']),
+                'next_poll_at': self._dt_to_iso(row['next_poll_at']),
+                'next_power_at': self._dt_to_iso(row['next_power_at']),
+            }
+        return overlays
+
+    def _overlay_runtime_health_on_list_payload(self, payload):
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict) and isinstance(payload.get('results'), list):
+            rows = payload.get('results') or []
+        else:
+            return payload
+
+        overlay_map = self._build_runtime_overlay_map([row.get('id') for row in rows if isinstance(row, dict)])
+        if not overlay_map:
+            return payload
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            overlay = overlay_map.get(str(row.get('id')))
+            if not overlay:
+                continue
+            for key, value in overlay.items():
+                if key in row:
+                    row[key] = value
+        return payload
+
+    def _overlay_runtime_health_on_detail_payload(self, payload, *, olt_id=None):
+        if not isinstance(payload, dict):
+            return payload
+
+        olt_block = payload.get('olt')
+        if not isinstance(olt_block, dict):
+            return payload
+
+        resolved_olt_id = olt_block.get('id') if olt_block.get('id') is not None else olt_id
+        overlay_map = self._build_runtime_overlay_map([resolved_olt_id])
+        overlay = overlay_map.get(str(resolved_olt_id))
+        if not overlay:
+            return payload
+
+        for key, value in overlay.items():
+            if key in olt_block:
+                olt_block[key] = value
+
+        if 'last_discovery' in olt_block:
+            olt_block['last_discovery'] = overlay['last_discovery_at']
+        if 'last_poll' in olt_block:
+            olt_block['last_poll'] = overlay['last_poll_at']
+        return payload
+
     def list(self, request, *args, **kwargs):
         include_topology = _is_true(self.request.query_params.get('include_topology', 'false'))
+        cache_ttl = int(
+            getattr(
+                settings,
+                'OLT_TOPOLOGY_LIST_CACHE_TTL' if include_topology else 'OLT_LIST_CACHE_TTL',
+                0,
+            )
+            or 0
+        )
+        cache_key = None
+        if cache_ttl > 0:
+            cache_key = cache_service.get_api_olts_key(
+                include_topology=include_topology,
+                query_signature=request.get_full_path(),
+            )
+            cached_payload = cache_service.get(cache_key)
+            if cached_payload is not None:
+                cached_payload = self._overlay_runtime_health_on_list_payload(cached_payload)
+                return Response(cached_payload)
+
         queryset = self.filter_queryset(self.get_queryset())
 
         page = self.paginate_queryset(queryset)
@@ -130,9 +254,18 @@ class OLTViewSet(viewsets.ModelViewSet):
             context['power_map'] = self._build_power_map(rows)
 
         serializer = self.get_serializer(rows, many=True, context=context)
+        response = None
+        payload = serializer.data
         if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response(serializer.data)
+            response = self.get_paginated_response(serializer.data)
+            payload = response.data
+
+        payload = self._overlay_runtime_health_on_list_payload(payload)
+        if cache_key:
+            cache_service.set(cache_key, payload, ttl=cache_ttl)
+        if response is not None:
+            return response
+        return Response(payload)
 
     def perform_create(self, serializer):
         olt = serializer.save()
@@ -296,8 +429,19 @@ class OLTViewSet(viewsets.ModelViewSet):
         Returns complete OLT topology
         """
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        cache_ttl = int(getattr(settings, 'OLT_TOPOLOGY_DETAIL_CACHE_TTL', 0) or 0)
+        cache_key = None
+        if cache_ttl > 0:
+            cache_key = cache_service.get_api_olt_topology_key(olt.id)
+            cached_payload = cache_service.get(cache_key)
+            if isinstance(cached_payload, dict):
+                cached_payload = self._overlay_runtime_health_on_detail_payload(cached_payload, olt_id=olt.id)
+                return Response(cached_payload)
         service = TopologyService()
         topology = service.build_topology(olt)
+        topology = self._overlay_runtime_health_on_detail_payload(topology, olt_id=olt.id)
+        if cache_key:
+            cache_service.set(cache_key, topology, ttl=cache_ttl)
         return Response(topology)
 
     @action(detail=True, methods=['get'], url_path='maintenance_status')
@@ -461,6 +605,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        cache_service.invalidate_topology_api_cache(olt.id)
         return Response({'status': 'completed', 'olt_id': olt.id, 'output': output.getvalue().strip()})
 
     @action(detail=True, methods=['post'])
@@ -569,6 +714,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        cache_service.invalidate_topology_api_cache(olt.id)
         return Response({'status': 'completed', 'olt_id': olt.id, 'output': output.getvalue().strip()})
 
 
@@ -737,7 +883,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         Query param refresh=true/false controls SNMP refresh vs cache read.
         """
         onu = self.get_object()
-        refresh = _is_true(request.query_params.get('refresh', 'true'))
+        refresh = _is_true(request.query_params.get('refresh', 'false'))
         if refresh and not can_modify_settings(request.user):
             return _settings_forbidden_response()
         if refresh:
@@ -764,7 +910,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         Body/query option: refresh=true/false controls SNMP refresh vs cached DB/log read.
         """
         onu = self.get_object()
-        refresh = _is_true(request.data.get('refresh', request.query_params.get('refresh', 'true')))
+        refresh = _is_true(request.data.get('refresh', request.query_params.get('refresh', 'false')))
         if refresh and not can_modify_settings(request.user):
             return _settings_forbidden_response()
 
@@ -783,7 +929,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         - onu_ids: [1,2,3]
         - or olt_id + slot_id + pon_id to refresh one PON quickly
         """
-        refresh = _is_true(request.data.get('refresh', True))
+        refresh = _is_true(request.data.get('refresh', False))
         if refresh and not can_modify_settings(request.user):
             return _settings_forbidden_response()
 
@@ -813,7 +959,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         - onu_ids: [1,2,3]
         - or olt_id + slot_id + pon_id to refresh one PON quickly
         """
-        refresh = _is_true(request.data.get('refresh', True))
+        refresh = _is_true(request.data.get('refresh', False))
         if refresh and not can_modify_settings(request.user):
             return _settings_forbidden_response()
         onus, selection_scope, error_response = self._resolve_onu_batch_selection(request)

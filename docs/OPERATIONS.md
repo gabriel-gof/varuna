@@ -261,11 +261,11 @@ backend/venv/bin/python backend/manage.py poll_onu_status --force
 ```
 
 ## Background Collection (Scheduler)
-In Docker dev mode, the `run_scheduler` management command runs as a background process alongside the Django server. It automatically dispatches polling, discovery, power collection, and SNMP reachability checks.
+The `run_scheduler` management command runs as a background process when backend env sets `ENABLE_SCHEDULER=1`. Current dev/prod env templates enable this by default. It automatically dispatches polling, discovery, power collection, and SNMP reachability checks.
 
 ```bash
-# Scheduler starts automatically in docker-compose.dev.yml
-# To run manually:
+# Scheduler starts automatically when ENABLE_SCHEDULER=1.
+# To run an extra manual instance (debug only):
 docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler
 
 # With custom intervals:
@@ -284,6 +284,11 @@ Monitor scheduler logs:
 ```bash
 docker compose -f docker-compose.dev.yml logs -f backend | grep scheduler
 ```
+
+Topology API cache tuning (env):
+- `OLT_LIST_CACHE_TTL`: base `/api/olts/` list cache.
+- `OLT_TOPOLOGY_LIST_CACHE_TTL`: `/api/olts/?include_topology=true` cache.
+- `OLT_TOPOLOGY_DETAIL_CACHE_TTL`: `/api/olts/{id}/topology/` cache.
 
 Manual one-off collection (e.g. from host cron or debugging):
 ```bash
@@ -315,6 +320,38 @@ Response includes active/latest job metadata:
 - `detail`, `output`, `error`
 
 If queued jobs are present, backend API calls that touch maintenance status (`maintenance_status`, `snmp_check`) automatically ensure the in-process runner is active.
+
+## Topology Gray-State Soak (2h)
+Use the soak checker to verify stale/unreachable behavior continuously from backend topology payloads.
+
+Run (default 2 hours):
+```bash
+cd /Users/gabriel/Documents/varuna
+python3 scripts/soak_topology_health.py \
+  --base-url http://localhost:8000 \
+  --username <user> \
+  --password '<pass>' \
+  --duration-seconds 7200 \
+  --interval-seconds 30 \
+  --detail-probe-seconds 300 \
+  --run-id soak2h \
+  --fail-on-anomaly
+```
+
+Outputs:
+- line-by-line event log: `artifacts/soak/<run-id>.jsonl`
+- final summary report: `artifacts/soak/<run-id>.summary.json`
+
+Live follow:
+```bash
+tail -f artifacts/soak/<run-id>.jsonl
+```
+
+What it checks:
+- topology list endpoint (`/api/olts/?include_topology=true`) every interval;
+- expected health state using frontend stale-window logic (`gray` on `snmp_failure_count>=2` or stale polling age);
+- consistency of SNMP health metadata between list and detail (`/api/olts/{id}/topology/`) on probe interval;
+- state transitions and anomaly counts over the full soak duration.
 
 ## Validation
 Backend tests:

@@ -10,6 +10,7 @@
 - `frontend`: React + Vite (dev) or Nginx static app (prod).
 - `backend`: Django + DRF API, discovery/polling orchestration, built-in scheduler (`run_scheduler`).
   - Production compose runs backend with Gunicorn on internal port `80`.
+  - Scheduler startup is controlled by `ENABLE_SCHEDULER=1` at backend container boot.
 - `db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 
@@ -139,5 +140,6 @@ When to split into dedicated `discovery` and `poller` workers:
 - `poll_onu_status` refactored to avoid per-ONU log queries.
 - Redis invalidation switched from `KEYS` to `SCAN` pattern deletion.
 - Topology serializers now use annotated counts where available.
+- Redis response cache is used for topology-heavy API reads (`/api/olts/`, `/api/olts/?include_topology=true`, `/api/olts/{id}/topology/`) with short TTLs and runtime-triggered invalidation.
 - Frontend enforces stale-data gray state using per-OLT `polling_interval_seconds` and synchronizes health colors between topology and settings views.
 - Stale tolerance enforces a 10-minute minimum window so short polling intervals don't cause premature gray state.

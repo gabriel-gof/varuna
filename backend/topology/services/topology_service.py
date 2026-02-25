@@ -144,6 +144,8 @@ class TopologyService:
                 'offline_count': total_offline,
                 'snmp_reachable': olt.snmp_reachable,
                 'last_snmp_check_at': olt.last_snmp_check_at.isoformat() if olt.last_snmp_check_at else None,
+                'last_snmp_error': olt.last_snmp_error or '',
+                'snmp_failure_count': int(olt.snmp_failure_count or 0),
                 'last_discovery': olt.last_discovery_at.isoformat() if olt.last_discovery_at else None,
                 'last_poll': olt.last_poll_at.isoformat() if olt.last_poll_at else None,
                 'supports_olt_rx_power': supports_olt_rx_power,
