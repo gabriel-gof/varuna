@@ -51,7 +51,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable when `snmp_reachable === false` and `snmp_failure_count >= 2`.
 - Both topology list (`/api/olts/?include_topology=true`) and topology detail (`/api/olts/{id}/topology/`) payloads expose the same SNMP health fields so gray-state logic remains consistent on fallback loads.
 - Render unreachable or stale OLT nodes in gray.
-- When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and offline red-hyphen indicators are all forced to gray to signal that displayed data may be outdated.
+- When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and status-colored placeholder hyphens are all forced to gray to signal that displayed data may be outdated.
 - `loading` is only `true` during the initial fetch when no OLT data exists. Background refreshes silently update `olts` state without toggling `loading`, keeping the topology tree mounted. If a background refresh fails, existing data is preserved.
 - `fetchOlts` uses request deduplication per request shape (`topology` vs `base`) to avoid redundant loads when multiple triggers fire simultaneously (30s poll timer + settings action + resume-on-focus).
 - Settings mutations (`updateOlt`, `deleteOlt`) trigger `fetchOlts` without `await`, so the success toast shows immediately and the topology refreshes silently in the background (same pattern as `createOlt`).
@@ -93,6 +93,8 @@ The UI remains topology-first. No dashboard page is required for current product
   - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).
   - Alert count only appears when > 0. Gray-tree nodes are excluded.
 - Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop and mobile both show colored reason dots (rose=link loss, blue=dying gasp, purple=unknown) with counts, a vertical separator, then `{total} / {offline}`. Reason dots and separator only appear when offline > 0. Offline count uses amber to distinguish from the rose link-loss dot. Footer uses `bg-white dark:bg-slate-900` with `border-t`. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
+- Footer bullets are count-aware on all breakpoints: each bullet (including green `online`) is rendered only when its count is greater than zero.
+- Footer separator and total counters use boosted dark-mode contrast (`dark:text-slate-400` for `/`, `dark:text-slate-300` for total) so the `total/offline` segment remains readable in the PON footer.
 - OLT interval settings are editable in Settings:
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
@@ -107,14 +109,14 @@ The UI remains topology-first. No dashboard page is required for current product
 - Status table disconnection column is interval-aware:
   - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.
-  - when `—` is shown for non-online rows, its color follows the ONU status palette (red/link loss-offline, blue/dying gasp, purple/unknown); online and gray-tree rows keep neutral gray.
+  - when `—` is shown, its color follows the ONU status palette (green/online, red/link loss-offline, blue/dying gasp, purple/unknown); gray-tree rows keep neutral gray.
 - Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
 - PON sidebar refresh has a 5-second cooldown after each collection completes. During cooldown the button is disabled and shows a depleting SVG ring animation around the icon (CSS `cooldown-ring` keyframe in `index.css`). Cooldown resets when the selected PON changes.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
 - `Best/Worst OLT RX` sort options are shown only when the selected OLT supports OLT RX (`supports_olt_rx_power=true`).
-- In Power tab, rows without power readings show only a hyphen (`—`); for offline statuses the hyphen is red in both `Potência` and `Leitura`, and for online rows it keeps the default neutral style.
+- In Power tab, placeholder hyphens (`—`) follow the same status/disconnection palette as the status table in both `Potência` and `Leitura` columns/rows (green online, rose offline/link loss, blue dying gasp, purple unknown; gray when OLT is gray/stale).
 - For vendors without OLT RX support, Power tab renders only ONU RX values (no OLT RX line in desktop/mobile rows).
 - During topology reload, if an ONU temporarily arrives without power fields while `last_power_at` has not advanced, the UI keeps the last in-memory ONU power snapshot to avoid false `—` flicker from cache gaps.
 - In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
@@ -253,8 +255,13 @@ The UI remains topology-first. No dashboard page is required for current product
 - Settings action messages are OLT-scoped: `settingsActionMessage` is `{ oltId, message }` (or `null`). Each OLT card only shows the message when `oltId` matches; the create card only shows messages with `oltId == null`.
 
 ## Missing Serial Highlighting
-- ONUs with missing or empty serial numbers are highlighted with a red background in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
-- This draws attention to ONUs that may need re-registration or have incomplete SNMP discovery data.
+- ONUs with missing or empty serial values render a normalized placeholder glyph `—` (em dash) in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
+- The missing-serial placeholder color follows the ONU/disconnection status palette:
+  - green for online,
+  - rose for offline/link loss,
+  - blue for dying gasp,
+  - purple for unknown,
+  - neutral gray for gray-tree (stale/unreachable) context.
 
 ## Adaptive Name Column
 - The Name column in the PON sidebar (both status and power tabs, desktop and mobile) is automatically hidden when no ONU in the selected PON has a real name (i.e. `client_name` and `name` are both empty).

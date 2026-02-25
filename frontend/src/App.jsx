@@ -116,6 +116,22 @@ const formatPowerValue = (value) => {
   return `${numeric.toFixed(2)} dBm`
 }
 
+const MISSING_VALUE_PLACEHOLDER = '—'
+
+const getDisplaySerial = (onu) => {
+  const raw = String(onu?.serial_number ?? onu?.serial ?? '').trim()
+  if (!raw || raw === '-' || raw === MISSING_VALUE_PLACEHOLDER) {
+    return {
+      serialValue: MISSING_VALUE_PLACEHOLDER,
+      hasSerial: false
+    }
+  }
+  return {
+    serialValue: raw,
+    hasSerial: true
+  }
+}
+
 const asNumericPower = (value) => {
   if (value === null || value === undefined || value === '') return null
   const numeric = Number(value)
@@ -1412,14 +1428,20 @@ const App = () => {
     return 'bg-slate-400'
   }
 
-  const disconnectPlaceholderClass = (statusKey, disconnectWindow) => {
-    if (disconnectWindow !== '—' || statusKey === 'online' || isSelectedOltGray) {
-      return 'text-slate-500 dark:text-slate-400'
-    }
+  const disconnectPlaceholderClass = (statusKey) => {
+    if (isSelectedOltGray) return 'text-slate-500 dark:text-slate-400'
+    if (statusKey === 'online') return 'text-emerald-600 dark:text-emerald-300'
     if (statusKey === 'dying_gasp') return 'text-blue-600 dark:text-blue-300'
     if (statusKey === 'unknown') return 'text-purple-600 dark:text-purple-300'
     if (statusKey === 'link_loss' || statusKey === 'offline') return 'text-rose-500 dark:text-rose-400'
     return 'text-slate-500 dark:text-slate-400'
+  }
+
+  const disconnectWindowClass = (statusKey, disconnectWindow) => {
+    if (disconnectWindow !== MISSING_VALUE_PLACEHOLDER) {
+      return 'text-slate-500 dark:text-slate-400'
+    }
+    return disconnectPlaceholderClass(statusKey)
   }
 
   const handleAlarmModeChange = useCallback((config) => {
@@ -1901,11 +1923,10 @@ const App = () => {
                                       ? t('Unknown')
                                       : t('Offline')
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
-                              const serialValue = onu.serial_number || onu.serial || '—'
-                              const hasSerial = serialValue !== '—'
-                              const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                              const { serialValue, hasSerial } = getDisplaySerial(onu)
+                              const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                               const disconnectWindow = statusKey === 'online'
-                                ? '—'
+                                ? MISSING_VALUE_PLACEHOLDER
                                 : formatDisconnectionWindow(
                                     onu.disconnect_window_start,
                                     onu.disconnect_window_end,
@@ -1937,7 +1958,7 @@ const App = () => {
                                     </span>
                                   </td>
                                   )}
-                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>
                                     {serialValue}
                                   </td>
                                   <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
@@ -1948,7 +1969,7 @@ const App = () => {
                                       {statusLabel}
                                     </span>
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${disconnectPlaceholderClass(statusKey, disconnectWindow)}`}>
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${disconnectWindowClass(statusKey, disconnectWindow)}`}>
                                     {disconnectWindow}
                                   </td>
                                 </tr>
@@ -1994,10 +2015,10 @@ const App = () => {
                           </div>
                           <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
                           <p className="text-[11px] font-bold tabular-nums leading-none">
-                            <span className="text-slate-500 dark:text-slate-400">{selectedPonStats.total}</span>
+                            <span className="text-slate-500 dark:text-slate-300">{selectedPonStats.total}</span>
                             {selectedPonStats.offline > 0 && (
                               <>
-                                <span className="text-slate-300 dark:text-slate-600"> / </span>
+                                <span className="text-slate-300 dark:text-slate-400"> / </span>
                                 <span className="text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                               </>
                             )}
@@ -2019,11 +2040,10 @@ const App = () => {
                                   ? t('Unknown')
                                   : t('Offline')
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
-                          const serialValue = onu.serial_number || onu.serial || '—'
-                          const hasSerial = serialValue !== '—'
-                          const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                          const { serialValue, hasSerial } = getDisplaySerial(onu)
+                          const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                           const disconnectWindow = statusKey === 'online'
-                            ? '—'
+                            ? MISSING_VALUE_PLACEHOLDER
                             : formatDisconnectionWindow(
                                 onu.disconnect_window_start,
                                 onu.disconnect_window_end,
@@ -2045,14 +2065,14 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
-                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
+                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}>
                                   <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
                                   {statusLabel}
                                 </span>
-                                {statusKey !== 'online' && disconnectWindow !== '—' && <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{disconnectWindow}</span>}
+                                {statusKey !== 'online' && disconnectWindow !== MISSING_VALUE_PLACEHOLDER && <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{disconnectWindow}</span>}
                               </div>
                             </div>
                           )
@@ -2065,10 +2085,12 @@ const App = () => {
                       </div>
                       {selectedPonStats.total > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          <div className="flex items-center gap-1">
-                            <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
-                            <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
-                          </div>
+                          {selectedPonStats.online > 0 && (
+                            <div className="flex items-center gap-1">
+                              <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
+                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
+                            </div>
+                          )}
                           {selectedPonStats.linkLoss > 0 && (
                             <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
@@ -2088,10 +2110,10 @@ const App = () => {
                             </div>
                           )}
                           <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
-                          <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-500">{selectedPonStats.total}</span>
+                          <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-300">{selectedPonStats.total}</span>
                           {selectedPonStats.offline > 0 && (
                             <>
-                              <span className="text-[10px] text-slate-300 dark:text-slate-600">/</span>
+                              <span className="text-[10px] text-slate-300 dark:text-slate-400">/</span>
                               <span className="text-[11px] font-bold tabular-nums text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                             </>
                           )}
@@ -2141,16 +2163,14 @@ const App = () => {
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                               const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
-                              const serialValue = onu.serial_number || onu.serial || '—'
-                              const hasSerial = serialValue !== '—'
-                              const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                              const { serialValue, hasSerial } = getDisplaySerial(onu)
+                              const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                               const hasOnuRx = onuRx !== null
                               const hasOltRx = oltRx !== null
                               const hasAnyPower = hasOnuRx || (supportsSelectedOltRxPower && hasOltRx)
                               const grayPower = 'text-slate-500 dark:text-slate-400'
                               const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
                               const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
-                              const isOfflineStatus = statusKey !== 'online'
                               const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
                               const readingAt = formatReadingAt(readAt, i18n.language)
                               const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
@@ -2179,28 +2199,28 @@ const App = () => {
                                     </span>
                                   </td>
                                   )}
-                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : 'text-red-500 dark:text-red-400 text-center'}`}>
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>
                                     {serialValue}
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
                                     {!hasAnyPower ? (
-                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
+                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${disconnectPlaceholderClass(statusKey)}`}>{MISSING_VALUE_PLACEHOLDER}</span>
                                     ) : (
                                       <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('ONU')}</span>
-                                          <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
+                                          <span className={`font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                         </span>
                                         {supportsSelectedOltRxPower && (
                                           <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                             <span className="inline-block w-8 text-left">{t('OLT')}</span>
-                                            <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                            <span className={`font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                           </span>
                                         )}
                                       </div>
                                     )}
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${hasReading ? 'text-slate-500 dark:text-slate-400' : disconnectPlaceholderClass(statusKey)}`}>
                                     {readingAt}
                                   </td>
                                 </tr>
@@ -2246,10 +2266,10 @@ const App = () => {
                           </div>
                           <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
                           <p className="text-[11px] font-bold tabular-nums leading-none">
-                            <span className="text-slate-500 dark:text-slate-400">{selectedPonStats.total}</span>
+                            <span className="text-slate-500 dark:text-slate-300">{selectedPonStats.total}</span>
                             {selectedPonStats.offline > 0 && (
                               <>
-                                <span className="text-slate-300 dark:text-slate-600"> / </span>
+                                <span className="text-slate-300 dark:text-slate-400"> / </span>
                                 <span className="text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                               </>
                             )}
@@ -2262,16 +2282,14 @@ const App = () => {
                       <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
                         {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
                           const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
-                          const serialValue = onu.serial_number || onu.serial || '—'
-                          const hasSerial = serialValue !== '—'
-                          const onuNumber = onu.onu_number ?? onu.onu_id ?? '—'
+                          const { serialValue, hasSerial } = getDisplaySerial(onu)
+                          const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                           const hasOnuRx = onuRx !== null
                           const hasOltRx = oltRx !== null
                           const hasAnyPower = hasOnuRx || (supportsSelectedOltRxPower && hasOltRx)
                           const grayPower = 'text-slate-500 dark:text-slate-400'
                           const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
                           const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
-                          const isOfflineStatus = statusKey !== 'online'
                           const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
                           const readingAt = formatReadingAt(readAt, i18n.language)
                           const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
@@ -2290,25 +2308,25 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
-                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : 'text-red-500 dark:text-red-400 text-center'}`}>{serialValue}</span>
+                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>{serialValue}</span>
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 {hasAnyPower ? (
                                   <>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                                      <span className={`font-semibold ${onuRxColor}`}>{hasOnuRx ? formatPowerValue(onuRx) : '—'}</span>
+                                      <span className={`font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                     </span>
                                     {supportsSelectedOltRxPower && (
                                       <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                         <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                        <span className={`font-semibold ${oltRxColor}`}>{hasOltRx ? formatPowerValue(oltRx) : '—'}</span>
+                                        <span className={`font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                       </span>
                                     )}
-                                    <span className={`text-[10px] font-semibold tabular-nums ${!isSelectedOltGray && !hasReading && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-400 dark:text-slate-500'}`}>{readingAt}</span>
+                                    <span className={`text-[10px] font-semibold tabular-nums ${hasReading ? 'text-slate-400 dark:text-slate-500' : disconnectPlaceholderClass(statusKey)}`}>{readingAt}</span>
                                   </>
                                 ) : (
-                                  <span className={`text-[11px] font-semibold tabular-nums ${!isSelectedOltGray && isOfflineStatus ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>—</span>
+                                  <span className={`text-[11px] font-semibold tabular-nums ${disconnectPlaceholderClass(statusKey)}`}>{MISSING_VALUE_PLACEHOLDER}</span>
                                 )}
                               </div>
                             </div>
@@ -2322,10 +2340,12 @@ const App = () => {
                       </div>
                       {selectedPonStats.total > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          <div className="flex items-center gap-1">
-                            <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
-                            <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
-                          </div>
+                          {selectedPonStats.online > 0 && (
+                            <div className="flex items-center gap-1">
+                              <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
+                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
+                            </div>
+                          )}
                           {selectedPonStats.linkLoss > 0 && (
                             <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
@@ -2345,10 +2365,10 @@ const App = () => {
                             </div>
                           )}
                           <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
-                          <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-500">{selectedPonStats.total}</span>
+                          <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-300">{selectedPonStats.total}</span>
                           {selectedPonStats.offline > 0 && (
                             <>
-                              <span className="text-[10px] text-slate-300 dark:text-slate-600">/</span>
+                              <span className="text-[10px] text-slate-300 dark:text-slate-400">/</span>
                               <span className="text-[11px] font-bold tabular-nums text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
                             </>
                           )}
