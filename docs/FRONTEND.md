@@ -32,7 +32,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - Settings tab is hidden from nav; if accessed directly, redirected to topology view.
   - Vendor profile fetch is skipped.
   - Auto-maintenance (discovery/polling/power) runs on the backend scheduler.
-  - PON sidebar refresh buttons are hidden.
+  - PON sidebar refresh is available and can trigger live ONU status/power refresh for the selected PON.
   - OLT creation/editing/deletion is blocked.
 - Permission error responses from the backend (`'Insufficient permissions for this action.'`) are translated through `BACKEND_MESSAGE_MAP` and displayed as contextual errors.
 
@@ -57,6 +57,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Settings mutations (`updateOlt`, `deleteOlt`) trigger `fetchOlts` without `await`, so the success toast shows immediately and the topology refreshes silently in the background (same pattern as `createOlt`).
 - Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
+- Theme selection is persisted in `localStorage` (`varuna.theme`). On reload, the app restores the saved `light`/`dark` mode and reapplies the corresponding root `dark` class.
 - Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads. The local `searchTerm` state syncs with `selectedSearchMatch` changes so the input always reflects the active filter state (clearing when the match is dismissed, restoring when remounting after a tab switch).
 - Topology search suggestions are deduplicated by serial (when present) so the same ONU is shown once even if backend topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
 - Client search does not filter the topology tree while typing — the tree stays unchanged until a suggestion is selected. On selection, the tree pins to the exact OLT/slot/PON path containing the matched ONU.
@@ -101,11 +102,11 @@ The UI remains topology-first. No dashboard page is required for current product
   - `power_interval_seconds`
 - Discovery, polling, and power collection are scheduled by the backend `run_scheduler` management command. The frontend no longer submits automatic maintenance requests.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
-- PON sidebar refresh is tab-aware and snapshot-first:
-  - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=false` for the selected PON (`olt_id + slot_id + pon_id`) to read the latest backend snapshot without triggering live SNMP.
-  - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=false` for the selected PON (`olt_id + slot_id + pon_id`) to read cached power snapshots without triggering live SNMP.
+- PON sidebar refresh is tab-aware and live-refresh capable:
+  - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped status polling and return fresh rows.
+  - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped power collection and return fresh rows.
   - Both paths patch only the selected PON ONU rows in-memory (no forced full-topology reload on success).
-  - Explicit collection remains a backend maintenance action (`run_polling` / `refresh_power`) from settings, keeping collection decoupled from topology panel visibility/open state.
+  - OLT-wide maintenance actions (`run_polling` / `refresh_power`) remain available from settings for larger batch operations.
 - Status table disconnection column is interval-aware:
   - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
   - displays `—` when the exact disconnection window is unknown.
@@ -256,6 +257,7 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Missing Serial Highlighting
 - ONUs with missing or empty serial values render a normalized placeholder glyph `—` (em dash) in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
+- Missing-serial placeholder typography is kept coherent with disconnection placeholders (`text-[11px]`, `font-semibold`, tabular digits) so both hyphens have the same visual weight/size.
 - The missing-serial placeholder color follows the ONU/disconnection status palette:
   - green for online,
   - rose for offline/link loss,

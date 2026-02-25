@@ -2531,7 +2531,25 @@ class ReaderRolePermissionTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_viewer_cannot_force_power_refresh_but_can_read_cached_power(self):
+    @patch('topology.api.views.ONUViewSet._run_scoped_status_refresh')
+    @patch('topology.api.views.power_service.refresh_for_onus')
+    def test_viewer_can_force_power_refresh_and_read_cached_power(
+        self,
+        mock_refresh_for_onus,
+        _mock_scoped_status_refresh,
+    ):
+        mock_refresh_for_onus.return_value = {
+            self.onu.id: {
+                'onu_id': self.onu.id,
+                'slot_id': self.onu.slot_id,
+                'pon_id': self.onu.pon_id,
+                'onu_number': self.onu.onu_id,
+                'onu_rx_power': -20.1,
+                'olt_rx_power': -21.7,
+                'power_read_at': timezone.now().isoformat(),
+            }
+        }
+
         refresh_response = self.viewer_client.post(
             '/api/onu/batch-power/',
             {
@@ -2542,7 +2560,9 @@ class ReaderRolePermissionTests(TestCase):
             },
             format='json',
         )
-        self.assertEqual(refresh_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(refresh_response.data['count'], 1)
+        self.assertEqual(mock_refresh_for_onus.call_args.kwargs.get('force_refresh'), True)
 
         cached_response = self.viewer_client.post(
             '/api/onu/batch-power/',
@@ -2557,7 +2577,8 @@ class ReaderRolePermissionTests(TestCase):
         self.assertEqual(cached_response.status_code, status.HTTP_200_OK)
         self.assertEqual(cached_response.data['count'], 1)
 
-    def test_viewer_cannot_force_status_refresh_but_can_read_cached_status(self):
+    @patch('topology.api.views.ONUViewSet._run_scoped_status_refresh')
+    def test_viewer_can_force_status_refresh_and_read_cached_status(self, mock_scoped_status_refresh):
         refresh_response = self.viewer_client.post(
             '/api/onu/batch-status/',
             {
@@ -2568,7 +2589,8 @@ class ReaderRolePermissionTests(TestCase):
             },
             format='json',
         )
-        self.assertEqual(refresh_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(refresh_response.status_code, status.HTTP_200_OK)
+        mock_scoped_status_refresh.assert_called_once()
 
         cached_response = self.viewer_client.post(
             '/api/onu/batch-status/',

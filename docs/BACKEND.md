@@ -217,9 +217,10 @@ Auth helpers: `backend/topology/api/auth_utils.py` (`resolve_user_role`, `can_mo
 URL routing: `backend/topology/urls.py` (auth paths registered before API includes).
 
 ### Role-Based Access Control
-Users have roles via `UserProfile.role`: `admin`, `operator`, `viewer`.
-- `admin` and `operator`: full read/write access to settings, maintenance actions, and power refresh.
-- `viewer`: read-only access to topology/status/power data; cannot create/update/delete OLTs, run maintenance actions, refresh power, or patch PON descriptions.
+Runtime policy is two-role (`admin`, `viewer`). The legacy `operator` value is still accepted for backward compatibility and behaves like `admin`.
+- `admin` (and legacy `operator`): full read/write access to settings, maintenance actions, and power refresh.
+- `viewer`: topology/runtime operator profile; cannot create/update/delete OLTs, run OLT maintenance actions, or patch PON descriptions.
+- `viewer` can trigger ONU-scoped refresh endpoints (`batch-status`, `batch-power`, single ONU status/power refresh) for live status/power reads from topology view.
 
 Role resolution (`resolve_user_role`):
 1. Superusers always resolve to `admin`.
@@ -229,7 +230,6 @@ Role resolution (`resolve_user_role`):
 Permission enforcement:
 - `VendorProfileViewSet` is `ReadOnlyModelViewSet` (no create/update/delete).
 - `OLTViewSet` guards `create`, `update`, `destroy`, and all maintenance actions (`run_discovery`, `run_polling`, `snmp_check`, `refresh_power`, `refresh_power_all`) with `can_modify_settings`.
-- ONU power refresh (single and batch) requires `can_modify_settings`.
 - PON `partial_update` (description editing) requires `can_modify_settings`.
 - Read operations (list, retrieve, topology) remain accessible to all authenticated users.
 
@@ -246,7 +246,7 @@ backend/venv/bin/python backend/manage.py ensure_auth_user \
   --username admin --password changeme --role admin --superuser
 ```
 
-Flags: `--username`, `--password`, `--role` (admin/operator/viewer), `--superuser`, `--force-password`.
+Flags: `--username`, `--password`, `--role` (`admin`/`viewer`; legacy `operator` still accepted), `--superuser`, `--force-password`.
 Environment variable fallbacks: `VARUNA_AUTH_USERNAME`, `VARUNA_AUTH_PASSWORD`, `VARUNA_AUTH_ROLE`.
 
 ## API Notes
@@ -337,7 +337,7 @@ ONU batch refresh default behavior:
 - `POST /api/onu/batch-status/` now defaults to cached DB/log snapshot reads (`refresh=false` unless explicitly set).
 - `POST /api/onu/batch-power/` now defaults to cached power snapshot reads (`refresh=false` unless explicitly set).
 - `GET /api/onu/{id}/power/` and `POST /api/onu/{id}/refresh-status/` also default to snapshot reads unless `refresh=true` is explicitly requested.
-- This avoids accidental UI-coupled SNMP collection from panel refresh flows; explicit live collection remains available only when `refresh=true` is sent by authorized users.
+- This avoids accidental UI-coupled SNMP collection from panel refresh flows; explicit live collection remains available when `refresh=true` is sent by authenticated users.
 
 ## Polling Atomicity (Huawei)
 When `disconnect_reason_oid` is configured (Huawei), both status and disconnect reason are collected before any writes. Cache and DB writes include all ONU data in single atomic operations. The serializer also ensures offline ONUs without an active `ONULog` return `disconnect_reason='unknown'` instead of `null`, preventing the frontend from showing a bare "Offline" label.

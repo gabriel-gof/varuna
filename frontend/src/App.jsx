@@ -108,6 +108,7 @@ const ALARM_REASON_TO_STATUS_KEY = {
 const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
 const SEARCH_MATCH_STORAGE_KEY = 'varuna.searchMatch'
 const SELECTED_OLT_IDS_STORAGE_KEY = 'varuna.selectedOltIds'
+const THEME_STORAGE_KEY = 'varuna.theme'
 
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
@@ -527,7 +528,17 @@ const App = () => {
       return null
     }
   })
-  const [isDarkMode, setIsDarkMode] = useState(false)
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return false
+      const saved = window.localStorage.getItem(THEME_STORAGE_KEY)
+      if (saved === 'dark') return true
+      if (saved === 'light') return false
+    } catch {
+      // noop
+    }
+    return false
+  })
   const [activeTab, setActiveTab] = useState('status')
   const [statusSortMode, setStatusSortMode] = useState('onu_id')
   const [powerSortMode, setPowerSortMode] = useState('default')
@@ -633,11 +644,14 @@ const App = () => {
   const fetchOltsInflightRef = useRef({})
 
   useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark')
-    } else {
-      document.documentElement.classList.remove('dark')
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light')
+      }
+    } catch {
+      // noop
     }
+    document.documentElement.classList.toggle('dark', isDarkMode)
   }, [isDarkMode])
 
   const showPonPanelError = useCallback((message) => {
@@ -951,7 +965,7 @@ const App = () => {
         olt_id: oltId,
         slot_id: slotNumber,
         pon_id: ponNumber,
-        refresh: false
+        refresh: true
       },
       { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
     )
@@ -975,7 +989,7 @@ const App = () => {
         olt_id: oltId,
         slot_id: slotNumber,
         pon_id: ponNumber,
-        refresh: false
+        refresh: true
       },
       { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
     )
@@ -991,21 +1005,19 @@ const App = () => {
     setIsRefreshingPonPanel(true)
     try {
       let shouldReloadTopology = true
-      if (canManageSettings) {
-        if (activeTab === 'status') {
-          const statusResult = await collectStatusForSelectedPon()
-          if (!statusResult?.ok) {
-            showPonPanelError(statusResult?.message || t('Failed to refresh status data'))
-          } else {
-            shouldReloadTopology = false
-          }
-        } else if (activeTab === 'power') {
-          const powerResult = await collectPowerForSelectedPon()
-          if (!powerResult?.ok) {
-            showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
-          } else {
-            shouldReloadTopology = false
-          }
+      if (activeTab === 'status') {
+        const statusResult = await collectStatusForSelectedPon()
+        if (!statusResult?.ok) {
+          showPonPanelError(statusResult?.message || t('Failed to refresh status data'))
+        } else {
+          shouldReloadTopology = false
+        }
+      } else if (activeTab === 'power') {
+        const powerResult = await collectPowerForSelectedPon()
+        if (!powerResult?.ok) {
+          showPonPanelError(powerResult?.message || t('Failed to refresh power data'))
+        } else {
+          shouldReloadTopology = false
         }
       }
 
@@ -1026,7 +1038,7 @@ const App = () => {
       clearTimeout(refreshCooldownTimerRef.current)
       refreshCooldownTimerRef.current = setTimeout(() => setRefreshCooldownActive(false), 5000)
     }
-  }, [activeTab, canManageSettings, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, refreshCooldownActive, showPonPanelError, t])
+  }, [activeTab, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, refreshCooldownActive, showPonPanelError, t])
 
   useEffect(() => {
     if (!selectedPonId) {
@@ -1436,6 +1448,8 @@ const App = () => {
     if (statusKey === 'link_loss' || statusKey === 'offline') return 'text-rose-500 dark:text-rose-400'
     return 'text-slate-500 dark:text-slate-400'
   }
+
+  const serialPlaceholderClass = (statusKey) => `text-[11px] font-semibold tabular-nums ${disconnectPlaceholderClass(statusKey)}`
 
   const disconnectWindowClass = (statusKey, disconnectWindow) => {
     if (disconnectWindow !== MISSING_VALUE_PLACEHOLDER) {
@@ -1958,8 +1972,10 @@ const App = () => {
                                     </span>
                                   </td>
                                   )}
-                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>
-                                    {serialValue}
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
+                                    {hasSerial ? serialValue : (
+                                      <span className={serialPlaceholderClass(statusKey)}>{serialValue}</span>
+                                    )}
                                   </td>
                                   <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
                                     <span
@@ -2065,7 +2081,11 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
-                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>{serialValue}</span>
+                                {hasSerial ? (
+                                  <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
+                                ) : (
+                                  <span className={`block text-center ${serialPlaceholderClass(statusKey)}`}>{serialValue}</span>
+                                )}
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}>
@@ -2199,8 +2219,10 @@ const App = () => {
                                     </span>
                                   </td>
                                   )}
-                                  <td className={`pl-2.5 pr-4 py-0 align-middle text-[11px] font-semibold font-mono whitespace-nowrap tracking-[0.01em] ${hasSerial ? 'text-slate-600 dark:text-slate-300' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>
-                                    {serialValue}
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
+                                    {hasSerial ? serialValue : (
+                                      <span className={serialPlaceholderClass(statusKey)}>{serialValue}</span>
+                                    )}
                                   </td>
                                   <td className="px-2.5 py-0 align-middle text-center">
                                     {!hasAnyPower ? (
@@ -2308,7 +2330,11 @@ const App = () => {
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
                                 {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
-                                <span className={`block text-[11px] font-semibold font-mono tracking-[0.01em] ${hasSerial ? 'text-slate-500 dark:text-slate-400 truncate' : `${disconnectPlaceholderClass(statusKey)} text-center`}`}>{serialValue}</span>
+                                {hasSerial ? (
+                                  <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
+                                ) : (
+                                  <span className={`block text-center ${serialPlaceholderClass(statusKey)}`}>{serialValue}</span>
+                                )}
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-0.5">
                                 {hasAnyPower ? (

@@ -1069,8 +1069,6 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         """
         onu = self.get_object()
         refresh = _is_true(request.query_params.get('refresh', 'false'))
-        if refresh and not can_modify_settings(request.user):
-            return _settings_forbidden_response()
         if refresh:
             self._ensure_status_snapshot_for_power(onu.olt)
         result_map = power_service.refresh_for_onus([onu], force_refresh=refresh)
@@ -1096,8 +1094,6 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         """
         onu = self.get_object()
         refresh = _is_true(request.data.get('refresh', request.query_params.get('refresh', 'false')))
-        if refresh and not can_modify_settings(request.user):
-            return _settings_forbidden_response()
 
         if refresh:
             self._run_scoped_status_refresh([onu], {'mode': 'onu_ids'})
@@ -1115,8 +1111,6 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         - or olt_id + slot_id + pon_id to refresh one PON quickly
         """
         refresh = _is_true(request.data.get('refresh', False))
-        if refresh and not can_modify_settings(request.user):
-            return _settings_forbidden_response()
 
         onus, selection_scope, error_response = self._resolve_onu_batch_selection(request)
         if error_response is not None:
@@ -1145,8 +1139,6 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         - or olt_id + slot_id + pon_id to refresh one PON quickly
         """
         refresh = _is_true(request.data.get('refresh', False))
-        if refresh and not can_modify_settings(request.user):
-            return _settings_forbidden_response()
         onus, selection_scope, error_response = self._resolve_onu_batch_selection(request)
         if error_response is not None:
             return error_response
