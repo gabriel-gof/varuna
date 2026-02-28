@@ -14,6 +14,10 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 - `db`: PostgreSQL
 - `redis`: Redis
 
+## Versioning
+- Release version is tracked in the root `VERSION` file.
+- Frontend footer version label is built from `frontend/package.json` (`__APP_VERSION__`).
+
 Manual maintenance actions (discovery, polling, power refresh) are queued as persistent backend jobs with progress tracking (`MaintenanceJob`), so long-running operations are observable and resilient to transient API process restarts.
 Backend scheduler (`run_scheduler`) is started at container boot when `ENABLE_SCHEDULER=1` (enabled by default in current dev/prod env templates), keeping discovery/polling/power collection backend-driven.
 Topology-heavy API reads are served through short-lived Redis response cache to reduce initial topology load latency.
