@@ -100,6 +100,19 @@ A task is complete only when all applicable items are done:
   - `docker compose -f docker-compose.dev.yml up -d --build --force-recreate`
 - Never silently ignore repeated SNMP errors; keep them visible in logs and OLT health fields.
 
+## Versioning and Rollout Policy
+- We use Semantic Versioning for delivery tracking: `MAJOR.MINOR.PATCH`.
+- Version source of truth is a root `VERSION` file (single line, e.g. `1.4.2`).
+- Every code change must include a version impact decision in the same session:
+  - `PATCH`: bug fixes, internal hardening, non-breaking behavior corrections.
+  - `MINOR`: backward-compatible features, new optional settings, non-breaking API additions.
+  - `MAJOR`: breaking API/contract/runtime changes or required operator action that is not backward-compatible.
+- Release commits should include the target version in the message (example: `release: v1.4.2`).
+- Rollout order is canary-first:
+  - Deploy and validate on `VIANET` first.
+  - Promote the same version to other stacks only after VIANET validation succeeds.
+- Do not deploy unversioned code to production stacks.
+
 ## Documentation Map
 - `README.md`: project overview and quick start.
 - `docs/ARCHITECTURE.md`: runtime and design decisions.
