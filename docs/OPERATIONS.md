@@ -31,6 +31,7 @@ Backend collection contract:
 - `ENABLE_SCHEDULER=1` must stay enabled in runtime env so discovery, polling, SNMP checks, and power collection run without any frontend session.
 - Collections are shared backend state for all users; frontend reads snapshots and does not need to trigger SNMP collection for normal topology usage.
 - Recommended topology cache TTL for fast first load is `300s` (`OLT_TOPOLOGY_LIST_CACHE_TTL` and `OLT_TOPOLOGY_DETAIL_CACHE_TTL`).
+- Backend SNMP transport uses `puresnmp`.
 
 Production:
 ```bash
@@ -95,9 +96,9 @@ cd /Users/gabriel/Documents/varuna
 # - VARUNA_FRONTEND_BIND_IP=127.0.0.1
 # - VARUNA_BACKEND_BIND_IP=127.0.0.1
 # and set domain:
-# - ALLOWED_HOSTS=varuna-gabisat.templa.tech
-# - CSRF_TRUSTED_ORIGINS=https://varuna-gabisat.templa.tech
-# - SERVER_NAME=varuna-gabisat.templa.tech
+# - ALLOWED_HOSTS=varuna.gabisat.com.br
+# - CSRF_TRUSTED_ORIGINS=https://varuna.gabisat.com.br
+# - SERVER_NAME=varuna.gabisat.com.br
 
 docker compose -p varuna_gabisat --env-file /etc/varuna/prod.gabisat.env -f docker-compose.prod.yml up -d --build
 ```
@@ -126,23 +127,24 @@ Bring certificate and host Nginx online:
 # issue cert (temporary HTTP challenge via standalone)
 systemctl stop nginx
 certbot certonly --standalone --preferred-challenges http \
-  -d varuna-gabisat.templa.tech \
+  -d varuna.gabisat.com.br \
   --agree-tos --register-unsafely-without-email --non-interactive
 
 # configure host Nginx 443-only reverse proxy -> localhost:18080
-cat > /etc/nginx/sites-available/varuna-gabisat.templa.tech <<'EOF'
+cat > /etc/nginx/sites-available/varuna.gabisat.com.br <<'EOF'
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name varuna-gabisat.templa.tech;
+    server_name varuna.gabisat.com.br;
 
-    ssl_certificate /etc/letsencrypt/live/varuna-gabisat.templa.tech/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/varuna-gabisat.templa.tech/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/varuna.gabisat.com.br/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/varuna.gabisat.com.br/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_timeout 1d;
     ssl_session_cache shared:SSL:10m;
     ssl_session_tickets off;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    if ($host != "varuna.gabisat.com.br") { return 444; }
 
     location / {
         proxy_pass http://127.0.0.1:18080;
@@ -156,7 +158,8 @@ server {
 EOF
 
 rm -f /etc/nginx/sites-enabled/default
-ln -sfn /etc/nginx/sites-available/varuna-gabisat.templa.tech /etc/nginx/sites-enabled/varuna-gabisat.templa.tech
+# cleanup any previous hostname site files from sites-enabled/sites-available as needed
+ln -sfn /etc/nginx/sites-available/varuna.gabisat.com.br /etc/nginx/sites-enabled/varuna.gabisat.com.br
 nginx -t
 systemctl start nginx
 systemctl reload nginx
@@ -164,8 +167,8 @@ systemctl reload nginx
 
 Validation:
 ```bash
-curl -I https://varuna-gabisat.templa.tech
-curl https://varuna-gabisat.templa.tech/api/healthz/
+curl -I https://varuna.gabisat.com.br
+curl https://varuna.gabisat.com.br/api/healthz/
 ss -tulpn | rg ':22|:80|:443|:18080|:18081'
 ```
 
@@ -325,6 +328,13 @@ Response includes active/latest job metadata:
 - `detail`, `output`, `error`
 
 If queued jobs are present, backend API calls that touch maintenance status (`maintenance_status`, `snmp_check`) automatically ensure the in-process runner is active.
+
+Timeout safety knobs (optional env overrides):
+- `MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS` (default `1800`)
+- `MAINTENANCE_POLLING_TIMEOUT_SECONDS` (default `1200`)
+- `MAINTENANCE_POWER_TIMEOUT_SECONDS` (default `1800`)
+
+When a background job exceeds its timeout window, it is marked `failed` with timeout detail/error so the same OLT can accept a new queued job instead of staying blocked in `running` forever.
 
 ## Topology Gray-State Soak (2h)
 Use the soak checker to verify stale/unreachable behavior continuously from backend topology payloads.

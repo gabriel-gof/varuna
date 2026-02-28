@@ -1,11 +1,16 @@
 import logging
+import os
+import subprocess
+import sys
 import threading
 import time
-from io import StringIO
+from datetime import timedelta
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from django.core.management import call_command
+from django.conf import settings
 from django.db import close_old_connections, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from topology.models import MaintenanceJob, OLT
@@ -19,8 +24,121 @@ class MaintenanceJobService:
     def __init__(self):
         self.poll_interval_seconds = 0.5
         self.idle_shutdown_seconds = 10.0
+        self.default_discovery_timeout_seconds = 1800
+        self.default_polling_timeout_seconds = 1200
+        self.default_power_timeout_seconds = 1800
         self._runner_lock = threading.Lock()
         self._runner_thread: Optional[threading.Thread] = None
+
+    def _resolve_timeout_seconds(self, kind: str) -> int:
+        if kind == MaintenanceJob.KIND_DISCOVERY:
+            configured = getattr(
+                settings,
+                'MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS',
+                self.default_discovery_timeout_seconds,
+            )
+            fallback = self.default_discovery_timeout_seconds
+        elif kind == MaintenanceJob.KIND_POLLING:
+            configured = getattr(
+                settings,
+                'MAINTENANCE_POLLING_TIMEOUT_SECONDS',
+                self.default_polling_timeout_seconds,
+            )
+            fallback = self.default_polling_timeout_seconds
+        elif kind == MaintenanceJob.KIND_POWER:
+            configured = getattr(
+                settings,
+                'MAINTENANCE_POWER_TIMEOUT_SECONDS',
+                self.default_power_timeout_seconds,
+            )
+            fallback = self.default_power_timeout_seconds
+        else:
+            configured = self.default_discovery_timeout_seconds
+            fallback = self.default_discovery_timeout_seconds
+        try:
+            resolved = int(configured)
+        except (TypeError, ValueError):
+            resolved = fallback
+        return max(60, resolved)
+
+    def _expire_stale_active_jobs(self, *, olt_id: Optional[int] = None) -> int:
+        now = timezone.now()
+        stale_running_filter = Q()
+        for kind in (
+            MaintenanceJob.KIND_DISCOVERY,
+            MaintenanceJob.KIND_POLLING,
+            MaintenanceJob.KIND_POWER,
+        ):
+            timeout_seconds = self._resolve_timeout_seconds(kind)
+            cutoff = now - timedelta(seconds=timeout_seconds)
+            stale_running_filter |= (
+                Q(kind=kind)
+                & (Q(started_at__lte=cutoff) | (Q(started_at__isnull=True) & Q(created_at__lte=cutoff)))
+            )
+
+        stale_qs = MaintenanceJob.objects.filter(status=MaintenanceJob.STATUS_RUNNING).filter(
+            stale_running_filter
+        )
+        if olt_id is not None:
+            stale_qs = stale_qs.filter(olt_id=olt_id)
+
+        stale_ids = list(stale_qs.values_list('id', flat=True))
+        if not stale_ids:
+            return 0
+
+        timeout_msg = (
+            "Maintenance task exceeded runtime timeout and was marked as failed. "
+            "Verify OLT SNMP settings and retry."
+        )
+        stale_qs.update(
+            status=MaintenanceJob.STATUS_FAILED,
+            progress=100,
+            detail='Maintenance task timed out.',
+            error=timeout_msg,
+            finished_at=now,
+            updated_at=now,
+        )
+        logger.warning(
+            "Expired stale maintenance jobs (olt=%s, count=%s, ids=%s).",
+            olt_id,
+            len(stale_ids),
+            stale_ids,
+        )
+        return len(stale_ids)
+
+    def _run_command_with_timeout(
+        self,
+        command_name: str,
+        *,
+        args: Optional[list] = None,
+        timeout_seconds: int,
+    ) -> str:
+        command_args = args or []
+        project_root = Path(__file__).resolve().parents[2]
+        command = [sys.executable, 'manage.py', command_name, *command_args]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(project_root),
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True,
+                timeout=int(timeout_seconds),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"{command_name} exceeded timeout ({int(timeout_seconds)}s)."
+            ) from exc
+
+        output_parts = [part.strip() for part in (completed.stdout, completed.stderr) if part and part.strip()]
+        output = '\n'.join(output_parts).strip()
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"{command_name} failed with exit code {completed.returncode}. "
+                f"{output or 'No command output.'}"
+            )
+        return output
 
     def enqueue_job(
         self,
@@ -31,6 +149,7 @@ class MaintenanceJobService:
     ) -> Tuple[MaintenanceJob, bool]:
         with transaction.atomic():
             olt = OLT.objects.select_for_update().get(id=olt_id, is_active=True)
+            self._expire_stale_active_jobs(olt_id=olt.id)
             existing = (
                 MaintenanceJob.objects.select_for_update()
                 .filter(olt=olt, status__in=MaintenanceJob.ACTIVE_STATUSES)
@@ -69,6 +188,7 @@ class MaintenanceJobService:
 
     def has_active_job(self, olt_id: int) -> bool:
         self._ensure_runner_if_queued()
+        self._expire_stale_active_jobs(olt_id=olt_id)
         return MaintenanceJob.objects.filter(
             olt_id=olt_id,
             status__in=MaintenanceJob.ACTIVE_STATUSES,
@@ -76,6 +196,7 @@ class MaintenanceJobService:
 
     def get_active_job(self, olt_id: int) -> Optional[MaintenanceJob]:
         self._ensure_runner_if_queued()
+        self._expire_stale_active_jobs(olt_id=olt_id)
         return (
             MaintenanceJob.objects.filter(
                 olt_id=olt_id,
@@ -264,17 +385,23 @@ class MaintenanceJobService:
 
     def _run_discovery(self, job: MaintenanceJob) -> Tuple[str, str]:
         self._progress_update(job.id, 12, 'Running ONU discovery.')
-        output = StringIO()
-        call_command('discover_onus', olt_id=job.olt_id, force=True, stdout=output)
+        output = self._run_command_with_timeout(
+            'discover_onus',
+            args=['--olt-id', str(job.olt_id), '--force'],
+            timeout_seconds=self._resolve_timeout_seconds(MaintenanceJob.KIND_DISCOVERY),
+        )
         self._progress_update(job.id, 92, 'Finalizing discovery.')
-        return 'Discovery completed.', output.getvalue().strip()
+        return 'Discovery completed.', output
 
     def _run_polling(self, job: MaintenanceJob) -> Tuple[str, str]:
         self._progress_update(job.id, 12, 'Running ONU status polling.')
-        output = StringIO()
-        call_command('poll_onu_status', olt_id=job.olt_id, force=True, stdout=output)
+        output = self._run_command_with_timeout(
+            'poll_onu_status',
+            args=['--olt-id', str(job.olt_id), '--force'],
+            timeout_seconds=self._resolve_timeout_seconds(MaintenanceJob.KIND_POLLING),
+        )
         self._progress_update(job.id, 92, 'Finalizing polling.')
-        return 'Polling completed.', output.getvalue().strip()
+        return 'Polling completed.', output
 
     def _run_power(self, job: MaintenanceJob) -> Tuple[str, str]:
         self._progress_update(job.id, 12, 'Running power collection.')

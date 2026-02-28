@@ -1715,6 +1715,29 @@ const App = () => {
                 setSelectedSearchMatch(null)
                 setSelectedPonId(null)
               }
+              const renderDescriptionField = () => {
+                const description = selectedPonData?.pon?.description || ''
+                if (!canManageSettings) {
+                  return (
+                    <span
+                      className={`text-[12px] font-semibold leading-none ${
+                        description
+                          ? 'text-slate-500 dark:text-slate-400'
+                          : 'text-slate-400/60 dark:text-slate-500/70'
+                      }`}
+                    >
+                      {description || t('addDescription')}
+                    </span>
+                  )
+                }
+                return (
+                  <InlineEditableText
+                    value={description}
+                    placeholder={t('addDescription')}
+                    onSave={handleDescriptionSave}
+                  />
+                )
+              }
               return (
               <div className="h-full min-h-0 flex flex-col">
                 {/* Desktop header */}
@@ -1731,11 +1754,7 @@ const App = () => {
                           </React.Fragment>
                         ))}
                       </div>
-                      <InlineEditableText
-                        value={selectedPonData?.pon?.description || ''}
-                        placeholder={t('addDescription')}
-                        onSave={handleDescriptionSave}
-                      />
+                      {renderDescriptionField()}
                     </div>
                     <button
                       onClick={handleClosePanel}
@@ -1760,11 +1779,7 @@ const App = () => {
                           </React.Fragment>
                         ))}
                       </div>
-                      <InlineEditableText
-                        value={selectedPonData?.pon?.description || ''}
-                        placeholder={t('addDescription')}
-                        onSave={handleDescriptionSave}
-                      />
+                      {renderDescriptionField()}
                     </div>
                     <button
                       onClick={handleClosePanel}

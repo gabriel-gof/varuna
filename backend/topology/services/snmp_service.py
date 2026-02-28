@@ -133,6 +133,18 @@ class SNMPService:
             sender=sender,
         )
 
+    @staticmethod
+    def _operation_timeout_guard(
+        timeout: float,
+        retries: int,
+        *,
+        slack_seconds: float = 1.0,
+        minimum_seconds: float = 1.0,
+    ) -> float:
+        attempts = max(int(retries), 0) + 1
+        request_timeout = max(float(timeout), 0.1)
+        return max(float(minimum_seconds), (request_timeout * attempts) + float(slack_seconds))
+
     def get(
         self,
         olt: Any,
@@ -162,7 +174,16 @@ class SNMPService:
             m = self.puresnmp_modules
             try:
                 parsed_oids = [m["ObjectIdentifier"](oid) for oid in oids]
-                values = await client.multiget(parsed_oids)
+                operation_timeout = self._operation_timeout_guard(
+                    timeout_value,
+                    retries_value,
+                    slack_seconds=2.0,
+                    minimum_seconds=1.0,
+                )
+                values = await asyncio.wait_for(
+                    client.multiget(parsed_oids),
+                    timeout=operation_timeout,
+                )
                 if len(values) != len(oids):
                     self._log_error_throttled(
                         "warning",
@@ -181,6 +202,14 @@ class SNMPService:
                 for oid, value in zip(oids, values):
                     results[oid] = self._parse_value(value)
                 return results
+            except asyncio.TimeoutError:
+                self._log_error_throttled(
+                    "warning",
+                    self._build_error_key("get_timeout", olt, "operation_guard_timeout"),
+                    "SNMP GET timeout guard reached em %s.",
+                    getattr(olt, "name", "<unknown>"),
+                )
+                return None
             except m["Timeout"] as exc:
                 self._log_error_throttled(
                     "warning",
@@ -244,7 +273,31 @@ class SNMPService:
                 else:
                     walker = client.bulkwalk([parsed_base_oid], bulk_size=25)
 
-                async for varbind in walker:
+                operation_timeout = self._operation_timeout_guard(
+                    timeout,
+                    retries,
+                    slack_seconds=5.0,
+                    minimum_seconds=5.0,
+                )
+                walker_iter = walker.__aiter__()
+
+                while len(results) < max_walk_rows:
+                    try:
+                        varbind = await asyncio.wait_for(
+                            walker_iter.__anext__(),
+                            timeout=operation_timeout,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        self._log_error_throttled(
+                            "warning",
+                            self._build_error_key("walk_timeout", olt, "operation_guard_timeout"),
+                            "SNMP WALK timeout guard reached em %s.",
+                            getattr(olt, "name", "<unknown>"),
+                        )
+                        break
+
                     bind_oid = getattr(varbind, "oid", None)
                     bind_value = getattr(varbind, "value", None)
                     if bind_oid is None and isinstance(varbind, (tuple, list)) and len(varbind) >= 2:

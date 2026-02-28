@@ -1,3 +1,5 @@
+import asyncio
+import subprocess
 from datetime import timedelta
 from io import StringIO
 from unittest.mock import ANY, patch
@@ -19,9 +21,10 @@ from topology.services.power_service import (
     resolve_power_formula,
 )
 from topology.services.cache_service import cache_service
+from topology.services.maintenance_job_service import maintenance_job_service
 from topology.services.snmp_service import SNMPService
 from topology.services.topology_counter_service import topology_counter_service
-from topology.management.commands.discover_onus import _normalize_serial
+from topology.management.commands.discover_onus import SYS_DESCR_OID, _normalize_serial
 from topology.services.vendor_profile import map_disconnect_reason, map_status_code, parse_onu_index
 
 
@@ -356,6 +359,86 @@ class DiscoveryCommandTests(TestCase):
         self.assertEqual(existing.serial, 'SERIAL-OLD')
         self.assertEqual(existing.name, 'client-a')
         self.assertTrue(existing.is_active)
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    def test_discovery_preserves_pon_description_when_slot_identity_shifts(self, mock_walk):
+        legacy_slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            slot_key='legacy-1',
+            is_active=True,
+        )
+        legacy_pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=legacy_slot,
+            pon_id=1,
+            pon_key='legacy-1/1',
+            description='Main trunk',
+            is_active=True,
+        )
+
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+        index = '285278465.1'
+
+        mock_walk.side_effect = [
+            [{'oid': f'{base_name_oid}.{index}', 'value': 'client-a'}],
+            [{'oid': f'{base_serial_oid}.{index}', 'value': 'vendor,SERIAL-A'}],
+            [{'oid': f'{base_status_oid}.{index}', 'value': '4'}],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        legacy_pon.refresh_from_db()
+        self.assertFalse(legacy_pon.is_active)
+
+        active_pons = list(OLTPON.objects.filter(olt=self.olt, is_active=True).order_by('id'))
+        self.assertEqual(len(active_pons), 1)
+        self.assertEqual(active_pons[0].description, 'Main trunk')
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    @patch('topology.management.commands.discover_onus.snmp_service.get')
+    def test_discovery_unreachable_preflight_short_circuits_walks(self, mock_get, mock_walk):
+        self.olt.snmp_reachable = False
+        self.olt.snmp_failure_count = 4
+        self.olt.save(update_fields=['snmp_reachable', 'snmp_failure_count'])
+        mock_get.return_value = None
+
+        output = StringIO()
+        call_command('discover_onus', olt_id=self.olt.id, stdout=output)
+
+        self.olt.refresh_from_db()
+        self.assertFalse(self.olt.snmp_reachable)
+        self.assertFalse(self.olt.discovery_healthy)
+        self.assertGreaterEqual(self.olt.snmp_failure_count, 5)
+        self.assertIn('SNMP preflight failed', output.getvalue())
+        mock_walk.assert_not_called()
+
+    @patch('topology.management.commands.discover_onus.snmp_service.walk')
+    @patch('topology.management.commands.discover_onus.snmp_service.get')
+    def test_discovery_unreachable_preflight_allows_walk_when_check_recovers(self, mock_get, mock_walk):
+        self.olt.snmp_reachable = False
+        self.olt.snmp_failure_count = 3
+        self.olt.save(update_fields=['snmp_reachable', 'snmp_failure_count'])
+        mock_get.return_value = {SYS_DESCR_OID: 'ok'}
+
+        base_name_oid = self.vendor.oid_templates['discovery']['onu_name_oid']
+        base_serial_oid = self.vendor.oid_templates['discovery']['onu_serial_oid']
+        base_status_oid = self.vendor.oid_templates['discovery']['onu_status_oid']
+        index = '285278465.1'
+        mock_walk.side_effect = [
+            [{'oid': f'{base_name_oid}.{index}', 'value': 'client-a'}],
+            [{'oid': f'{base_serial_oid}.{index}', 'value': 'vendor,SERIAL-A'}],
+            [{'oid': f'{base_status_oid}.{index}', 'value': '4'}],
+        ]
+
+        call_command('discover_onus', olt_id=self.olt.id)
+
+        self.olt.refresh_from_db()
+        self.assertTrue(self.olt.snmp_reachable)
+        self.assertTrue(self.olt.discovery_healthy)
+        self.assertTrue(ONU.objects.filter(olt=self.olt, onu_id=1, is_active=True).exists())
 
 
 class FiberhomeDiscoveryTests(TestCase):
@@ -1801,6 +1884,7 @@ class SettingsApiContractTests(TestCase):
             f'/api/olts/{olt.id}/run_discovery/',
             {'background': True},
             format='json',
+            HTTP_X_FORWARDED_PROTO='https',
         )
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
@@ -1886,6 +1970,112 @@ class SettingsApiContractTests(TestCase):
         self.assertEqual(second.data['job']['status'], MaintenanceJob.STATUS_QUEUED)
         self.assertEqual(second.data['job']['kind'], MaintenanceJob.KIND_DISCOVERY)
         mock_ensure_runner.assert_called_once()
+
+    @override_settings(MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS=60)
+    @patch('topology.services.maintenance_job_service.maintenance_job_service.ensure_runner')
+    def test_background_enqueue_expires_stale_running_job(self, mock_ensure_runner):
+        olt = self._create_olt(name='OLT-BG-STALE')
+        stale_job = MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_DISCOVERY,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=12,
+            detail='Running ONU discovery.',
+            started_at=timezone.now() - timezone.timedelta(minutes=5),
+        )
+
+        response = self.client.post(
+            f'/api/olts/{olt.id}/run_discovery/',
+            {'background': True},
+            format='json',
+            HTTP_X_FORWARDED_PROTO='https',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(response.data['status'], 'accepted')
+        self.assertIn('job', response.data)
+        stale_job.refresh_from_db()
+        self.assertEqual(stale_job.status, MaintenanceJob.STATUS_FAILED)
+        self.assertEqual(stale_job.detail, 'Maintenance task timed out.')
+        self.assertIn('runtime timeout', stale_job.error.lower())
+        self.assertEqual(
+            MaintenanceJob.objects.filter(
+                olt=olt,
+                status__in=MaintenanceJob.ACTIVE_STATUSES,
+            ).count(),
+            1,
+        )
+        mock_ensure_runner.assert_called_once()
+
+    @override_settings(MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS=60)
+    def test_has_active_job_expires_stale_running_job(self):
+        olt = self._create_olt(name='OLT-BG-HAS-ACTIVE-STALE')
+        stale_job = MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_DISCOVERY,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=30,
+            detail='Running ONU discovery.',
+            started_at=timezone.now() - timezone.timedelta(minutes=10),
+        )
+
+        self.assertFalse(maintenance_job_service.has_active_job(olt.id))
+        stale_job.refresh_from_db()
+        self.assertEqual(stale_job.status, MaintenanceJob.STATUS_FAILED)
+        self.assertIn('runtime timeout', stale_job.error.lower())
+
+    @override_settings(MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS=120)
+    @patch('topology.services.maintenance_job_service.subprocess.run')
+    def test_run_discovery_uses_subprocess_timeout_guard(self, mock_subprocess_run):
+        olt = self._create_olt(name='OLT-BG-DISC-SUBPROCESS')
+        job = MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_DISCOVERY,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=5,
+            detail='Starting maintenance task.',
+            started_at=timezone.now(),
+        )
+        mock_subprocess_run.return_value = subprocess.CompletedProcess(
+            args=['python', 'manage.py', 'discover_onus'],
+            returncode=0,
+            stdout='ok',
+            stderr='',
+        )
+
+        detail, output = maintenance_job_service._run_discovery(job)
+
+        self.assertEqual(detail, 'Discovery completed.')
+        self.assertEqual(output, 'ok')
+        call_args = mock_subprocess_run.call_args
+        command = call_args.args[0]
+        self.assertEqual(command[2], 'discover_onus')
+        self.assertIn('--olt-id', command)
+        self.assertIn('--force', command)
+        self.assertEqual(call_args.kwargs.get('timeout'), 120)
+
+    @override_settings(MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS=90)
+    @patch(
+        'topology.services.maintenance_job_service.subprocess.run',
+        side_effect=subprocess.TimeoutExpired(cmd=['python', 'manage.py'], timeout=90),
+    )
+    def test_execute_job_marks_failed_when_discovery_times_out(self, _mock_subprocess_run):
+        olt = self._create_olt(name='OLT-BG-DISC-TIMEOUT')
+        job = MaintenanceJob.objects.create(
+            olt=olt,
+            kind=MaintenanceJob.KIND_DISCOVERY,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=5,
+            detail='Starting maintenance task.',
+            started_at=timezone.now(),
+        )
+
+        maintenance_job_service._execute_job(job.id)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, MaintenanceJob.STATUS_FAILED)
+        self.assertEqual(job.detail, 'Maintenance task failed.')
+        self.assertIn('exceeded timeout', job.error)
 
     def test_refresh_power_rejects_missing_vendor_power_templates(self):
         olt = self._create_olt(name='OLT-NO-POWER-TPL')
@@ -2435,12 +2625,17 @@ class ReaderRolePermissionTests(TestCase):
     def setUp(self):
         self.vendor = build_vendor_profile(name='READER-PERMISSIONS')
         self.admin_user = User.objects.create_user(username='admin-user', password='AdminPass123!')
+        self.operator_user = User.objects.create_user(username='operator-user', password='OperatorPass123!')
         self.viewer_user = User.objects.create_user(username='viewer-user', password='ViewerPass123!')
         UserProfile.objects.create(user=self.admin_user, role=UserProfile.ROLE_ADMIN)
+        UserProfile.objects.create(user=self.operator_user, role=UserProfile.ROLE_OPERATOR)
         UserProfile.objects.create(user=self.viewer_user, role=UserProfile.ROLE_VIEWER)
 
         self.admin_client = APIClient()
         self.admin_client.force_authenticate(user=self.admin_user)
+
+        self.operator_client = APIClient()
+        self.operator_client.force_authenticate(user=self.operator_user)
 
         self.viewer_client = APIClient()
         self.viewer_client.force_authenticate(user=self.viewer_user)
@@ -2530,6 +2725,19 @@ class ReaderRolePermissionTests(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch('topology.api.views.cache_service.invalidate_topology_api_cache')
+    def test_operator_can_patch_pon_description(self, mock_invalidate_topology_cache):
+        response = self.operator_client.patch(
+            f'/api/pons/{self.pon.id}/',
+            {'description': 'Field side splitter'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.pon.refresh_from_db()
+        self.assertEqual(self.pon.description, 'Field side splitter')
+        mock_invalidate_topology_cache.assert_called_once_with(self.olt.id)
 
     @patch('topology.api.views.ONUViewSet._run_scoped_status_refresh')
     @patch('topology.api.views.power_service.refresh_for_onus')
@@ -2828,6 +3036,57 @@ class WalkTimeoutTests(TestCase):
         with patch.object(service, '_build_client', return_value=MockClient()) as mock_build_client:
             service.walk(olt, '1.3.6.1.4.1.test.1')
             mock_build_client.assert_called_once_with(olt, timeout=30.0, retries=0)
+
+    def test_get_timeout_guard_returns_none(self):
+        service = SNMPService()
+
+        class MockOLT:
+            ip_address = '10.0.0.1'
+            snmp_port = 161
+            snmp_community = 'public'
+            snmp_version = 'v2c'
+            name = 'test-olt'
+
+        class MockClient:
+            def multiget(self, _oids):
+                return object()
+
+        async def raise_timeout(coro, timeout):
+            if hasattr(coro, 'close'):
+                coro.close()
+            raise asyncio.TimeoutError
+
+        with patch.object(service, '_build_client', return_value=MockClient()):
+            with patch('topology.services.snmp_service.asyncio.wait_for', side_effect=raise_timeout):
+                payload = service.get(MockOLT(), ['1.2.3'], timeout=2.0, retries=0)
+
+        self.assertIsNone(payload)
+
+    def test_walk_timeout_guard_returns_partial_results(self):
+        service = SNMPService()
+
+        class MockOLT:
+            ip_address = '10.0.0.1'
+            snmp_port = 161
+            snmp_community = 'public'
+            snmp_version = 'v2c'
+            name = 'test-olt'
+
+        class MockClient:
+            async def bulkwalk(self, _oids, bulk_size=25):
+                if False:
+                    yield bulk_size
+
+        async def raise_timeout(coro, timeout):
+            if hasattr(coro, 'close'):
+                coro.close()
+            raise asyncio.TimeoutError
+
+        with patch.object(service, '_build_client', return_value=MockClient()):
+            with patch('topology.services.snmp_service.asyncio.wait_for', side_effect=raise_timeout):
+                payload = service.walk(MockOLT(), '1.3.6.1.4.1.test.1', timeout=30.0, retries=0)
+
+        self.assertEqual(payload, [])
 
 
 class DiscoveryGhostFilteringTests(TestCase):

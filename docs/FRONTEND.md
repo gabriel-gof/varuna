@@ -33,7 +33,9 @@ The UI remains topology-first. No dashboard page is required for current product
   - Vendor profile fetch is skipped.
   - Auto-maintenance (discovery/polling/power) runs on the backend scheduler.
   - PON sidebar refresh is available and can trigger live ONU status/power refresh for the selected PON.
+  - PON description is read-only text in the sidebar (no inline edit control).
   - OLT creation/editing/deletion is blocked.
+- Admin/operator (`can_modify_settings=true`) can edit PON description inline from the sidebar (desktop and mobile header variants).
 - Permission error responses from the backend (`'Insufficient permissions for this action.'`) are translated through `BACKEND_MESSAGE_MAP` and displayed as contextual errors.
 
 ## Threshold Control Logic

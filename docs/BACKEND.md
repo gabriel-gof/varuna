@@ -4,7 +4,7 @@
 - Django + DRF
 - PostgreSQL
 - Redis
-- pureSNMP (`puresnmp`)
+- pureSNMP (`puresnmp`) as SNMP engine
 
 ## Naming and Boundaries
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
@@ -45,6 +45,8 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
 - `discovery`: OIDs for name/serial/status, stale-deactivation policy, and walk pacing/safety settings.
   - `pause_between_walks_seconds` (default `0.5`, range `0.0-5.0`): delay between the main discovery walks (name, serial, status) to reduce burst SNMP load on the OLT.
   - `walk_timeout_seconds` (default `30`, range `5-120`): per-request timeout for SNMP walk operations during discovery. Walks use a generous timeout (separate from the short 2s GET timeout) because slow OLTs may need several seconds per bulk batch. Healthy OLTs respond in <100ms (zero impact); slow OLTs with 3-5s responses complete fine; dead OLTs timeout after one request and existing `mark_olt_unreachable` handles it.
+  - `unreachable_preflight_timeout_seconds` (default `min(walk_timeout_seconds, 2)`, range `1-15`): when `OLT.snmp_reachable=false`, discovery performs a fast `sysDescr` GET preflight before any table walks; if preflight fails, discovery aborts early (no long walk loop) and keeps OLT marked unreachable.
+  - `unreachable_preflight_retries` (default `0`, range `0-2`): retries used by the unreachable preflight GET.
   - `min_safe_ratio` (default `0.3`, range `0.0-1.0`): minimum ratio of discovered ONUs to existing active ONUs. If the walk returns fewer ONUs than `active_count * min_safe_ratio`, deactivation is skipped and a critical log is emitted. Guard only applies when `active_count > 0` (first discovery always proceeds). ONU upserts still run.
   - Parse-skip safety uses the same `min_safe_ratio`: if many SNMP indices are returned but only a low number are parseable (`parse_onu_index` success), deactivation is also skipped. This prevents mass false removal when indexing parse fails for a large portion of a discovery snapshot.
 - `status`: status OID, `status_map`, and optional SNMP pacing overrides (`get_chunk_size`, retry/backoff, timeout, call budget multiplier, per-PON pause). Optional `disconnect_reason_oid` and `disconnect_reason_map` enable a second-pass fetch of disconnect reasons for offline ONUs (used by Huawei where status and disconnect cause are separate OIDs).
@@ -119,10 +121,11 @@ Create semantics were also hardened:
 - Reactivation resets runtime health/scheduling fields so discovery/polling restarts from a clean state.
 
 ## SNMP Walk Safety
-SNMP transport is implemented with `puresnmp`:
+SNMP runtime behavior:
 - SNMP `v2c` uses `bulkwalk` for discovery-scale table reads.
 - SNMP `v1` falls back to `walk` (no bulk requests).
 - Transport timeout/retry values are injected per request via the UDP sender wrapper.
+- `get()` and `walk()` apply an async timeout guard (`asyncio.wait_for`) on top of transport settings so stalled SNMP calls fail safely instead of hanging the maintenance pipeline.
 - String values are sanitized to remove embedded `NUL` bytes (`\x00`) before persistence, preventing database write errors from vendor-padded SNMP octet strings.
 
 SNMP walks include a configurable iteration cap (`max_walk_rows`, default `20000`). If a walk exceeds this limit, it stops early and logs a warning. This prevents infinite loops from buggy OLT firmware returning cyclic or unbounded OID trees.
@@ -143,6 +146,8 @@ SNMP transport logs apply per-error throttling (default 30s window per OLT/error
 - Discovery DB operations use bulk create/update for ONU upserts to reduce query overhead on large OLTs.
 - Discovery creates `ONULog` entries for offline ONUs whose `status_map` provides a disconnect reason (e.g. FiberHome maps status codes directly to `link_loss`/`dying_gasp`). This ensures the topology API returns the correct `disconnect_reason` on first discovery without waiting for a polling cycle. Existing open logs are not duplicated.
 - PON interface discovery respects `slot_from`/`pon_from` from indexing config (consistent with `parse_onu_index`).
+- PON descriptions are treated as operator-managed metadata. Discovery must not erase them.
+- If discovery recreates a PON row (for example, slot identity/key drift between runs), the new row inherits prior manual description using historical matching (`pon_index`, `pon_key`, then `(slot_id, pon_id)`).
 
 Default global policy (any OLT/vendor profile):
 - Disable lost resources after `0` minutes (immediate deactivation from active topology).
@@ -198,6 +203,10 @@ Background queue contract for OLT-scoped manual actions:
   - `enqueue_job()` creates a queued row and ensures a background runner is alive.
   - runner claims queued jobs with row locking and marks `status=running`.
   - completion/failure writes terminal status plus output/error, with `progress=100`.
+- Timeout and stale-job safety:
+  - discovery and polling background jobs run in subprocesses with hard timeouts (`MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS`, `MAINTENANCE_POLLING_TIMEOUT_SECONDS`) so blocked SNMP calls cannot stall the maintenance runner forever.
+  - active `running` jobs older than the configured timeout window are auto-expired as `failed` during enqueue/status checks, unblocking new jobs for the same OLT.
+  - timeout failures set job detail/error to explicit timeout guidance so operators can fix SNMP parameters and retry.
 - `GET /api/olts/{id}/maintenance_status/` returns active/latest job state for frontend progress polling.
 - Without `background=true`, actions keep synchronous behavior and return completion payloads (`200` or `500`) as before.
 
@@ -231,6 +240,7 @@ Permission enforcement:
 - `VendorProfileViewSet` is `ReadOnlyModelViewSet` (no create/update/delete).
 - `OLTViewSet` guards `create`, `update`, `destroy`, and all maintenance actions (`run_discovery`, `run_polling`, `snmp_check`, `refresh_power`, `refresh_power_all`) with `can_modify_settings`.
 - PON `partial_update` (description editing) requires `can_modify_settings`.
+- Successful PON description patch invalidates topology API response cache for that OLT so refreshed topology reads return the updated description immediately.
 - Read operations (list, retrieve, topology) remain accessible to all authenticated users.
 
 ### Auth Bootstrap

@@ -1184,6 +1184,10 @@ class OLTPONViewSet(viewsets.ModelViewSet):
     serializer_class = OLTPONSerializer
     filterset_fields = ['olt', 'slot', 'pon_id', 'pon_key', 'is_active']
 
+    def perform_update(self, serializer):
+        pon = serializer.save()
+        cache_service.invalidate_topology_api_cache(pon.olt_id)
+
     def partial_update(self, request, *args, **kwargs):
         if not can_modify_settings(request.user):
             return _settings_forbidden_response()

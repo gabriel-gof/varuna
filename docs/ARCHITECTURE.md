@@ -16,7 +16,7 @@
 
 Backend SNMP runtime:
 - Uses `puresnmp` as the SNMP transport client.
-- Discovery prefers SNMP bulk-walk (`v2c`) and falls back to regular walk for `v1`.
+- Discovery walk uses subtree-limited `bulkwalk`/`walk` with per-request timeout/retry settings.
 
 Container/runtime health:
 - Backend exposes a public liveness endpoint at `GET /api/healthz/` (`{"status":"ok"}`).
@@ -36,6 +36,7 @@ Container/runtime health:
   - unique project name,
   - unique host port bindings (typically localhost-only bind),
   - isolated env vars/secrets.
+- Current gabisat production hostname is `varuna.gabisat.com.br` (single canonical host, no secondary alias).
 - `docker-compose.prod.yml` is instance-parameterized via:
   - `VARUNA_ENV_FILE` (env file injected into `db` and `backend`),
   - `VARUNA_FRONTEND_BIND_IP`,
@@ -115,6 +116,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - Manual settings actions (`run_discovery`, `run_polling`, `refresh_power` with `background=true`) enqueue `MaintenanceJob` rows in PostgreSQL.
 - Queue is serialized per OLT (single active job across discovery/polling/power) to prevent concurrent SNMP bursts against the same OLT.
 - A backend in-process runner claims queued jobs with row locking and updates progress/status (`queued -> running -> completed|failed|canceled`).
+- Discovery/polling queue workers execute commands with hard runtime timeouts; stale `running` jobs beyond timeout are auto-failed to unblock the OLT queue.
 - Frontend polls `GET /api/olts/{id}/maintenance_status/` for durable progress, so in-flight visibility does not depend on in-memory API view state.
 - `snmp_check` "busy" behavior now derives from active `MaintenanceJob` rows, avoiding false unreachable markings while maintenance is running.
 

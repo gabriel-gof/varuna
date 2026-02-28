@@ -19,6 +19,9 @@ from topology.services.vendor_profile import map_status_code, parse_onu_index
 
 logger = logging.getLogger(__name__)
 
+SYS_DESCR_OID = '1.3.6.1.2.1.1.1.0'
+UNREACHABLE_PREFLIGHT_TIMEOUT_DEFAULT_SECONDS = 2.0
+
 
 def _extract_index(oid: str, base_oid: str) -> Optional[str]:
     if not oid or not base_oid:
@@ -241,6 +244,33 @@ class Command(BaseCommand):
         seen_slot_ids: Set[int] = set()
         seen_pon_ids: Set[int] = set()
         seen_onu_ids: Set[int] = set()
+        historical_pon_descriptions_by_index: Dict[int, str] = {}
+        historical_pon_descriptions_by_key: Dict[str, str] = {}
+        historical_pon_descriptions_by_slot_pon: Dict[tuple, str] = {}
+
+        existing_pons = (
+            OLTPON.objects.filter(olt=olt)
+            .select_related("slot")
+            .order_by("-is_active", "-last_discovered_at", "-id")
+        )
+        for existing_pon in existing_pons:
+            description = (existing_pon.description or "").strip()
+            if not description:
+                continue
+            if existing_pon.pon_index is not None:
+                try:
+                    historical_pon_descriptions_by_index.setdefault(int(existing_pon.pon_index), description)
+                except (TypeError, ValueError):
+                    pass
+            if existing_pon.pon_key:
+                historical_pon_descriptions_by_key.setdefault(existing_pon.pon_key, description)
+            try:
+                historical_pon_descriptions_by_slot_pon.setdefault(
+                    (int(existing_pon.slot.slot_id), int(existing_pon.pon_id)),
+                    description,
+                )
+            except (TypeError, ValueError, AttributeError):
+                continue
 
         def ensure_slot(identity: Dict[str, Any]) -> OLTSlot:
             key = _slot_key(identity)
@@ -268,13 +298,15 @@ class Command(BaseCommand):
             if pon:
                 seen_pon_ids.add(pon.id)
                 return pon
-            pon, _ = OLTPON.objects.update_or_create(
+            pon_key = _pon_key(identity)
+            pon_numeric = identity.get("pon_numeric")
+            pon, created = OLTPON.objects.update_or_create(
                 slot=slot,
                 pon_id=identity["pon_id"],
                 defaults={
                     "olt": olt,
-                    "pon_key": _pon_key(identity),
-                    "pon_index": identity.get("pon_numeric"),
+                    "pon_key": pon_key,
+                    "pon_index": pon_numeric,
                     "rack_id": identity.get("rack_id"),
                     "shelf_id": identity.get("shelf_id"),
                     "port_id": identity.get("port_id"),
@@ -282,6 +314,43 @@ class Command(BaseCommand):
                     "is_active": True,
                 },
             )
+            if created and not pon.description:
+                inherited_description = None
+                try:
+                    if pon_numeric is not None:
+                        inherited_description = historical_pon_descriptions_by_index.get(int(pon_numeric))
+                except (TypeError, ValueError):
+                    inherited_description = None
+
+                if not inherited_description:
+                    inherited_description = historical_pon_descriptions_by_key.get(pon_key)
+
+                if not inherited_description:
+                    try:
+                        inherited_description = historical_pon_descriptions_by_slot_pon.get(
+                            (int(identity["slot_id"]), int(identity["pon_id"]))
+                        )
+                    except (TypeError, ValueError):
+                        inherited_description = None
+
+                if inherited_description:
+                    pon.description = inherited_description
+                    pon.save(update_fields=["description"])
+
+            normalized_description = (pon.description or "").strip()
+            if normalized_description:
+                if pon.pon_index is not None:
+                    try:
+                        historical_pon_descriptions_by_index[int(pon.pon_index)] = normalized_description
+                    except (TypeError, ValueError):
+                        pass
+                if pon.pon_key:
+                    historical_pon_descriptions_by_key[pon.pon_key] = normalized_description
+                try:
+                    historical_pon_descriptions_by_slot_pon[(int(slot.slot_id), int(pon.pon_id))] = normalized_description
+                except (TypeError, ValueError):
+                    pass
+
             pon_cache[cache_key] = pon
             seen_pon_ids.add(pon.id)
             return pon
@@ -289,6 +358,43 @@ class Command(BaseCommand):
         interfaces_cfg = oid_templates.get("pon_interfaces", {})
         iface_rows_total = 0
         pon_map: Dict[int, Dict[str, Any]] = {}
+
+        pause_between_walks = float(discovery_cfg.get('pause_between_walks_seconds', 0.5))
+        pause_between_walks = max(0.0, min(pause_between_walks, 5.0))
+
+        walk_timeout = float(discovery_cfg.get('walk_timeout_seconds', 30.0))
+        walk_timeout = max(5.0, min(walk_timeout, 120.0))
+
+        if olt.snmp_reachable is False:
+            preflight_timeout = float(
+                discovery_cfg.get(
+                    'unreachable_preflight_timeout_seconds',
+                    min(walk_timeout, UNREACHABLE_PREFLIGHT_TIMEOUT_DEFAULT_SECONDS),
+                )
+            )
+            preflight_timeout = max(1.0, min(preflight_timeout, 15.0))
+            preflight_retries = _parse_non_negative_int(
+                discovery_cfg.get('unreachable_preflight_retries', 0),
+                default=0,
+            )
+            preflight_retries = min(preflight_retries, 2)
+            preflight = snmp_service.get(
+                olt,
+                [SYS_DESCR_OID],
+                timeout=preflight_timeout,
+                retries=preflight_retries,
+            )
+            if not (preflight and SYS_DESCR_OID in preflight):
+                detail = (
+                    "SNMP preflight check failed while OLT is marked unreachable. "
+                    "Verify SNMP endpoint/port/community and retry."
+                )
+                if not dry_run:
+                    mark_olt_unreachable(olt, error=detail)
+                self._mark_discovery_result(olt, success=False, dry_run=dry_run)
+                self.stdout.write(f"OLT {olt.id}: SNMP preflight failed (still unreachable).")
+                logger.warning("OLT %s discovery aborted by unreachable preflight.", olt.id)
+                return
 
         if interfaces_cfg and not dry_run:
             iface_name_oid = interfaces_cfg.get("name_oid")
@@ -338,12 +444,6 @@ class Command(BaseCommand):
                     }
                     slot = ensure_slot(identity)
                     ensure_pon(identity, slot, pon_name=iface_name)
-
-        pause_between_walks = float(discovery_cfg.get('pause_between_walks_seconds', 0.5))
-        pause_between_walks = max(0.0, min(pause_between_walks, 5.0))
-
-        walk_timeout = float(discovery_cfg.get('walk_timeout_seconds', 30.0))
-        walk_timeout = max(5.0, min(walk_timeout, 120.0))
 
         name_rows = snmp_service.walk(olt, name_oid, timeout=walk_timeout) if name_oid else []
         if pause_between_walks > 0 and name_oid:
