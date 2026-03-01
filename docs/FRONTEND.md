@@ -104,7 +104,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - OLT: `{slotCount} PLACAS / {redSlots}` — number of slots where all PONs are fully offline (red health).
   - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).
   - Alert count only appears when > 0. Gray-tree nodes are excluded.
-- Both Status and Power tabs include a pinned footer bar below the scrollable area. Desktop and mobile both show colored reason dots (rose=link loss, blue=dying gasp, purple=unknown) with counts, a vertical separator, then `{total} / {offline}`. Reason dots and separator only appear when offline > 0. Offline count uses amber to distinguish from the rose link-loss dot. Footer uses `bg-white dark:bg-slate-900` with `border-t`. Stats are computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`.
+- Both Status and Power tabs include a pinned footer bar below the scrollable area. Status footer shows colored reason dots (rose=link loss, blue=dying gasp, purple=unknown) with counts, a vertical separator, then `{total} / {offline}`. Power footer shows signal quality dots (emerald=good, amber=warning, rose=critical, violet=no reading) with counts, a vertical separator, then `{total}`. Footer uses `bg-white dark:bg-slate-900` with `border-t`. Status stats computed via `getOnuStats(selectedOnus)` memoized as `selectedPonStats`; power stats via `powerSignalCounts`.
 - Footer bullets are count-aware on all breakpoints: each bullet (including green `online`) is rendered only when its count is greater than zero.
 - Footer separator and total counters use boosted dark-mode contrast (`dark:text-slate-400` for `/`, `dark:text-slate-300` for total) so the `total/offline` segment remains readable in the PON footer.
 - OLT interval settings are editable in Settings:
@@ -235,9 +235,10 @@ The UI remains topology-first. No dashboard page is required for current product
   - Search highlight is preserved on mobile cards (green border + box-shadow).
   - Empty states use `py-12 text-[12px]` for centered vertical presence.
 - The `onSave` handler for PON description editing is shared between desktop and mobile headers.
-- Sort dropdown uses `w-[130px] lg:w-[156px]` for narrower mobile fit.
-- Tab buttons use `min-w-[72px] lg:min-w-[88px]` to prevent toolbar overflow on narrow (<380px) screens.
-- Back arrow, X button, sort dropdown, and tab buttons all include `active:scale-95` tap feedback for consistent press response.
+- Sort dropdown uses `w-[130px] lg:w-[136px]` with `h-7` compact styling matching Power Report controls.
+- Tab buttons use `min-w-[60px] lg:min-w-[76px]` to prevent toolbar overflow on narrow (<380px) screens.
+- Back arrow, X button, sort dropdown, and tab buttons all include `active:scale-[0.97]` tap feedback for consistent press response.
+- PON sidebar toolbar controls (tabs, sort, refresh) use `h-7` compact styling with `rounded-md` borders, matching the Power Report toolbar for visual coherence across views.
 - Mobile header uses `items-start` so the X button anchors to the breadcrumb line rather than centering against the full breadcrumb+description block.
 - Mobile card left columns (status and power) use `gap-0.5` (2px) between ONU number, client name, and serial for readable spacing.
 - Desktop PON table rows (Status and Power tabs) use `dark:even:bg-slate-800/50` for visible dark mode row striping against `dark:odd:bg-slate-900`. No hover highlight — rows are read-only data, not interactive targets.
@@ -307,14 +308,14 @@ The UI remains topology-first. No dashboard page is required for current product
 - Signal classification uses `getPowerColor` from `powerThresholds.js` — an ONU is "critical" if any reading is red, "warning" if any is yellow, "good" if all are green.
 - Default report mode is "problems first": signal filter starts with `Critical + Warning + No reading` and sort starts at `Worst ONU RX`.
 - Toolbar is flat on the page surface (no wrapping card), organized in two rows:
-  - Row 1: cascading location dropdowns (OLT → Slot → PON) + sort dropdown (right-aligned). No search field — client search lives in Topology.
-  - Row 2: signal toggle pills (Good/Warning/Critical/No reading) with inline count badges, plus total ONU count. Counts are embedded in the pills themselves — no separate stat cards.
+  - Row 1: OLT dropdown (76px / 136px desktop) + Slot dropdown (80px / 72px desktop) + PON dropdown (80px / 72px desktop) grouped left, Sort dropdown (76px / 120px desktop) pushed far right via `ml-auto`. Slot/PON are wider than OLT/Sort on mobile since they are the primary filter controls. Slot/PON unselected labels show `—` (em dash) instead of translated "All" — the icon already communicates the filter type. When a slot/PON is selected, its number replaces the dash.
+  - Row 2: signal toggle pills (Good/Warning/Critical/No reading) centered, with inline count badges and a total ONU count after a divider.
 - Signal pills act as both filter toggles and summary indicators: each pill shows its label and count, colored when active, faded when inactive. This eliminates the need for separate stat cards.
 - Sort options: `ONU RX ↓`, `OLT RX ↓`, `ONU RX ↑`, `OLT RX ↑`.
 - Desktop: split header/body table with 9 `colgroup` columns (OLT, Slot, PON, ONU, Name, Serial, ONU RX, OLT RX, Reading). Compact row height (h-11) with hover highlight. Infinite scroll via `IntersectionObserver` on a sentinel row — more rows load automatically as the user scrolls near the bottom.
 - Mobile (<1024px): card layout with OLT/Slot/PON path, client info, power values (ONU RX + OLT RX). Same infinite scroll behavior.
 - Row rendering is windowed (initial 300 rows + incremental "Load more") to avoid mounting/unmounting extremely large DOM tables during tab switches.
-- Power values of `-0.00` or near-zero (`±0.005`) are treated as no-reading and display a dash placeholder instead of a misleading zero value. This applies to both the Power Report table and the topology power cards (`App.jsx`).
+- Power values of `-0.00` or near-zero (`±0.005`) and sentinel values of `-40` dBm or lower (`≤ -39.995`) are treated as no-reading and display a dash placeholder instead of misleading values. This applies to both the Power Report table and the topology power cards (`App.jsx`). The `-40` sentinel is a common SNMP artifact indicating no real measurement.
 - All power values are color-coded using existing `powerColorClass` utility.
 - Dropdowns use Radix DropdownMenu matching the PON panel sort pattern.
 - Background refresh interval remains 30s in-tab.

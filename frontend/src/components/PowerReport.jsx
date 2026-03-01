@@ -22,6 +22,7 @@ const formatPowerValue = (value) => {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return null
   if (Object.is(numeric, -0) || (numeric > -0.005 && numeric < 0.005)) return null
+  if (numeric <= -39.995) return null
   return `${numeric.toFixed(2)} dBm`
 }
 
@@ -341,38 +342,48 @@ export const PowerReport = () => {
 
         {/* Toolbar */}
         <div className="flex flex-col gap-2 lg:gap-0 mb-4">
-          {/* Row 1: Location filters — full width on mobile, left on desktop */}
+          {/* Row 1: OLT + Slot + PON + Sort (mobile) | OLT + Slot + PON + pills + sort (desktop) */}
           <div className="flex items-center gap-1">
-            <FilterDropdown
-              value={selectedOltId}
-              onChange={changeOlt}
-              options={[{ id: null, label: t('All OLTs') }, ...availableOlts.map(o => ({ id: o.id, label: o.name }))]}
-              label={selectedOltId && availableOlts.find(o => o.id === selectedOltId) ? availableOlts.find(o => o.id === selectedOltId).name : t('All OLTs')}
-              isActive={selectedOltId !== null}
-              icon={<Server className="w-3.5 h-3.5" />}
-              width="flex-1 lg:flex-none lg:w-[120px]"
-            />
+            {/* Mobile: OLT in flex wrapper for equal sizing with sort */}
+            <div className="flex-1 min-w-0 lg:contents">
+              <FilterDropdown
+                value={selectedOltId}
+                onChange={changeOlt}
+                options={[{ id: null, label: t('All OLTs') }, ...availableOlts.map(o => ({ id: o.id, label: o.name }))]}
+                label={selectedOltId && availableOlts.find(o => o.id === selectedOltId) ? availableOlts.find(o => o.id === selectedOltId).name : t('All OLTs')}
+                icon={<Server className="w-4 h-4" />}
+                width="w-full lg:w-[116px]"
+              />
+            </div>
             <FilterDropdown
               value={selectedSlot}
               onChange={changeSlot}
-              options={[{ id: null, label: t('All slots') }, ...availableSlots.map(s => ({ id: s, label: `${t('Slot')} ${s}` }))]}
-              label={selectedSlot !== null ? `${t('Slot')} ${selectedSlot}` : t('All slots')}
-              isActive={selectedSlot !== null}
+              options={[{ id: null, label: t('All') }, ...availableSlots.map(s => ({ id: s, label: s }))]}
+              label={selectedSlot !== null ? selectedSlot : t('All')}
               disabled={!hasOlt || availableSlots.length === 0}
-              icon={<CircuitBoard className="w-3.5 h-3.5" />}
-              width="flex-1 lg:flex-none lg:w-[120px]"
+              icon={<CircuitBoard className="w-4 h-4" />}
+              width="w-[80px] lg:w-[72px]"
             />
             <FilterDropdown
               value={selectedPon}
               onChange={changePon}
-              options={[{ id: null, label: t('All PONs') }, ...availablePons.map(p => ({ id: p, label: `PON ${p}` }))]}
-              label={selectedPon !== null ? `PON ${selectedPon}` : t('All PONs')}
-              isActive={selectedPon !== null}
+              options={[{ id: null, label: t('All') }, ...availablePons.map(p => ({ id: p, label: p }))]}
+              label={selectedPon !== null ? selectedPon : t('All')}
               disabled={selectedSlot === null || availablePons.length === 0}
-              icon={<Cable className="w-3.5 h-3.5" />}
-              width="flex-1 lg:flex-none lg:w-[120px]"
+              icon={<Cable className="w-4 h-4" />}
+              width="w-[80px] lg:w-[72px]"
             />
-            {/* Desktop only: signal pills + sort inline */}
+            {/* Mobile: sort */}
+            <div className="lg:hidden flex-1 min-w-0">
+              <SortDropdown
+                value={sortMode}
+                onChange={setSortMode}
+                options={sortOptions}
+                label={currentSortLabel}
+                width="w-full"
+              />
+            </div>
+            {/* Desktop: pills + sort far right */}
             <div className="hidden lg:flex items-center gap-1 ml-auto">
               {signalPills.map((pill) => {
                 const isOn = signalFilter.length === 0 || signalFilter.includes(pill.id)
@@ -402,6 +413,8 @@ export const PowerReport = () => {
                 )
               })}
               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('Total ONUs')}</span>
+              <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500 mr-3">{locationFiltered.length}</span>
               <SortDropdown
                 value={sortMode}
                 onChange={setSortMode}
@@ -411,8 +424,8 @@ export const PowerReport = () => {
             </div>
           </div>
 
-          {/* Row 2 (mobile only): Pills far left, sort far right */}
-          <div className="flex lg:hidden items-center justify-between">
+          {/* Row 2 (mobile only): Signal pills centered */}
+          <div className="flex lg:hidden items-center justify-center gap-1 w-full">
             {signalPills.map((pill) => {
               const isOn = signalFilter.length === 0 || signalFilter.includes(pill.id)
               const count = pill.id === 'good' ? stats.good : pill.id === 'warning' ? stats.warning : pill.id === 'critical' ? stats.critical : stats.noReading
@@ -439,13 +452,8 @@ export const PowerReport = () => {
                 </button>
               )
             })}
-            <SortDropdown
-              value={sortMode}
-              onChange={setSortMode}
-              options={sortOptions}
-              label={currentSortLabel}
-              width="w-[calc((100%_-_8px)_/_3)]"
-            />
+            <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
+            <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500">{locationFiltered.length}</span>
           </div>
         </div>
 
@@ -532,7 +540,7 @@ export const PowerReport = () => {
                       <td className="px-3 py-0 align-middle text-[11px] font-semibold font-mono tracking-tight text-slate-500 dark:text-slate-400 truncate">{row.serial || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
                       <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || '—'}</td>
                       <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || '—'}</td>
-                      <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-center">{formatReadingAt(row.readingAt, i18n.language)}</td>
+                      <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${row.readingAt ? 'text-slate-500 dark:text-slate-400' : 'text-slate-300 dark:text-slate-600'}`}>{formatReadingAt(row.readingAt, i18n.language)}</td>
                     </tr>
                   )
                 })}
@@ -595,18 +603,18 @@ export const PowerReport = () => {
                       <span className="text-[11px] text-slate-300 dark:text-slate-600">—</span>
                     )}
                   </div>
-                  <div className="shrink-0 flex flex-col items-end gap-1">
+                  <div className="shrink-0 flex flex-col gap-1">
                     {hasPower ? (
                       <>
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                           <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                          <span className={`font-semibold ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || '—'}</span>
+                          <span className={`w-[76px] text-right font-semibold ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || '—'}</span>
                         </span>
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                           <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                          <span className={`font-semibold ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || '—'}</span>
+                          <span className={`w-[76px] text-right font-semibold ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || '—'}</span>
                         </span>
-                        <span className="text-[10px] font-semibold tabular-nums text-slate-400 dark:text-slate-500">
+                        <span className="self-stretch text-left text-[10px] font-semibold tabular-nums text-slate-400 dark:text-slate-500">
                           {formatReadingAt(row.readingAt, i18n.language)}
                         </span>
                       </>
@@ -633,13 +641,13 @@ const SortDropdown = ({ value, onChange, options, label, width }) => (
   <DropdownMenu.Root>
     <DropdownMenu.Trigger asChild>
       <button
-        className={`relative h-7 rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all active:scale-[0.97] ${width || 'w-[120px]'}`}
+        className={`flex items-center gap-0.5 h-7 rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all active:scale-[0.97] pl-1.5 pr-1 ${width || 'w-[120px]'}`}
       >
-        <ArrowDownUp className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 shrink-0" />
-        <span className="absolute left-6 right-6 top-1/2 -translate-y-1/2 text-center text-[10px] font-black uppercase tracking-[0.03em] whitespace-nowrap overflow-hidden text-ellipsis text-slate-700 dark:text-slate-300">
+        <ArrowDownUp className="w-3.5 h-3.5 shrink-0" />
+        <span className="flex-1 min-w-0 text-center text-[10px] font-black uppercase tracking-[0.03em] truncate text-emerald-600 dark:text-emerald-400">
           {label}
         </span>
-        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3" />
+        <ChevronDown className="w-2.5 h-2.5 shrink-0" />
       </button>
     </DropdownMenu.Trigger>
     <DropdownMenu.Portal>
@@ -675,20 +683,20 @@ const SortDropdown = ({ value, onChange, options, label, width }) => (
   </DropdownMenu.Root>
 )
 
-const FilterDropdown = ({ value, onChange, options, label, icon, isActive, disabled = false, width }) => (
+const FilterDropdown = ({ value, onChange, options, label, icon, disabled = false, width }) => (
   <DropdownMenu.Root>
     <DropdownMenu.Trigger asChild disabled={disabled}>
       <button
         disabled={disabled}
-        className={`flex items-center gap-1 h-7 rounded-md border transition-all active:scale-[0.97] pl-2 pr-1.5 ${width || ''} ${disabled
+        className={`flex items-center gap-0.5 h-7 rounded-md border transition-all active:scale-[0.97] pl-1.5 pr-1 ${width || ''} ${disabled
             ? 'cursor-not-allowed opacity-45 border-slate-200/60 bg-slate-50 dark:border-slate-700/30 dark:bg-slate-800/40'
             : 'bg-white dark:bg-slate-800 border-slate-200/80 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-sm'
           }`}
       >
-        {icon && <span className="shrink-0 [&>svg]:w-3 [&>svg]:h-3 text-slate-400 dark:text-slate-500">{icon}</span>}
+        {icon && <span className="shrink-0 [&>svg]:w-3.5 [&>svg]:h-3.5 text-slate-400 dark:text-slate-500">{icon}</span>}
         <span className={`flex-1 min-w-0 text-[10px] font-black uppercase tracking-[0.03em] truncate text-center outline-none ${disabled
             ? 'text-slate-400 dark:text-slate-500'
-            : 'text-slate-700 dark:text-slate-300'
+            : value !== null ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'
           }`}>
           {label}
         </span>

@@ -119,6 +119,7 @@ const formatPowerValue = (value) => {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return '—'
   if (Object.is(numeric, -0) || (numeric > -0.005 && numeric < 0.005)) return '—'
+  if (numeric <= -39.995) return '—'
   return `${numeric.toFixed(2)} dBm`
 }
 
@@ -1994,8 +1995,8 @@ const App = () => {
                 </div>
 
                 <div className="flex-1 min-h-0 flex flex-col p-3 lg:p-4 bg-slate-100 dark:bg-slate-950 overflow-hidden">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="inline-flex h-9 items-center gap-1 p-1 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-900/70">
+                  <div className="flex items-center gap-1.5 mb-3">
+                    <div className="inline-flex h-7 items-center gap-0.5 p-0.5 rounded-md border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-900/70">
                       {[
                         { id: 'status', label: t('Status') },
                         { id: 'power', label: t('Potência') }
@@ -2007,7 +2008,7 @@ const App = () => {
                             type="button"
                             onClick={() => setActiveTab(tab.id)}
                             className={`
-                              h-7 min-w-[72px] lg:min-w-[88px] px-3 rounded-md text-[10px] font-black uppercase tracking-[0.06em] transition-all active:scale-95
+                              h-6 min-w-[60px] lg:min-w-[76px] px-2.5 rounded text-[10px] font-black uppercase tracking-[0.06em] transition-all active:scale-[0.97]
                               ${isActive
                                 ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                                 : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/60'}
@@ -2018,19 +2019,19 @@ const App = () => {
                         )
                       })}
                     </div>
-                    <div className="ml-auto flex items-center gap-2">
+                    <div className="ml-auto flex items-center gap-1">
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger asChild>
                           <button
-                            className="relative h-9 w-[136px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
+                            className="flex items-center gap-0.5 h-7 w-[130px] lg:w-[136px] rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-[0.97] pl-1.5 pr-1"
                             aria-label={t('Sort by')}
                             title={t('Sort by')}
                           >
-                            <ArrowDownUp className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 shrink-0" />
-                            <span className="absolute left-7 right-7 top-1/2 -translate-y-1/2 text-center text-[10px] font-black uppercase tracking-[0.03em] whitespace-nowrap overflow-hidden text-ellipsis text-emerald-600 dark:text-emerald-400">
+                            <ArrowDownUp className="w-3.5 h-3.5 shrink-0" />
+                            <span className="flex-1 min-w-0 text-center text-[10px] font-black uppercase tracking-[0.03em] truncate text-emerald-600 dark:text-emerald-400">
                               {currentSortLabel}
                             </span>
-                            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" />
+                            <ChevronDown className="w-2.5 h-2.5 shrink-0" />
                           </button>
                         </DropdownMenu.Trigger>
                         <DropdownMenu.Portal>
@@ -2074,7 +2075,7 @@ const App = () => {
                       <button
                         onClick={handleRefreshPonPanel}
                         disabled={isSidebarRefreshBusy}
-                        className="shrink-0 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95 disabled:cursor-not-allowed"
+                        className="shrink-0 h-7 w-7 flex items-center justify-center rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-[0.97] disabled:cursor-not-allowed"
                         aria-label={t('Refresh')}
                         title={refreshCooldownActive ? t('Cooldown') : t('Refresh')}
                       >
@@ -2175,7 +2176,7 @@ const App = () => {
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
                                     h-14 transition-colors
-                                    ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50'}
+                                    ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                                 >
@@ -2292,7 +2293,7 @@ const App = () => {
                             <div
                               key={onu.id}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 transition-colors ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/60'}`}
                               style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-1">
@@ -2426,7 +2427,7 @@ const App = () => {
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
                                     h-14 transition-colors
-                                    ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50'}
+                                    ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                                 >
@@ -2452,12 +2453,12 @@ const App = () => {
                                       <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
                                         <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                           <span className="inline-block w-8 text-left">{t('ONU')}</span>
-                                          <span className={`font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                          <span className={`w-[76px] text-right font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                         </span>
                                         {supportsSelectedOltRxPower && (
                                           <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                             <span className="inline-block w-8 text-left">{t('OLT')}</span>
-                                            <span className={`font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                            <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                           </span>
                                         )}
                                       </div>
@@ -2480,8 +2481,7 @@ const App = () => {
                         </table>
                       </div>
                       {powerRows.length > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          <div className="flex items-center gap-2.5">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-2.5">
                             {powerSignalCounts.good > 0 && (
                               <div className="flex items-center gap-1">
                                 <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
@@ -2500,17 +2500,14 @@ const App = () => {
                                 <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.critical}</span>
                               </div>
                             )}
-                          </div>
-                          <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
-                          <p className="text-[11px] font-bold tabular-nums leading-none">
-                            <span className="text-slate-500 dark:text-slate-300">{powerRows.length}</span>
                             {powerSignalCounts.noReading > 0 && (
-                              <>
-                                <span className="text-slate-300 dark:text-slate-400"> / </span>
-                                <span className="text-violet-600 dark:text-violet-400">{powerSignalCounts.noReading}</span>
-                              </>
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-violet-500 shadow-sm shadow-violet-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.noReading}</span>
+                              </div>
                             )}
-                          </p>
+                          <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
+                          <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-300">{powerRows.length}</span>
                         </div>
                       )}
                     </div>
@@ -2539,7 +2536,7 @@ const App = () => {
                             <div
                               key={`power-${onu.id}`}
                               data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
-                              className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
+                              className={`rounded-md border px-3 py-2 flex items-center gap-2 transition-colors ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/60'}`}
                               style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-1">
@@ -2555,20 +2552,20 @@ const App = () => {
                                   <span className={`block text-center ${serialPlaceholderClass(statusKey)}`}>{serialValue}</span>
                                 )}
                               </div>
-                              <div className="shrink-0 flex flex-col items-end gap-1">
+                              <div className="shrink-0 flex flex-col gap-1">
                                 {hasAnyPower ? (
                                   <>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                                      <span className={`font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                      <span className={`w-[76px] text-right font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                     </span>
                                     {supportsSelectedOltRxPower && (
                                       <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                         <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                        <span className={`font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                        <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                       </span>
                                     )}
-                                    <span className={`text-[10px] font-semibold tabular-nums ${hasReading ? 'text-slate-400 dark:text-slate-500' : disconnectPlaceholderClass(statusKey)}`}>{readingAt}</span>
+                                    <span className={`self-stretch text-left text-[10px] font-semibold tabular-nums ${hasReading ? 'text-slate-400 dark:text-slate-500' : disconnectPlaceholderClass(statusKey)}`}>{readingAt}</span>
                                   </>
                                 ) : (
                                   <span className={`text-[11px] font-semibold tabular-nums ${disconnectPlaceholderClass(statusKey)}`}>{MISSING_VALUE_PLACEHOLDER}</span>
@@ -2584,7 +2581,7 @@ const App = () => {
                         )}
                       </div>
                       {powerRows.length > 0 && (
-                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
+                        <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-2.5">
                           {powerSignalCounts.good > 0 && (
                             <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
@@ -2603,14 +2600,14 @@ const App = () => {
                               <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.critical}</span>
                             </div>
                           )}
+                          {powerSignalCounts.noReading > 0 && (
+                            <div className="flex items-center gap-1">
+                              <div className="w-2 h-2 rounded-full bg-violet-500 shadow-sm shadow-violet-500/20" />
+                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.noReading}</span>
+                            </div>
+                          )}
                           <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
                           <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-300">{powerRows.length}</span>
-                          {powerSignalCounts.noReading > 0 && (
-                            <>
-                              <span className="text-[10px] text-slate-300 dark:text-slate-400">/</span>
-                              <span className="text-[11px] font-bold tabular-nums text-violet-600 dark:text-violet-400">{powerSignalCounts.noReading}</span>
-                            </>
-                          )}
                         </div>
                       )}
                     </div>
