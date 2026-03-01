@@ -412,7 +412,6 @@ export const PowerReport = () => {
                 )
               })}
               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('Total')}</span>
               <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500">{locationFiltered.length}</span>
             </div>
             <div className="hidden lg:block ml-auto">
