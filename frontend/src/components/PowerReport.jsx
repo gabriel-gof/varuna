@@ -341,7 +341,7 @@ export const PowerReport = () => {
       <div className="flex-1 min-h-0 flex flex-col px-3 lg:px-8 pt-5 pb-4">
 
         {/* Toolbar */}
-        <div className="flex flex-col gap-2 lg:gap-0 mb-4">
+        <div className="flex flex-col gap-2 lg:gap-0 mb-4 w-full lg:max-w-[1100px] lg:mx-auto">
           {/* Row 1: OLT + Slot + PON + Sort (mobile) | OLT + Slot + PON + pills + sort (desktop) */}
           <div className="flex items-center gap-1 relative">
             {/* Mobile: OLT in flex wrapper for equal sizing with sort */}
@@ -407,7 +407,6 @@ export const PowerReport = () => {
                       )}
                     </span>
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${pill.dot}`} />
-                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 hidden xl:inline">{pill.label}</span>
                     <span className={`text-[10px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
                   </button>
                 )
@@ -466,7 +465,7 @@ export const PowerReport = () => {
         )}
 
         {/* Desktop table */}
-        <div className="hidden lg:flex flex-col flex-1 min-h-0 w-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+        <div className="hidden lg:flex flex-col flex-1 min-h-0 w-full max-w-[1100px] mx-auto rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
           <div className="shrink-0 overflow-hidden bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-700/50">
             <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '800px' }}>
               <colgroup>
@@ -474,11 +473,11 @@ export const PowerReport = () => {
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
-                <col style={{ width: '17%' }} />
-                <col style={{ width: '14%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '18%' }} />
+                <col />
+                <col style={{ width: '12%' }} />
+                <col style={{ width: '120px' }} />
+                <col style={{ width: '120px' }} />
+                <col style={{ width: '160px' }} />
               </colgroup>
               <thead>
                 <tr>
@@ -503,11 +502,11 @@ export const PowerReport = () => {
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
-                <col style={{ width: '17%' }} />
-                <col style={{ width: '14%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '18%' }} />
+                <col />
+                <col style={{ width: '12%' }} />
+                <col style={{ width: '120px' }} />
+                <col style={{ width: '120px' }} />
+                <col style={{ width: '160px' }} />
               </colgroup>
               <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                 {loading && rows.length === 0 && (
