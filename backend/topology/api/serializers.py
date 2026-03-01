@@ -52,13 +52,13 @@ class ONUNestedSerializer(serializers.ModelSerializer):
     onu_number = serializers.IntegerField(source='onu_id', read_only=True)
     client_name = serializers.CharField(source='name', read_only=True)
     serial_number = serializers.CharField(source='serial', read_only=True)
-    disconnect_reason = serializers.SerializerMethodField()
-    offline_since = serializers.SerializerMethodField()
-    disconnect_window_start = serializers.SerializerMethodField()
-    disconnect_window_end = serializers.SerializerMethodField()
-    onu_rx_power = serializers.SerializerMethodField()
-    olt_rx_power = serializers.SerializerMethodField()
-    power_read_at = serializers.SerializerMethodField()
+    disconnect_reason = serializers.ReadOnlyField()
+    offline_since = serializers.ReadOnlyField()
+    disconnect_window_start = serializers.ReadOnlyField()
+    disconnect_window_end = serializers.ReadOnlyField()
+    onu_rx_power = serializers.ReadOnlyField()
+    olt_rx_power = serializers.ReadOnlyField()
+    power_read_at = serializers.ReadOnlyField()
 
     class Meta:
         model = ONU
@@ -99,32 +99,6 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         cache[obj.id] = log
         return log
 
-    def get_disconnect_reason(self, obj):
-        log = self._get_active_log(obj)
-        if log:
-            return log.disconnect_reason
-        if obj.status == ONU.STATUS_OFFLINE:
-            return ONULog.REASON_UNKNOWN
-        return None
-
-    def get_offline_since(self, obj):
-        log = self._get_active_log(obj)
-        if log and log.offline_since:
-            return log.offline_since.isoformat()
-        return None
-
-    def get_disconnect_window_start(self, obj):
-        log = self._get_active_log(obj)
-        if log and log.disconnect_window_start:
-            return log.disconnect_window_start.isoformat()
-        return None
-
-    def get_disconnect_window_end(self, obj):
-        log = self._get_active_log(obj)
-        if log and log.disconnect_window_end:
-            return log.disconnect_window_end.isoformat()
-        return None
-
     def _get_power(self, obj):
         power_map = self.context.get('power_map') if isinstance(self.context, dict) else None
         if isinstance(power_map, dict) and obj.id in power_map:
@@ -141,24 +115,66 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         return power
 
     def _supports_olt_rx_power(self, obj):
+        cache_key = '_supports_olt_rx_power_cache'
+        if not hasattr(self, cache_key):
+            setattr(self, cache_key, {})
+        cache = getattr(self, cache_key)
+        olt_id = int(obj.olt_id)
+        if olt_id in cache:
+            return cache[olt_id]
         power_cfg = ((obj.olt.vendor_profile.oid_templates or {}).get('power', {}))
-        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+        supports = bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+        cache[olt_id] = supports
+        return supports
 
-    def get_onu_rx_power(self, obj):
-        return self._get_power(obj).get('onu_rx_power')
-
-    def get_olt_rx_power(self, obj):
-        if not self._supports_olt_rx_power(obj):
+    @staticmethod
+    def _as_iso(value):
+        if not value:
             return None
-        return self._get_power(obj).get('olt_rx_power')
+        if hasattr(value, 'isoformat'):
+            return value.isoformat()
+        return value
 
-    def get_power_read_at(self, obj):
+    def to_representation(self, obj):
+        active_log = self._get_active_log(obj)
         power = self._get_power(obj)
-        onu_rx = power.get('onu_rx_power')
-        olt_rx = power.get('olt_rx_power') if self._supports_olt_rx_power(obj) else None
-        if onu_rx is None and olt_rx is None:
-            return None
-        return power.get('power_read_at')
+        supports_olt_rx_power = self._supports_olt_rx_power(obj)
+
+        disconnect_reason = None
+        offline_since = None
+        disconnect_window_start = None
+        disconnect_window_end = None
+
+        if active_log:
+            disconnect_reason = active_log.disconnect_reason
+            offline_since = self._as_iso(active_log.offline_since)
+            disconnect_window_start = self._as_iso(active_log.disconnect_window_start)
+            disconnect_window_end = self._as_iso(active_log.disconnect_window_end)
+        elif obj.status == ONU.STATUS_OFFLINE:
+            disconnect_reason = ONULog.REASON_UNKNOWN
+
+        onu_rx_power = power.get('onu_rx_power')
+        olt_rx_power = power.get('olt_rx_power') if supports_olt_rx_power else None
+        power_read_at = None
+        if onu_rx_power is not None or olt_rx_power is not None:
+            power_read_at = self._as_iso(power.get('power_read_at'))
+
+        return {
+            'id': obj.id,
+            'onu_number': obj.onu_id,
+            'name': obj.name,
+            'client_name': obj.name,
+            'serial_number': obj.serial,
+            'status': obj.status,
+            'disconnect_reason': disconnect_reason,
+            'offline_since': offline_since,
+            'disconnect_window_start': disconnect_window_start,
+            'disconnect_window_end': disconnect_window_end,
+            'onu_rx_power': onu_rx_power,
+            'olt_rx_power': olt_rx_power,
+            'power_read_at': power_read_at,
+            'last_discovered_at': self._as_iso(obj.last_discovered_at),
+        }
 
 
 class PONNestedSerializer(serializers.ModelSerializer):

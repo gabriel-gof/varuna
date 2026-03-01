@@ -117,7 +117,8 @@ const THEME_STORAGE_KEY = 'varuna.theme'
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
   const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return String(value)
+  if (!Number.isFinite(numeric)) return '—'
+  if (Object.is(numeric, -0) || (numeric > -0.005 && numeric < 0.005)) return '—'
   return `${numeric.toFixed(2)} dBm`
 }
 
@@ -1548,6 +1549,21 @@ const App = () => {
     return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
   }, [selectedOnus, powerSortMode, supportsSelectedOltRxPower])
 
+  const powerSignalCounts = useMemo(() => {
+    const oltId = selectedPonData?.olt?.id
+    const counts = { good: 0, warning: 0, critical: 0, noReading: 0 }
+    powerRows.forEach(({ onuRx, oltRx }) => {
+      const onuColor = getPowerColor(onuRx, 'onu_rx', oltId)
+      const oltColor = getPowerColor(oltRx, 'olt_rx', oltId)
+      const colors = [onuColor, oltColor].filter(Boolean)
+      if (!colors.length) { counts.noReading += 1; return }
+      if (colors.includes('red')) counts.critical += 1
+      else if (colors.includes('yellow')) counts.warning += 1
+      else counts.good += 1
+    })
+    return counts
+  }, [powerRows, selectedPonData])
+
   useEffect(() => {
     if (!selectedSearchMatch) return
     if (!selectedPonId || String(selectedSearchMatch.ponId) !== String(selectedPonId)) return
@@ -2279,16 +2295,20 @@ const App = () => {
                               className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
-                              <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">ONU {onuNumber}</span>
-                                {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
+                              <div className="min-w-0 flex-1 flex flex-col gap-1">
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                {(onu.client_name || onu.name || '').trim() ? (
+                                  <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate">{clientLabel}</span>
+                                ) : (
+                                  <span className="text-[11px] text-slate-300 dark:text-slate-600">{MISSING_VALUE_PLACEHOLDER}</span>
+                                )}
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
                                 ) : (
                                   <span className={`block text-center ${serialPlaceholderClass(statusKey)}`}>{serialValue}</span>
                                 )}
                               </div>
-                              <div className="shrink-0 flex flex-col items-end gap-0.5">
+                              <div className="shrink-0 flex flex-col items-end gap-1">
                                 <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${statusStyle(statusKey)}`}>
                                   <div className={`w-1.5 h-1.5 rounded-full ${statusDot(statusKey)}`} />
                                   {statusLabel}
@@ -2459,41 +2479,35 @@ const App = () => {
                           </tbody>
                         </table>
                       </div>
-                      {selectedPonStats.total > 0 && (
+                      {powerRows.length > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
                           <div className="flex items-center gap-2.5">
-                            {selectedPonStats.online > 0 && (
+                            {powerSignalCounts.good > 0 && (
                               <div className="flex items-center gap-1">
                                 <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
-                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.good}</span>
                               </div>
                             )}
-                            {selectedPonStats.linkLoss > 0 && (
+                            {powerSignalCounts.warning > 0 && (
+                              <div className="flex items-center gap-1">
+                                <div className="w-2 h-2 rounded-full bg-amber-500 shadow-sm shadow-amber-500/20" />
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.warning}</span>
+                              </div>
+                            )}
+                            {powerSignalCounts.critical > 0 && (
                               <div className="flex items-center gap-1">
                                 <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
-                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.linkLoss}</span>
-                              </div>
-                            )}
-                            {selectedPonStats.dyingGasp > 0 && (
-                              <div className="flex items-center gap-1">
-                                <div className="w-2 h-2 rounded-full bg-blue-500 shadow-sm shadow-blue-500/20" />
-                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.dyingGasp}</span>
-                              </div>
-                            )}
-                            {selectedPonStats.unknown > 0 && (
-                              <div className="flex items-center gap-1">
-                                <div className="w-2 h-2 rounded-full bg-purple-500 shadow-sm shadow-purple-500/20" />
-                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.unknown}</span>
+                                <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.critical}</span>
                               </div>
                             )}
                           </div>
                           <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
                           <p className="text-[11px] font-bold tabular-nums leading-none">
-                            <span className="text-slate-500 dark:text-slate-300">{selectedPonStats.total}</span>
-                            {selectedPonStats.offline > 0 && (
+                            <span className="text-slate-500 dark:text-slate-300">{powerRows.length}</span>
+                            {powerSignalCounts.noReading > 0 && (
                               <>
                                 <span className="text-slate-300 dark:text-slate-400"> / </span>
-                                <span className="text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
+                                <span className="text-violet-600 dark:text-violet-400">{powerSignalCounts.noReading}</span>
                               </>
                             )}
                           </p>
@@ -2528,16 +2542,20 @@ const App = () => {
                               className={`rounded-md border px-3 py-2 flex items-center gap-2 ${isHighlightedFromSearch ? 'border-transparent' : 'border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900'}`}
                               style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
-                              <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">ONU {onuNumber}</span>
-                                {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
+                              <div className="min-w-0 flex-1 flex flex-col gap-1">
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                {(onu.client_name || onu.name || '').trim() ? (
+                                  <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate">{clientLabel}</span>
+                                ) : (
+                                  <span className="text-[11px] text-slate-300 dark:text-slate-600">{MISSING_VALUE_PLACEHOLDER}</span>
+                                )}
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
                                 ) : (
                                   <span className={`block text-center ${serialPlaceholderClass(statusKey)}`}>{serialValue}</span>
                                 )}
                               </div>
-                              <div className="shrink-0 flex flex-col items-end gap-0.5">
+                              <div className="shrink-0 flex flex-col items-end gap-1">
                                 {hasAnyPower ? (
                                   <>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
@@ -2565,38 +2583,32 @@ const App = () => {
                           </div>
                         )}
                       </div>
-                      {selectedPonStats.total > 0 && (
+                      {powerRows.length > 0 && (
                         <div className="shrink-0 border-t border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-4 py-1 flex items-center justify-center gap-3">
-                          {selectedPonStats.online > 0 && (
+                          {powerSignalCounts.good > 0 && (
                             <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/20" />
-                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.online}</span>
+                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.good}</span>
                             </div>
                           )}
-                          {selectedPonStats.linkLoss > 0 && (
+                          {powerSignalCounts.warning > 0 && (
+                            <div className="flex items-center gap-1">
+                              <div className="w-2 h-2 rounded-full bg-amber-500 shadow-sm shadow-amber-500/20" />
+                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.warning}</span>
+                            </div>
+                          )}
+                          {powerSignalCounts.critical > 0 && (
                             <div className="flex items-center gap-1">
                               <div className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/20" />
-                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.linkLoss}</span>
-                            </div>
-                          )}
-                          {selectedPonStats.dyingGasp > 0 && (
-                            <div className="flex items-center gap-1">
-                              <div className="w-2 h-2 rounded-full bg-blue-500 shadow-sm shadow-blue-500/20" />
-                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.dyingGasp}</span>
-                            </div>
-                          )}
-                          {selectedPonStats.unknown > 0 && (
-                            <div className="flex items-center gap-1">
-                              <div className="w-2 h-2 rounded-full bg-purple-500 shadow-sm shadow-purple-500/20" />
-                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{selectedPonStats.unknown}</span>
+                              <span className="text-[11px] font-bold tabular-nums text-slate-700 dark:text-slate-200">{powerSignalCounts.critical}</span>
                             </div>
                           )}
                           <div className="w-px h-3 bg-slate-200 dark:bg-slate-700" />
-                          <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-300">{selectedPonStats.total}</span>
-                          {selectedPonStats.offline > 0 && (
+                          <span className="text-[11px] font-bold tabular-nums text-slate-400 dark:text-slate-300">{powerRows.length}</span>
+                          {powerSignalCounts.noReading > 0 && (
                             <>
                               <span className="text-[10px] text-slate-300 dark:text-slate-400">/</span>
-                              <span className="text-[11px] font-bold tabular-nums text-amber-600 dark:text-amber-400">{selectedPonStats.offline}</span>
+                              <span className="text-[11px] font-bold tabular-nums text-violet-600 dark:text-violet-400">{powerSignalCounts.noReading}</span>
                             </>
                           )}
                         </div>

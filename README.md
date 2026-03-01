@@ -5,6 +5,7 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 ## What It Does
 - Discovers and maintains OLT → Slot → PON → ONU topology.
 - Polls ONU status over SNMP with disconnect-reason mapping.
+- Persists ONU power history for trend/report APIs.
 - Shows unreachable OLTs clearly (gray state in frontend).
 - Caches hot status/power reads in Redis.
 
@@ -121,6 +122,9 @@ Roles: `admin` (full access), `operator` (full access), `viewer` (read-only, no 
 - `GET /api/onu/`
 - `GET /api/onu/{id}/power/`
 - `POST /api/onu/batch-power/`
+- `GET /api/onu/power-report/`
+- `GET /api/onu/alarm-clients/`
+- `GET /api/onu/{id}/alarm-history/`
 - `POST /api/auth/login/`
 - `POST /api/auth/logout/`
 - `GET /api/auth/me/`

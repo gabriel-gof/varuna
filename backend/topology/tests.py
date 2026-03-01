@@ -12,7 +12,17 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from topology.models import MaintenanceJob, OLT, OLTPON, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
+from topology.models import (
+    MaintenanceJob,
+    OLT,
+    OLTPON,
+    OLTSlot,
+    ONU,
+    ONULog,
+    ONUPowerSample,
+    UserProfile,
+    VendorProfile,
+)
 from topology.services.power_service import (
     POWER_FORMULA_REGISTRY,
     _formula_hundredths_dbm,
@@ -1865,6 +1875,7 @@ class SettingsApiContractTests(TestCase):
         self.assertTrue(mock_refresh_for_onus.called)
         self.assertEqual(mock_refresh_for_onus.call_args.kwargs.get('force_refresh'), False)
 
+
     def test_run_polling_rejects_unsupported_vendor_capability(self):
         vendor = build_vendor_profile(
             name='NO-POLL',
@@ -3340,6 +3351,38 @@ class NormalizeSerialTests(TestCase):
         self.assertEqual(_normalize_serial(""), "")
         self.assertEqual(_normalize_serial(None), "")
 
+    def test_normalize_serial_recovers_mangled_monu(self):
+        # 'MONU&BY' = bytes 4D4F4E55 26 42 59 (+\x00 pad) → MONU26425900
+        self.assertEqual(_normalize_serial("MONU&BY"), "MONU26425900")
+
+    def test_normalize_serial_recovers_mangled_cmsz(self):
+        # 'CMSZ; 0' = bytes 434D535A 3B 20 30 (+\x00 pad) → CMSZ3B203000
+        self.assertEqual(_normalize_serial("CMSZ; 0"), "CMSZ3B203000")
+
+    def test_normalize_serial_recovers_8byte(self):
+        # 'HWTC&BY1' = bytes 48575443 26 42 59 31 → HWTC26425931
+        self.assertEqual(_normalize_serial("HWTC&BY1"), "HWTC26425931")
+
+    def test_normalize_serial_no_mangle_valid_alnum(self):
+        # All-alnum suffix → not mangled, kept as-is
+        self.assertEqual(_normalize_serial("CMSZ3B06"), "CMSZ3B06")
+
+    def test_normalize_serial_no_mangle_12char(self):
+        # Already decoded 12-char serial — length > 8, not touched
+        self.assertEqual(_normalize_serial("CMSZ3B0699E9"), "CMSZ3B0699E9")
+
+    def test_normalize_serial_no_mangle_short(self):
+        # Too short (< 7 chars) — not touched
+        self.assertEqual(_normalize_serial("ABC&"), "ABC&")
+
+    def test_normalize_serial_no_mangle_non_alpha_vendor(self):
+        # Vendor portion contains digits — not touched
+        self.assertEqual(_normalize_serial("1234&BY"), "1234&BY")
+
+    def test_normalize_serial_recovers_lowercase(self):
+        # Lowercase input is uppercased first, then recovered
+        self.assertEqual(_normalize_serial("monu&by"), "MONU26425900")
+
 
 class AuthenticationApiTests(TestCase):
     def setUp(self):
@@ -4428,3 +4471,266 @@ class SerializerDisconnectReasonTests(TestCase):
         from topology.api.serializers import ONUNestedSerializer
         serializer = ONUNestedSerializer(self.onu)
         self.assertEqual(serializer.data['disconnect_reason'], 'dying_gasp')
+
+
+class HistoryApiAndPruneTests(TestCase):
+    def setUp(self):
+        self.vendor = build_vendor_profile(
+            name='HISTORY-API',
+            oid_templates={
+                'indexing': {
+                    'pon_encoding': '0x11rrsspp',
+                    'slot_from': 'shelf',
+                    'pon_from': 'port',
+                },
+                'discovery': {
+                    'onu_name_oid': '1.3.6.1.4.1.test.1',
+                    'onu_serial_oid': '1.3.6.1.4.1.test.2',
+                    'onu_status_oid': '1.3.6.1.4.1.test.3',
+                    'deactivate_missing': True,
+                },
+                'status': {
+                    'onu_status_oid': '1.3.6.1.4.1.test.3',
+                    'status_map': {
+                        '4': {'status': 'online'},
+                        '5': {'status': 'offline', 'reason': 'dying_gasp'},
+                        '2': {'status': 'offline', 'reason': 'link_loss'},
+                    },
+                },
+                'power': {
+                    'onu_rx_oid': '1.3.6.1.4.1.test.50',
+                    'olt_rx_oid': '1.3.6.1.4.1.test.51',
+                },
+            },
+        )
+        self.user = User.objects.create_user(username='history-admin', password='HistoryPass123!')
+        UserProfile.objects.create(user=self.user, role=UserProfile.ROLE_ADMIN)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.olt = OLT.objects.create(
+            name='OLT-HISTORY',
+            vendor_profile=self.vendor,
+            ip_address='10.0.0.70',
+            snmp_community='public',
+            snmp_port=161,
+            snmp_version='v2c',
+            discovery_enabled=True,
+            polling_enabled=True,
+            is_active=True,
+        )
+        self.slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            slot_key='1',
+            is_active=True,
+        )
+        self.pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=self.slot,
+            pon_id=1,
+            pon_key='1/1',
+            is_active=True,
+        )
+        self.onu = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=self.slot,
+            pon_ref=self.pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index='285278465.1',
+            name='Client History',
+            serial='SERIAL-HISTORY',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+    def test_power_report_returns_latest_sample_per_onu(self):
+        older = timezone.now() - timezone.timedelta(minutes=5)
+        latest = timezone.now() - timezone.timedelta(minutes=1)
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=self.onu,
+            slot_id=self.onu.slot_id,
+            pon_id=self.onu.pon_id,
+            onu_number=self.onu.onu_id,
+            onu_rx_power=-24.50,
+            olt_rx_power=-26.00,
+            read_at=older,
+            source=ONUPowerSample.SOURCE_SCHEDULER,
+        )
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=self.onu,
+            slot_id=self.onu.slot_id,
+            pon_id=self.onu.pon_id,
+            onu_number=self.onu.onu_id,
+            onu_rx_power=-22.10,
+            olt_rx_power=-23.80,
+            read_at=latest,
+            source=ONUPowerSample.SOURCE_MANUAL,
+        )
+
+        response = self.client.get('/api/onu/power-report/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        row = response.data['results'][0]
+        self.assertEqual(row['id'], self.onu.id)
+        self.assertEqual(row['onu_rx_power'], -22.1)
+        self.assertEqual(row['olt_rx_power'], -23.8)
+        self.assertEqual(row['olt_name'], self.olt.name)
+        self.assertEqual(row['power_interval_seconds'], self.olt.power_interval_seconds)
+        self.assertEqual(row['slot_id'], 1)
+        self.assertEqual(row['slot_ref_id'], self.slot.id)
+        self.assertEqual(row['pon_id'], 1)
+        self.assertEqual(row['pon_ref_id'], self.pon.id)
+        self.assertEqual(row['serial'], self.onu.serial)
+        self.assertEqual(row['status'], self.onu.status)
+
+    def test_power_report_search_filters_rows(self):
+        other_onu = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=self.slot,
+            pon_ref=self.pon,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index='285278465.2',
+            name='Another Client',
+            serial='SERIAL-OTHER',
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        now = timezone.now()
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=self.onu,
+            slot_id=self.onu.slot_id,
+            pon_id=self.onu.pon_id,
+            onu_number=self.onu.onu_id,
+            onu_rx_power=-23.10,
+            olt_rx_power=-24.40,
+            read_at=now,
+            source=ONUPowerSample.SOURCE_MANUAL,
+        )
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=other_onu,
+            slot_id=other_onu.slot_id,
+            pon_id=other_onu.pon_id,
+            onu_number=other_onu.onu_id,
+            onu_rx_power=-22.00,
+            olt_rx_power=-23.20,
+            read_at=now,
+            source=ONUPowerSample.SOURCE_MANUAL,
+        )
+
+        response = self.client.get('/api/onu/power-report/', {'search': 'serial-history'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        row = response.data['results'][0]
+        self.assertEqual(row['id'], self.onu.id)
+        self.assertEqual(row['client_name'], self.onu.name)
+
+    def test_alarm_clients_search_returns_matching_onu(self):
+        response = self.client.get('/api/onu/alarm-clients/', {'search': 'history', 'limit': 7})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        row = response.data['results'][0]
+        self.assertEqual(row['id'], self.onu.id)
+        self.assertEqual(row['client_name'], self.onu.name)
+        self.assertEqual(row['serial'], self.onu.serial)
+
+    def test_alarm_history_returns_onulog_and_power_history(self):
+        resolved_start = timezone.now() - timezone.timedelta(hours=4)
+        resolved_end = timezone.now() - timezone.timedelta(hours=3, minutes=30)
+        active_start = timezone.now() - timezone.timedelta(minutes=40)
+
+        ONULog.objects.create(
+            onu=self.onu,
+            offline_since=resolved_start,
+            offline_until=resolved_end,
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+        )
+        ONULog.objects.create(
+            onu=self.onu,
+            offline_since=active_start,
+            offline_until=None,
+            disconnect_reason=ONULog.REASON_DYING_GASP,
+        )
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=self.onu,
+            slot_id=self.onu.slot_id,
+            pon_id=self.onu.pon_id,
+            onu_number=self.onu.onu_id,
+            onu_rx_power=-21.25,
+            olt_rx_power=-23.10,
+            read_at=timezone.now() - timezone.timedelta(hours=1),
+            source=ONUPowerSample.SOURCE_SCOPED,
+        )
+
+        response = self.client.get(f'/api/onu/{self.onu.id}/alarm-history/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['onu']['id'], self.onu.id)
+        self.assertEqual(response.data['stats']['total'], 2)
+        self.assertEqual(response.data['stats']['link_loss'], 1)
+        self.assertEqual(response.data['stats']['dying_gasp'], 1)
+        self.assertEqual(response.data['stats']['active'], 1)
+        self.assertEqual(response.data['stats']['resolved'], 1)
+        self.assertEqual(len(response.data['alarms']), 2)
+        self.assertEqual(response.data['alarms'][0]['status'], 'active')
+        self.assertEqual(len(response.data['power_history']), 1)
+        self.assertEqual(response.data['power_history'][0]['onu_rx_power'], -21.25)
+
+    @override_settings(POWER_HISTORY_RETENTION_DAYS=30, ALARM_HISTORY_RETENTION_DAYS=90)
+    def test_prune_history_removes_expired_rows_only(self):
+        old_power = ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=self.onu,
+            slot_id=self.onu.slot_id,
+            pon_id=self.onu.pon_id,
+            onu_number=self.onu.onu_id,
+            onu_rx_power=-27.0,
+            olt_rx_power=-28.0,
+            read_at=timezone.now() - timezone.timedelta(days=45),
+            source=ONUPowerSample.SOURCE_SCHEDULER,
+        )
+        fresh_power = ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=self.onu,
+            slot_id=self.onu.slot_id,
+            pon_id=self.onu.pon_id,
+            onu_number=self.onu.onu_id,
+            onu_rx_power=-22.0,
+            olt_rx_power=-23.0,
+            read_at=timezone.now() - timezone.timedelta(days=2),
+            source=ONUPowerSample.SOURCE_SCHEDULER,
+        )
+        old_log = ONULog.objects.create(
+            onu=self.onu,
+            offline_since=timezone.now() - timezone.timedelta(days=100),
+            offline_until=timezone.now() - timezone.timedelta(days=95),
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+        )
+        fresh_log = ONULog.objects.create(
+            onu=self.onu,
+            offline_since=timezone.now() - timezone.timedelta(days=2),
+            offline_until=timezone.now() - timezone.timedelta(days=1),
+            disconnect_reason=ONULog.REASON_DYING_GASP,
+        )
+        active_log = ONULog.objects.create(
+            onu=self.onu,
+            offline_since=timezone.now() - timezone.timedelta(days=120),
+            offline_until=None,
+            disconnect_reason=ONULog.REASON_UNKNOWN,
+        )
+
+        call_command('prune_history')
+
+        self.assertFalse(ONUPowerSample.objects.filter(id=old_power.id).exists())
+        self.assertTrue(ONUPowerSample.objects.filter(id=fresh_power.id).exists())
+        self.assertFalse(ONULog.objects.filter(id=old_log.id).exists())
+        self.assertTrue(ONULog.objects.filter(id=fresh_log.id).exists())
+        self.assertTrue(ONULog.objects.filter(id=active_log.id).exists())

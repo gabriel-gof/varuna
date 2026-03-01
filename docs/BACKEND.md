@@ -33,10 +33,13 @@
 - `backend/topology/services/olt_health_service.py`: OLT SNMP health persistence.
 - `backend/topology/services/maintenance_runtime.py`: shared maintenance runtime helpers (status snapshot pre-checks + power collection payloads).
 - `backend/topology/services/maintenance_job_service.py`: persistent OLT maintenance queue/runner and progress lifecycle.
+- `backend/topology/services/history_service.py`: persistence helpers for ONU power history snapshots.
 - `backend/topology/services/topology_counter_service.py`: denormalized topology counter rebuild service (OLT/slot/PON totals and online/offline counts).
 - `backend/topology/management/commands/discover_onus.py`: topology discovery.
 - `backend/topology/management/commands/poll_onu_status.py`: status polling.
+- `backend/topology/management/commands/prune_history.py`: retention/prune command for alarm and power history.
 - `backend/topology/management/commands/ensure_auth_user.py`: auth user bootstrap.
+- `backend/topology/management/commands/normalize_serials.py`: one-time data cleanup that applies `_normalize_serial` to all active ONUs and bulk-updates any that changed (fixes Huawei hex-encoded serials stored before recovery logic existed). Supports `--olt-id` and `--dry-run`.
 - `backend/topology/management/commands/run_scheduler.py`: long-lived scheduler for periodic polling, discovery, power collection, and SNMP checks.
 
 ## Vendor Extensibility Contract
@@ -62,6 +65,7 @@ Default seed migrations:
 - `topology.0012_seed_huawei_vendor_profile`: `Huawei / MA5680T` with interface-map indexing, split disconnect reason OID, and config-driven power formulas.
 - `topology.0013_seed_fiberhome_vendor_profile`: initial `Fiberhome / AN5516` seed (superseded by `0014`).
 - `topology.0014_update_fiberhome_oid_columns`: updates Fiberhome to flat integer SNMP index with OID-column-based slot/pon resolution (`onu_slot_oid`/`onu_pon_oid`), byte2 onu_id extraction, enterprise OID prefix `1.3.6.1.4.1.5875`, ONU Rx/OLT Rx power using `hundredths_dbm`, and OLT Rx index translation via `olt_rx_index_formula: fiberhome_pon_onu`.
+- `topology.0018_onupowersample`: adds persisted ONU power history table used by Power Report and Alarm History trend APIs.
 
 Parser supports:
 - regex-based index extraction,
@@ -105,6 +109,11 @@ Counter lifecycle contract:
 
 This keeps API responses consistent while making `/api/olts/` and `include_topology=true` reads cheaper under high ONU volume.
 
+`include_topology=true` serialization path is optimized for high ONU counts:
+- ONU nested payload generation is built in a single pass per ONU (`ONUNestedSerializer.to_representation`) instead of multiple per-field method calls.
+- Vendor capability checks (for optional OLT RX power) are cached per OLT during serialization.
+- This keeps refresh latency stable when topology payloads include thousands of ONUs.
+
 ## Settings API Guardrails
 The OLT configuration API now enforces strict runtime-safe validation:
 - `protocol` must be `snmp`.
@@ -141,6 +150,7 @@ SNMP transport logs apply per-error throttling (default 30s window per OLT/error
 - `deactivate_missing` remains enabled.
 - `delete_lost_after_minutes` remains optional hard-delete for already inactive ONUs.
 - Serial normalization: `_normalize_serial` forces all serials to uppercase and strips sentinel values (`N/A`, `NA`, `NONE`, `NULL`, `--`, `-`) to empty string. This ensures consistent display (no mixed-case hex) and prevents firmware-specific placeholder strings from being stored as real serials. Combined with serial preservation, an ONU returning `"N/A"` keeps its previously discovered real serial.
+- Mangled serial recovery: some OLTs return 8-byte raw serials (4 ASCII vendor + 4 binary) that get UTF-8 decoded into garbage text (e.g. `MONU&BY` instead of `MONU26425900`). `_normalize_serial` detects 7-8 char strings with a 4-letter vendor prefix and non-alphanumeric suffix, re-encodes them to bytes (with null-byte padding to 8), and delegates to `_decode_hex_serial` for proper conversion. All-alphanumeric and length >8 serials are never touched.
 - Discovery serial safety: when a discovery run receives partial/empty serial rows (SNMP walk timeout gaps), existing ONU serial values are preserved instead of being overwritten with blank strings.
 - Ghost index filtering: SNMP indices where both name and serial are empty/whitespace are filtered out before the `min_safe_ratio` check. This prevents ghost SNMP entries (deregistered ONUs that still appear in walks with empty fields) from inflating the discovered count or being created as phantom ONUs.
 - Discovery DB operations use bulk create/update for ONU upserts to reduce query overhead on large OLTs.
@@ -338,6 +348,7 @@ Power refresh contract:
 - Status cache TTL is interval-aware per OLT (`max(STATUS_CACHE_TTL, polling_interval_seconds * 2, 300)`), preventing status snapshots from expiring before the next scheduled polling cycle.
 - Power cache TTL is interval-aware per OLT (`max(POWER_CACHE_TTL, power_interval_seconds * 2, 300)`), preventing early expiry during long full-OLT collections.
   This reduces partial-power gaps where a full OLT run timed out while single-PON refresh succeeded.
+- Fresh power rows are persisted to PostgreSQL (`ONUPowerSample`) during scheduler/manual/scoped power refresh flows for report queries and trend charts.
 - OLT RX is optional by vendor:
 - when `power.olt_rx_oid` is absent, backend collects only ONU RX;
 - `olt_rx_power` is returned as `null` and no OLT RX SNMP requests are executed;
@@ -360,11 +371,13 @@ The `run_scheduler` management command (`backend/topology/management/commands/ru
 - **Polling**: `call_command('poll_onu_status')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-poll-olts-per-tick`.
 - **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-discovery-olts-per-tick`.
 - **Power collection**: checks `next_power_at` per OLT and collects via `power_service` for due OLTs; skips SNMP-unreachable OLTs; supports scheduler cap `--max-power-olts-per-tick`.
+- **History prune**: `call_command('prune_history')` on scheduler interval (`--history-prune-seconds`, default from `HISTORY_PRUNE_INTERVAL_SECONDS`) to enforce retention windows.
 
 Arguments:
 - `--tick-seconds` (default 30)
 - `--snmp-check-seconds` (default 180)
 - `--snmp-check-max-backoff-seconds` (default 1800)
+- `--history-prune-seconds` (default `HISTORY_PRUNE_INTERVAL_SECONDS`, 21600)
 - optional per-tick caps: `--max-poll-olts-per-tick`, `--max-discovery-olts-per-tick`, `--max-power-olts-per-tick`
 
 Scheduler writes operational timing lines to stdout for each cycle (`poll_onu_status`, `discover_onus`, SNMP summary, power summary) so Docker logs can be used directly for tuning.
@@ -408,6 +421,23 @@ Power collection (`backend/topology/services/power_service.py`) includes:
 - Skips cache writes for empty reads (`read_at is None`), preventing overwriting good cached data with empty SNMP responses.
 - Retains last known cached power values when a forced refresh fails to produce readings: if the new pass returns empty but the cache had valid data, the cached snapshot is preserved instead of being cleared.
 
+## History Retention and Reporting APIs
+- Persisted power history model: `ONUPowerSample` (per-ONU `read_at`, RX values, and collection source).
+- Retention settings:
+  - `POWER_HISTORY_RETENTION_DAYS` (default `30`)
+  - `ALARM_HISTORY_RETENTION_DAYS` (default `90`)
+  - `HISTORY_PRUNE_INTERVAL_SECONDS` (default `21600`)
+- Prune command:
+  - `python manage.py prune_history`
+  - removes `ONUPowerSample` rows older than power retention.
+  - removes resolved `ONULog` rows (`offline_until` set) older than alarm retention.
+  - keeps active alarms (`offline_until` null).
+- Report endpoints:
+  - `GET /api/onu/power-report/?search=<term>`: flattened power rows (latest persisted sample per active ONU), with optional backend search on ONU name/serial/OLT name.
+    - row contract includes `status` (ONU runtime status), `power_interval_seconds` (OLT power cadence), and topology references (`slot_ref_id`, `pon_ref_id`) so frontend can derive stale/fresh power classes and drill into the exact topology path.
+  - `GET /api/onu/alarm-clients/?search=<term>&limit=<n>`: lightweight searchable ONU suggestions.
+  - `GET /api/onu/{id}/alarm-history/`: ONU event history + downsampled power trend points.
+
 ## Test Coverage
 Current tests validate:
 - vendor index/status mapping behavior,
@@ -444,6 +474,7 @@ Current tests validate:
 - scheduler SNMP check reachable/unreachable paths,
 - scheduler SNMP check backoff due logic (`_is_snmp_check_due`),
 - scheduler dispatches polling and discovery commands,
+- history/report APIs (`power-report`, `alarm-clients`, `alarm-history`) and `prune_history` retention behavior,
 - serializer returns `unknown` disconnect reason for offline ONUs without active log,
 - Fiberhome OID-column index parsing (`index_from: oid_columns` with `column_map` and byte2 onu_id extraction), status mapping (0-3), unmapped status defaults, nameless discovery (empty `onu_name_oid`), OLT Rx index translation (`olt_rx_index_formula: fiberhome_pon_onu`), and total index-parse failure guard (all-skipped preserves existing ONUs).
 

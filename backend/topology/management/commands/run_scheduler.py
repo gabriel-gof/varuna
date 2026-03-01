@@ -3,14 +3,15 @@ import time
 from datetime import timedelta
 from io import StringIO
 
+from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 from django.utils import timezone
 
-from topology.models import OLT, ONU
+from topology.models import OLT, ONUPowerSample
+from topology.services.maintenance_runtime import collect_power_for_olt as collect_power_runtime
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
-from topology.services.power_service import power_service
 from topology.services.snmp_service import snmp_service
 
 
@@ -59,24 +60,18 @@ def _is_snmp_check_due(olt, now, base_interval_seconds: int, max_backoff_seconds
 
 
 def _collect_power_for_olt(olt):
-    onus = list(
-        ONU.objects.filter(olt=olt, is_active=True)
-        .select_related('olt', 'olt__vendor_profile')
-        .order_by('slot_id', 'pon_id', 'onu_id')
+    payload = collect_power_runtime(
+        olt,
+        force_refresh=True,
+        include_results=False,
+        history_source=ONUPowerSample.SOURCE_SCHEDULER,
     )
-    if not onus:
-        return
-    result_map = power_service.refresh_for_onus(onus, force_refresh=True)
-    collected = sum(
-        1 for row in result_map.values()
-        if row.get('onu_rx_power') is not None or row.get('olt_rx_power') is not None
-    )
-    now = timezone.now()
-    next_at = now + timedelta(seconds=olt.power_interval_seconds or 0)
-    OLT.objects.filter(id=olt.id).update(last_power_at=now, next_power_at=next_at)
     logger.info(
-        "scheduler: power collected for OLT %s (%s/%s ONUs with readings).",
-        olt.id, collected, len(onus),
+        "scheduler: power collected for OLT %s (collected=%s/%s stored=%s).",
+        olt.id,
+        payload.get('collected_count', 0),
+        payload.get('count', 0),
+        payload.get('stored_count', 0),
     )
 
 
@@ -120,21 +115,30 @@ class Command(BaseCommand):
             default=0,
             help='Optional cap of due OLTs processed by power collection per scheduler tick',
         )
+        parser.add_argument(
+            '--history-prune-seconds',
+            type=int,
+            default=int(getattr(settings, 'HISTORY_PRUNE_INTERVAL_SECONDS', 21600) or 21600),
+            help='Seconds between history prune runs (default from HISTORY_PRUNE_INTERVAL_SECONDS)',
+        )
 
     def handle(self, *args, **options):
         tick_seconds = max(5, options['tick_seconds'])
         snmp_check_seconds = max(30, options['snmp_check_seconds'])
         snmp_check_max_backoff_seconds = max(snmp_check_seconds, options['snmp_check_max_backoff_seconds'])
+        history_prune_seconds = _optional_positive_int(options.get('history_prune_seconds'))
         self.max_poll_olts_per_tick = _optional_positive_int(options.get('max_poll_olts_per_tick'))
         self.max_discovery_olts_per_tick = _optional_positive_int(options.get('max_discovery_olts_per_tick'))
         self.max_power_olts_per_tick = _optional_positive_int(options.get('max_power_olts_per_tick'))
         last_snmp_check_at = 0
+        last_history_prune_at = 0
 
         logger.info(
-            "scheduler: starting (tick=%ss, snmp_check=%ss, snmp_check_max_backoff=%ss, max_poll=%s, max_discovery=%s, max_power=%s).",
+            "scheduler: starting (tick=%ss, snmp_check=%ss, snmp_check_max_backoff=%ss, history_prune=%ss, max_poll=%s, max_discovery=%s, max_power=%s).",
             tick_seconds,
             snmp_check_seconds,
             snmp_check_max_backoff_seconds,
+            history_prune_seconds,
             self.max_poll_olts_per_tick,
             self.max_discovery_olts_per_tick,
             self.max_power_olts_per_tick,
@@ -143,6 +147,7 @@ class Command(BaseCommand):
             "Scheduler started "
             f"(tick={tick_seconds}s, snmp_check={snmp_check_seconds}s, "
             f"snmp_check_max_backoff={snmp_check_max_backoff_seconds}s, "
+            f"history_prune={history_prune_seconds or 'off'}s, "
             f"max_poll={self.max_poll_olts_per_tick or 'all'}, "
             f"max_discovery={self.max_discovery_olts_per_tick or 'all'}, "
             f"max_power={self.max_power_olts_per_tick or 'all'})."
@@ -158,6 +163,9 @@ class Command(BaseCommand):
                         max_backoff_seconds=snmp_check_max_backoff_seconds,
                     )
                     last_snmp_check_at = now_mono
+                if history_prune_seconds and (now_mono - last_history_prune_at >= history_prune_seconds):
+                    self._run_history_prune()
+                    last_history_prune_at = now_mono
                 self._tick()
             except KeyboardInterrupt:
                 logger.info("scheduler: shutting down.")
@@ -308,3 +316,18 @@ class Command(BaseCommand):
             f"reachable={reachable_count} unreachable={unreachable_count} "
             f"elapsed={time.monotonic() - total_started:.2f}s."
         )
+
+    def _run_history_prune(self):
+        output = StringIO()
+        started = time.monotonic()
+        try:
+            call_command('prune_history', stdout=output)
+        except Exception:
+            logger.exception("scheduler: prune_history failed.")
+            return
+
+        elapsed = time.monotonic() - started
+        summary = output.getvalue().strip()
+        if summary:
+            logger.info("scheduler: prune_history (%.2fs): %s", elapsed, summary)
+            self.stdout.write(f"scheduler: prune_history ({elapsed:.2f}s): {summary}")

@@ -67,6 +67,31 @@ def _decode_hex_serial(hex_str: str) -> Optional[str]:
     return None
 
 
+def _recover_mangled_serial(serial: str) -> Optional[str]:
+    """Recover serials mangled by UTF-8 decode of raw binary bytes.
+
+    Huawei OLTs return 8-byte serials (4 ASCII vendor + 4 binary). When the
+    binary bytes happen to be valid UTF-8, _parse_value decodes them as text
+    (e.g. 0x26 → '&'). This heuristic detects such mangled strings and
+    re-encodes them back to hex for proper decoding.
+    """
+    if len(serial) < 7 or len(serial) > 8:
+        return None
+    vendor = serial[:4]
+    suffix = serial[4:]
+    if not vendor.isalpha():
+        return None
+    # Suffix must contain at least one character that looks like a binary
+    # artifact (not alphanumeric and not a common serial separator like - or _).
+    if all(c.isalnum() or c in '-_' for c in suffix):
+        return None
+    raw_bytes = serial.encode('latin-1')
+    if len(raw_bytes) < 8:
+        raw_bytes = raw_bytes + b'\x00' * (8 - len(raw_bytes))
+    hex_str = '0X' + raw_bytes.hex().upper()
+    return _decode_hex_serial(hex_str)
+
+
 def _normalize_serial(raw: str) -> str:
     if not raw:
         return ""
@@ -79,6 +104,9 @@ def _normalize_serial(raw: str) -> str:
         decoded = _decode_hex_serial(normalized)
         if decoded:
             return decoded
+    recovered = _recover_mangled_serial(normalized)
+    if recovered:
+        return recovered
     return normalized
 
 

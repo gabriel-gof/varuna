@@ -295,6 +295,72 @@ class ONULog(models.Model):
         ]
 
 
+class ONUPowerSample(models.Model):
+    """
+    Stores historical ONU power snapshots for reports and trends.
+    """
+
+    SOURCE_SCHEDULER = 'scheduler'
+    SOURCE_MANUAL = 'manual'
+    SOURCE_SCOPED = 'scoped'
+    SOURCE_CHOICES = [
+        (SOURCE_SCHEDULER, 'Scheduler'),
+        (SOURCE_MANUAL, 'Manual'),
+        (SOURCE_SCOPED, 'Scoped'),
+    ]
+
+    olt = models.ForeignKey(
+        OLT,
+        on_delete=models.CASCADE,
+        related_name='power_samples',
+        verbose_name='OLT',
+    )
+    onu = models.ForeignKey(
+        ONU,
+        on_delete=models.CASCADE,
+        related_name='power_samples',
+        verbose_name='ONU',
+    )
+    slot_id = models.IntegerField(verbose_name='Slot ID')
+    pon_id = models.IntegerField(verbose_name='PON ID')
+    onu_number = models.IntegerField(verbose_name='ONU ID')
+    onu_rx_power = models.FloatField(null=True, blank=True, verbose_name='ONU RX (dBm)')
+    olt_rx_power = models.FloatField(null=True, blank=True, verbose_name='OLT RX (dBm)')
+    read_at = models.DateTimeField(verbose_name='Leitura em')
+    source = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_SCHEDULER,
+        verbose_name='Origem',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
+
+    def __str__(self):
+        return f"ONU {self.onu_number} @ {self.olt.name} ({self.read_at.isoformat()})"
+
+    class Meta:
+        verbose_name = 'Amostra de Potência da ONU'
+        verbose_name_plural = 'Amostras de Potência da ONU'
+        indexes = [
+            models.Index(fields=['olt', 'read_at']),
+            models.Index(fields=['onu', 'read_at']),
+            models.Index(fields=['olt', 'slot_id', 'pon_id', 'read_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['onu', 'read_at'],
+                name='topology_unique_onu_power_sample',
+            ),
+            models.CheckConstraint(
+                check=(
+                    models.Q(onu_rx_power__isnull=False)
+                    | models.Q(olt_rx_power__isnull=False)
+                ),
+                name='topology_power_sample_has_value',
+            ),
+        ]
+
+
 class MaintenanceJob(models.Model):
     """
     Tracks OLT-scoped maintenance jobs (discovery, polling, power).

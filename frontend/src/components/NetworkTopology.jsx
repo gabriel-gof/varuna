@@ -788,7 +788,7 @@ export const NetworkTopology = ({
   return (
     <div className="flex flex-col w-full min-h-full bg-slate-100 dark:bg-slate-950">
       <div className="sticky top-0 z-20">
-      <div className="flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-4 pb-4 bg-slate-100 dark:bg-slate-950">
+      <div className="flex items-center gap-1.5 lg:gap-2 px-3 lg:px-8 pt-5 pb-4 bg-slate-100 dark:bg-slate-950">
         <div ref={oltFilterContainerRef} className="relative shrink-0">
           <button
             title={t('Filter OLTs')}

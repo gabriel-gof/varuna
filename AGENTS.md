@@ -107,7 +107,10 @@ A task is complete only when all applicable items are done:
   - `PATCH`: bug fixes, internal hardening, non-breaking behavior corrections.
   - `MINOR`: backward-compatible features, new optional settings, non-breaking API additions.
   - `MAJOR`: breaking API/contract/runtime changes or required operator action that is not backward-compatible.
-- Release commits should include the target version in the message (example: `release: v1.4.2`).
+- Record the impact decision in the work output/PR description (for traceability), even when `VERSION` is not changed yet.
+- `VERSION` must be updated only when cutting a release commit, not on every intermediate commit.
+- If multiple unreleased changes are grouped, release version bump follows the highest impact among them (`MAJOR` > `MINOR` > `PATCH`).
+- Release commits must include the target version in the message (example: `release: v1.4.2`) and should be taggable with the same version.
 - Rollout order is canary-first:
   - Deploy and validate on `VIANET` first.
   - Promote the same version to other stacks only after VIANET validation succeeds.

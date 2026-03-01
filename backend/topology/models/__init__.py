@@ -1,1 +1,11 @@
-from .models import VendorProfile, OLT, OLTSlot, OLTPON, ONU, ONULog, MaintenanceJob, UserProfile
+from .models import (
+    VendorProfile,
+    OLT,
+    OLTSlot,
+    OLTPON,
+    ONU,
+    ONULog,
+    ONUPowerSample,
+    MaintenanceJob,
+    UserProfile,
+)

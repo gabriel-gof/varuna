@@ -13,6 +13,11 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Role-based access: `admin`/`operator` (full), `viewer` (read-only). Enforce via `can_modify_settings()` on backend, `canManageSettings` on frontend.
 - PON descriptions are operator-managed metadata: editable by `admin`/`operator`, read-only for `viewer`, and must persist across discovery refreshes.
 - Discovery, polling, power collection, and SNMP checks are scheduled by the backend `run_scheduler` command. The frontend does not submit automatic maintenance; it relies on backend scheduling and provides manual trigger buttons.
+- Backend now persists power history snapshots in `ONUPowerSample` and exposes report APIs for the new tabs:
+  - `GET /api/onu/power-report/`
+  - `GET /api/onu/alarm-clients/`
+  - `GET /api/onu/{id}/alarm-history/`
+- Alarm and power history retention is controlled by `prune_history` + settings (`POWER_HISTORY_RETENTION_DAYS`, `ALARM_HISTORY_RETENTION_DAYS`, `HISTORY_PRUNE_INTERVAL_SECONDS`).
 - Backend container runtime starts scheduler automatically when `ENABLE_SCHEDULER=1` (enabled in current dev/prod env templates).
 - Manual settings maintenance actions use a persistent `MaintenanceJob` queue (PostgreSQL), not volatile in-memory flags.
 - Background discovery/polling jobs have runtime timeouts (`MAINTENANCE_*_TIMEOUT_SECONDS`) and stale running jobs are auto-failed to prevent permanent queue lock when SNMP settings are wrong/unreachable.

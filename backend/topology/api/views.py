@@ -1,11 +1,12 @@
 import logging
 from collections import defaultdict
+from datetime import timedelta
 from io import StringIO
 
 from django.conf import settings
 from django.core.management import call_command
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import OuterRef, Prefetch, Q, Subquery
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -21,8 +22,9 @@ from topology.api.serializers import (
     VendorProfileSerializer,
 )
 from topology.api.auth_utils import can_modify_settings
-from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, VendorProfile
+from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, ONUPowerSample, VendorProfile
 from topology.services.cache_service import cache_service
+from topology.services.history_service import persist_power_samples
 from topology.services.maintenance_job_service import maintenance_job_service
 from topology.services.maintenance_runtime import collect_power_for_olt, ensure_status_snapshot_for_power, has_usable_status_snapshot
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
@@ -1061,6 +1063,209 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset.order_by('olt', 'slot_id', 'pon_id', 'onu_id')
 
+    @staticmethod
+    def _positive_int(value, *, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = int(default)
+        if parsed < minimum:
+            parsed = minimum
+        if maximum is not None and parsed > maximum:
+            parsed = maximum
+        return parsed
+
+    @staticmethod
+    def _downsample_samples(samples, *, max_points: int = 240):
+        if len(samples) <= max_points:
+            return samples
+        if max_points <= 1:
+            return [samples[-1]]
+
+        last_index = len(samples) - 1
+        step = last_index / float(max_points - 1)
+        selected = []
+        seen = set()
+        for i in range(max_points):
+            index = int(round(i * step))
+            if index in seen:
+                continue
+            seen.add(index)
+            selected.append(samples[index])
+        if selected[0] is not samples[0]:
+            selected[0] = samples[0]
+        if selected[-1] is not samples[-1]:
+            selected[-1] = samples[-1]
+        return selected
+
+    @action(detail=False, methods=['get'], url_path='power-report')
+    def power_report(self, request):
+        search = str(request.query_params.get('search') or '').strip()
+        queryset = ONU.objects.filter(is_active=True, olt__is_active=True).select_related('olt')
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(serial__icontains=search)
+                | Q(olt__name__icontains=search)
+            )
+
+        latest_sample_qs = ONUPowerSample.objects.filter(onu_id=OuterRef('pk')).order_by('-read_at')
+        queryset = queryset.annotate(
+            latest_onu_rx_power=Subquery(latest_sample_qs.values('onu_rx_power')[:1]),
+            latest_olt_rx_power=Subquery(latest_sample_qs.values('olt_rx_power')[:1]),
+            latest_power_read_at=Subquery(latest_sample_qs.values('read_at')[:1]),
+        ).order_by('olt__name', 'slot_id', 'pon_id', 'onu_id')
+
+        rows_source = list(queryset)
+        rows = []
+        for onu in rows_source:
+            rows.append({
+                'id': onu.id,
+                'olt_id': onu.olt_id,
+                'olt_name': onu.olt.name,
+                'power_interval_seconds': onu.olt.power_interval_seconds,
+                'slot_id': onu.slot_id,
+                'slot_ref_id': onu.slot_ref_id,
+                'pon_id': onu.pon_id,
+                'pon_ref_id': onu.pon_ref_id,
+                'onu_number': onu.onu_id,
+                'client_name': onu.name or '',
+                'serial': onu.serial or '',
+                'status': onu.status,
+                'onu_rx_power': onu.latest_onu_rx_power,
+                'olt_rx_power': onu.latest_olt_rx_power,
+                'power_read_at': (
+                    onu.latest_power_read_at.isoformat()
+                    if getattr(onu, 'latest_power_read_at', None) else None
+                ),
+            })
+        return Response({'count': len(rows), 'results': rows})
+
+    @action(detail=False, methods=['get'], url_path='alarm-clients')
+    def alarm_clients(self, request):
+        search = str(request.query_params.get('search') or '').strip()
+        limit = self._positive_int(request.query_params.get('limit'), default=7, minimum=1, maximum=50)
+        if not search:
+            return Response({'count': 0, 'results': []})
+
+        queryset = (
+            ONU.objects.filter(is_active=True, olt__is_active=True)
+            .select_related('olt')
+            .filter(
+                Q(name__icontains=search)
+                | Q(serial__icontains=search)
+            )
+            .order_by('name', 'serial', 'olt__name', 'slot_id', 'pon_id', 'onu_id')[:limit]
+        )
+        rows = [
+            {
+                'id': onu.id,
+                'client_name': onu.name or f"ONU {onu.onu_id}",
+                'serial': onu.serial or '',
+                'olt_id': onu.olt_id,
+                'olt_name': onu.olt.name,
+                'slot_id': onu.slot_id,
+                'pon_id': onu.pon_id,
+                'onu_number': onu.onu_id,
+            }
+            for onu in queryset
+        ]
+        return Response({'count': len(rows), 'results': rows})
+
+    @action(detail=True, methods=['get'], url_path='alarm-history')
+    def alarm_history(self, request, pk=None):
+        onu = self.get_object()
+        alarm_days = self._positive_int(request.query_params.get('alarm_days'), default=30, minimum=1, maximum=365)
+        power_days = self._positive_int(request.query_params.get('power_days'), default=7, minimum=1, maximum=30)
+        alarm_limit = self._positive_int(request.query_params.get('alarm_limit'), default=200, minimum=1, maximum=1000)
+        max_power_points = self._positive_int(request.query_params.get('max_power_points'), default=240, minimum=20, maximum=1000)
+
+        now = timezone.now()
+        alarm_cutoff = now - timedelta(days=alarm_days)
+        power_cutoff = now - timedelta(days=power_days)
+
+        alarm_logs = list(
+            ONULog.objects.filter(onu_id=onu.id, offline_since__gte=alarm_cutoff)
+            .order_by('-offline_since')[:alarm_limit]
+        )
+
+        stats = {
+            'total': 0,
+            'link_loss': 0,
+            'dying_gasp': 0,
+            'unknown': 0,
+            'active': 0,
+            'resolved': 0,
+        }
+        alarms = []
+        for log in alarm_logs:
+            reason = log.disconnect_reason or ONULog.REASON_UNKNOWN
+            if reason not in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP):
+                reason = ONULog.REASON_UNKNOWN
+
+            status_value = 'active' if log.offline_until is None else 'resolved'
+            duration_seconds = None
+            if log.offline_since and log.offline_until:
+                duration_seconds = max(0, int((log.offline_until - log.offline_since).total_seconds()))
+
+            stats['total'] += 1
+            stats[reason] += 1
+            stats[status_value] += 1
+
+            alarms.append(
+                {
+                    'id': log.id,
+                    'event_type': reason,
+                    'start_at': log.offline_since.isoformat() if log.offline_since else None,
+                    'end_at': log.offline_until.isoformat() if log.offline_until else None,
+                    'status': status_value,
+                    'duration_seconds': duration_seconds,
+                    'disconnect_window_start': (
+                        log.disconnect_window_start.isoformat()
+                        if log.disconnect_window_start else None
+                    ),
+                    'disconnect_window_end': (
+                        log.disconnect_window_end.isoformat()
+                        if log.disconnect_window_end else None
+                    ),
+                }
+            )
+
+        power_samples = list(
+            ONUPowerSample.objects.filter(onu_id=onu.id, read_at__gte=power_cutoff)
+            .order_by('read_at')
+        )
+        power_samples = self._downsample_samples(power_samples, max_points=max_power_points)
+        power_history = [
+            {
+                'timestamp': sample.read_at.isoformat(),
+                'onu_rx_power': sample.onu_rx_power,
+                'olt_rx_power': sample.olt_rx_power,
+            }
+            for sample in power_samples
+        ]
+
+        return Response(
+            {
+                'onu': {
+                    'id': onu.id,
+                    'olt_id': onu.olt_id,
+                    'olt_name': onu.olt.name,
+                    'slot_id': onu.slot_id,
+                    'pon_id': onu.pon_id,
+                    'onu_number': onu.onu_id,
+                    'client_name': onu.name or '',
+                    'serial': onu.serial or '',
+                },
+                'stats': stats,
+                'alarm_days': alarm_days,
+                'power_days': power_days,
+                'alarms': alarms,
+                'power_history': power_history,
+                'generated_at': now.isoformat(),
+            }
+        )
+
     @action(detail=True, methods=['get'])
     def power(self, request, pk=None):
         """
@@ -1071,7 +1276,15 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         refresh = _is_true(request.query_params.get('refresh', 'false'))
         if refresh:
             self._ensure_status_snapshot_for_power(onu.olt)
+        refresh_started_at = timezone.now()
         result_map = power_service.refresh_for_onus([onu], force_refresh=refresh)
+        if refresh:
+            persist_power_samples(
+                [onu],
+                result_map,
+                source=ONUPowerSample.SOURCE_SCOPED,
+                min_read_at=refresh_started_at - timedelta(minutes=1),
+            )
         data = result_map.get(
             onu.id,
             {
@@ -1159,7 +1372,15 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             if onus_requiring_status_refresh:
                 self._run_scoped_status_refresh(onus_requiring_status_refresh, selection_scope)
 
+        refresh_started_at = timezone.now()
         result_map = power_service.refresh_for_onus(onus, force_refresh=refresh)
+        if refresh:
+            persist_power_samples(
+                onus,
+                result_map,
+                source=ONUPowerSample.SOURCE_SCOPED,
+                min_read_at=refresh_started_at - timedelta(minutes=1),
+            )
         results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
         return Response({'count': len(results), 'results': results})
 

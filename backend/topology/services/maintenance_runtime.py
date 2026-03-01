@@ -6,7 +6,8 @@ from typing import Callable, Dict, Optional
 from django.core.management import call_command
 from django.utils import timezone
 
-from topology.models import OLT, ONU
+from topology.models import OLT, ONU, ONUPowerSample
+from topology.services.history_service import persist_power_samples
 from topology.services.power_service import power_service
 
 
@@ -88,6 +89,7 @@ def collect_power_for_olt(
     *,
     force_refresh: bool = True,
     include_results: bool = True,
+    history_source: str = ONUPowerSample.SOURCE_MANUAL,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> Dict:
     _emit_progress(progress_callback, 5, "Preparing power collection.")
@@ -99,7 +101,14 @@ def collect_power_for_olt(
         .select_related('olt', 'olt__vendor_profile')
         .order_by('slot_id', 'pon_id', 'onu_id')
     )
+    refresh_started_at = timezone.now()
     result_map = power_service.refresh_for_onus(onus, force_refresh=force_refresh)
+    stored_count = persist_power_samples(
+        onus,
+        result_map,
+        source=history_source,
+        min_read_at=refresh_started_at - timedelta(minutes=1),
+    )
     results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
 
     _emit_progress(progress_callback, 85, "Finalizing power collection.")
@@ -134,15 +143,17 @@ def collect_power_for_olt(
         'skipped_offline_count': skipped_offline_count,
         'skipped_unknown_count': skipped_unknown_count,
         'collected_count': collected_count,
+        'stored_count': stored_count,
         'last_power_at': olt.last_power_at,
         'next_power_at': olt.next_power_at,
     }
     logger.warning(
-        "Power refresh OLT %s summary: total=%s attempted=%s collected=%s skipped_offline=%s skipped_unknown=%s.",
+        "Power refresh OLT %s summary: total=%s attempted=%s collected=%s stored=%s skipped_offline=%s skipped_unknown=%s.",
         olt.id,
         payload['count'],
         payload['attempted_count'],
         payload['collected_count'],
+        payload['stored_count'],
         payload['skipped_offline_count'],
         payload['skipped_unknown_count'],
     )

@@ -1,5 +1,14 @@
 from django.contrib import admin
-from topology.models.models import UserProfile, VendorProfile, OLT, OLTSlot, OLTPON, ONU, ONULog
+from topology.models.models import (
+    UserProfile,
+    VendorProfile,
+    OLT,
+    OLTSlot,
+    OLTPON,
+    ONU,
+    ONULog,
+    ONUPowerSample,
+)
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
@@ -51,3 +60,21 @@ class ONULogAdmin(admin.ModelAdmin):
     list_display = ('onu', 'offline_since', 'offline_until', 'disconnect_reason')
     list_filter = ('disconnect_reason',)
     date_hierarchy = 'offline_since'
+
+
+@admin.register(ONUPowerSample)
+class ONUPowerSampleAdmin(admin.ModelAdmin):
+    list_display = (
+        'olt',
+        'onu',
+        'slot_id',
+        'pon_id',
+        'onu_number',
+        'onu_rx_power',
+        'olt_rx_power',
+        'read_at',
+        'source',
+    )
+    list_filter = ('olt', 'source')
+    search_fields = ('onu__name', 'onu__serial', 'olt__name')
+    date_hierarchy = 'read_at'

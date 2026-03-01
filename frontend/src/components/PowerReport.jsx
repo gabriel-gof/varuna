@@ -18,9 +18,10 @@ const parseTimestampMs = (value) => {
   return Number.isFinite(parsed) ? parsed : null
 }
 const formatPowerValue = (value) => {
-  if (value === null || value === undefined || value === '') return '—'
+  if (value === null || value === undefined || value === '') return null
   const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return String(value)
+  if (!Number.isFinite(numeric)) return null
+  if (Object.is(numeric, -0) || (numeric > -0.005 && numeric < 0.005)) return null
   return `${numeric.toFixed(2)} dBm`
 }
 
@@ -235,8 +236,8 @@ export const PowerReport = () => {
 
   const sortOptions = useMemo(() => [
     { id: 'worst_onu_rx', label: 'ONU RX ↓' },
-    { id: 'best_onu_rx', label: 'ONU RX ↑' },
     { id: 'worst_olt_rx', label: 'OLT RX ↓' },
+    { id: 'best_onu_rx', label: 'ONU RX ↑' },
     { id: 'best_olt_rx', label: 'OLT RX ↑' },
   ], [])
 
@@ -336,12 +337,12 @@ export const PowerReport = () => {
 
   return (
     <div className="h-full flex flex-col bg-slate-100 dark:bg-slate-950">
-      <div className="flex-1 min-h-0 flex flex-col px-3 lg:px-8 py-4 lg:py-6">
+      <div className="flex-1 min-h-0 flex flex-col px-3 lg:px-8 pt-5 pb-4">
 
         {/* Toolbar */}
         <div className="flex flex-col gap-2 lg:gap-0 mb-4">
-          {/* Row 1: Location filters — centered on mobile, left on desktop */}
-          <div className="flex items-center justify-center lg:justify-start gap-1.5">
+          {/* Row 1: Location filters — full width on mobile, left on desktop */}
+          <div className="flex items-center gap-1">
             <FilterDropdown
               value={selectedOltId}
               onChange={changeOlt}
@@ -349,7 +350,7 @@ export const PowerReport = () => {
               label={selectedOltId && availableOlts.find(o => o.id === selectedOltId) ? availableOlts.find(o => o.id === selectedOltId).name : t('All OLTs')}
               isActive={selectedOltId !== null}
               icon={<Server className="w-3.5 h-3.5" />}
-              width="w-[136px]"
+              width="flex-1 lg:flex-none lg:w-[120px]"
             />
             <FilterDropdown
               value={selectedSlot}
@@ -359,7 +360,7 @@ export const PowerReport = () => {
               isActive={selectedSlot !== null}
               disabled={!hasOlt || availableSlots.length === 0}
               icon={<CircuitBoard className="w-3.5 h-3.5" />}
-              width="w-[136px]"
+              width="flex-1 lg:flex-none lg:w-[120px]"
             />
             <FilterDropdown
               value={selectedPon}
@@ -369,7 +370,7 @@ export const PowerReport = () => {
               isActive={selectedPon !== null}
               disabled={selectedSlot === null || availablePons.length === 0}
               icon={<Cable className="w-3.5 h-3.5" />}
-              width="w-[136px]"
+              width="flex-1 lg:flex-none lg:w-[120px]"
             />
             {/* Desktop only: signal pills + sort inline */}
             <div className="hidden lg:flex items-center gap-1 ml-auto">
@@ -381,26 +382,26 @@ export const PowerReport = () => {
                     key={pill.id}
                     type="button"
                     onClick={() => toggleSignal(pill.id)}
-                    className={`inline-flex items-center gap-1.5 h-8 px-1.5 rounded-md transition-all active:scale-[0.97] ${
+                    className={`inline-flex items-center gap-1 h-7 px-1 rounded transition-all active:scale-[0.97] ${
                       isOn
                         ? 'hover:bg-slate-200/50 dark:hover:bg-slate-700/40'
                         : 'opacity-35 hover:opacity-55'
                     }`}
                   >
-                    <span className="h-4 w-4 flex items-center justify-center shrink-0">
+                    <span className="h-3.5 w-3.5 flex items-center justify-center shrink-0">
                       {isOn ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" strokeWidth={3} />
+                        <Check className="w-3 h-3 text-slate-600 dark:text-slate-400" strokeWidth={3} />
                       ) : (
                         <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
                       )}
                     </span>
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${pill.dot}`} />
                     <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 hidden xl:inline">{pill.label}</span>
-                    <span className={`text-[11px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
+                    <span className={`text-[10px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
                   </button>
                 )
               })}
-              <div className="w-px h-5 bg-slate-200 dark:bg-slate-700/60 mx-1" />
+              <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
               <SortDropdown
                 value={sortMode}
                 onChange={setSortMode}
@@ -420,21 +421,21 @@ export const PowerReport = () => {
                   key={pill.id}
                   type="button"
                   onClick={() => toggleSignal(pill.id)}
-                  className={`inline-flex items-center gap-1 h-8 px-1 rounded-md transition-all active:scale-[0.97] ${
+                  className={`inline-flex items-center gap-1 h-7 px-1 rounded transition-all active:scale-[0.97] ${
                     isOn
                       ? 'hover:bg-slate-200/50 dark:hover:bg-slate-700/40'
                       : 'opacity-35 hover:opacity-55'
                   }`}
                 >
-                  <span className="h-4 w-4 flex items-center justify-center shrink-0">
+                  <span className="h-3.5 w-3.5 flex items-center justify-center shrink-0">
                     {isOn ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" strokeWidth={3} />
+                      <Check className="w-3 h-3 text-slate-600 dark:text-slate-400" strokeWidth={3} />
                     ) : (
                       <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
                     )}
                   </span>
                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${pill.dot}`} />
-                  <span className={`text-[11px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
+                  <span className={`text-[10px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
                 </button>
               )
             })}
@@ -443,6 +444,7 @@ export const PowerReport = () => {
               onChange={setSortMode}
               options={sortOptions}
               label={currentSortLabel}
+              width="w-[calc((100%_-_8px)_/_3)]"
             />
           </div>
         </div>
@@ -463,10 +465,10 @@ export const PowerReport = () => {
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '17%' }} />
-                <col style={{ width: '15%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '19%' }} />
+                <col style={{ width: '14%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '18%' }} />
               </colgroup>
               <thead>
                 <tr>
@@ -476,8 +478,8 @@ export const PowerReport = () => {
                   <th className="px-2 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">ONU</th>
                   <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>
                   <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Serial')}</th>
-                  <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">{t('ONU RX')}</th>
-                  <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">{t('OLT RX')}</th>
+                  <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">{t('ONU RX')}</th>
+                  <th className="px-3 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">{t('OLT RX')}</th>
                   <th className="px-2.5 py-2.5 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
                 </tr>
               </thead>
@@ -492,10 +494,10 @@ export const PowerReport = () => {
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '17%' }} />
-                <col style={{ width: '15%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '19%' }} />
+                <col style={{ width: '14%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '18%' }} />
               </colgroup>
               <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                 {loading && rows.length === 0 && (
@@ -513,12 +515,14 @@ export const PowerReport = () => {
                   </tr>
                 )}
                 {visibleRows.map((row, idx) => {
-                  const onuRxColor = powerColorClass(getPowerColor(row.onuRx, 'onu_rx', row.oltId))
-                  const oltRxColor = powerColorClass(getPowerColor(row.oltRx, 'olt_rx', row.oltId))
+                  const onuRxFormatted = formatPowerValue(row.onuRx)
+                  const oltRxFormatted = formatPowerValue(row.oltRx)
+                  const onuRxColor = onuRxFormatted ? powerColorClass(getPowerColor(row.onuRx, 'onu_rx', row.oltId)) : ''
+                  const oltRxColor = oltRxFormatted ? powerColorClass(getPowerColor(row.oltRx, 'olt_rx', row.oltId)) : ''
                   return (
                     <tr
                       key={`d-${row.id ?? idx}`}
-                      className="h-11 odd:bg-white even:bg-slate-50/50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-emerald-50/40 dark:hover:bg-emerald-500/[0.04] transition-colors"
+                      className="h-11 odd:bg-white even:bg-slate-50/50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors"
                     >
                       <td className="px-3 py-0 align-middle text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">{row.oltName}</td>
                       <td className="px-2 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{row.slotNumber}</td>
@@ -526,8 +530,8 @@ export const PowerReport = () => {
                       <td className="px-2 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{row.onuId}</td>
                       <td className="px-3 py-0 align-middle text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate">{row.clientName || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
                       <td className="px-3 py-0 align-middle text-[11px] font-semibold font-mono tracking-tight text-slate-500 dark:text-slate-400 truncate">{row.serial || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
-                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-center ${onuRxColor}`}>{formatPowerValue(row.onuRx)}</td>
-                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-center ${oltRxColor}`}>{formatPowerValue(row.oltRx)}</td>
+                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || '—'}</td>
+                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || '—'}</td>
                       <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap tabular-nums text-center">{formatReadingAt(row.readingAt, i18n.language)}</td>
                     </tr>
                   )
@@ -558,40 +562,49 @@ export const PowerReport = () => {
               </div>
             )}
             {visibleRows.map((row, idx) => {
-              const onuRxColor = powerColorClass(getPowerColor(row.onuRx, 'onu_rx', row.oltId))
-              const oltRxColor = powerColorClass(getPowerColor(row.oltRx, 'olt_rx', row.oltId))
-              const hasPower = row.onuRx != null || row.oltRx != null
+              const onuRxFormatted = formatPowerValue(row.onuRx)
+              const oltRxFormatted = formatPowerValue(row.oltRx)
+              const onuRxColor = onuRxFormatted ? powerColorClass(getPowerColor(row.onuRx, 'onu_rx', row.oltId)) : ''
+              const oltRxColor = oltRxFormatted ? powerColorClass(getPowerColor(row.oltRx, 'olt_rx', row.oltId)) : ''
+              const hasPower = onuRxFormatted || oltRxFormatted
+              const hasSerial = row.serial && row.serial !== '—' && row.serial !== '-'
               return (
                 <div
                   key={`m-${row.id ?? idx}`}
-                  className="rounded-md border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-3 py-2 flex items-center gap-2 active:bg-emerald-50/40 dark:active:bg-emerald-500/[0.04] transition-colors"
+                  className="rounded-md border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-3 py-2 flex items-center gap-2 active:bg-slate-50 dark:active:bg-slate-800/60 transition-colors"
                 >
-                  <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                    <span className="text-[10px] font-semibold uppercase text-slate-400 dark:text-slate-500">
+                  <div className="min-w-0 flex-1 flex flex-col gap-1">
+                    <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums uppercase">
                       {[
                         !selectedOltId && row.oltName,
-                        selectedSlot === null && `${t('Slot')} ${row.slotNumber}`,
-                        selectedPon === null && `PON ${row.ponNumber}`,
-                        `ONU ${row.onuId}`,
+                        [
+                          selectedSlot === null && row.slotNumber,
+                          selectedPon === null && row.ponNumber,
+                          row.onuId,
+                        ].filter(Boolean).join('/'),
                       ].filter(Boolean).join(' · ')}
                     </span>
-                    <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">
-                      {row.clientName || <span className="text-slate-300 dark:text-slate-600">—</span>}
-                    </span>
-                    <span className="text-[11px] font-semibold font-mono tracking-tight text-slate-500 dark:text-slate-400 truncate">
-                      {row.serial || '—'}
-                    </span>
+                    {row.clientName ? (
+                      <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate">{row.clientName}</span>
+                    ) : (
+                      <span className="text-[11px] text-slate-300 dark:text-slate-600">—</span>
+                    )}
+                    {hasSerial ? (
+                      <span className="text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{row.serial}</span>
+                    ) : (
+                      <span className="text-[11px] text-slate-300 dark:text-slate-600">—</span>
+                    )}
                   </div>
-                  <div className="shrink-0 flex flex-col items-end gap-0.5">
+                  <div className="shrink-0 flex flex-col items-end gap-1">
                     {hasPower ? (
                       <>
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                           <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                          <span className={`font-semibold ${onuRxColor}`}>{formatPowerValue(row.onuRx)}</span>
+                          <span className={`font-semibold ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || '—'}</span>
                         </span>
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                           <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                          <span className={`font-semibold ${oltRxColor}`}>{formatPowerValue(row.oltRx)}</span>
+                          <span className={`font-semibold ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || '—'}</span>
                         </span>
                         <span className="text-[10px] font-semibold tabular-nums text-slate-400 dark:text-slate-500">
                           {formatReadingAt(row.readingAt, i18n.language)}
@@ -616,17 +629,17 @@ export const PowerReport = () => {
   )
 }
 
-const SortDropdown = ({ value, onChange, options, label }) => (
+const SortDropdown = ({ value, onChange, options, label, width }) => (
   <DropdownMenu.Root>
     <DropdownMenu.Trigger asChild>
       <button
-        className="relative h-9 w-[136px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all active:scale-[0.97]"
+        className={`relative h-7 rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all active:scale-[0.97] ${width || 'w-[120px]'}`}
       >
-        <ArrowDownUp className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 shrink-0" />
-        <span className="absolute left-7 right-7 top-1/2 -translate-y-1/2 text-center text-[10px] font-black uppercase tracking-[0.03em] whitespace-nowrap overflow-hidden text-ellipsis text-emerald-600 dark:text-emerald-400">
+        <ArrowDownUp className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 shrink-0" />
+        <span className="absolute left-6 right-6 top-1/2 -translate-y-1/2 text-center text-[10px] font-black uppercase tracking-[0.03em] whitespace-nowrap overflow-hidden text-ellipsis text-slate-700 dark:text-slate-300">
           {label}
         </span>
-        <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" />
+        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3" />
       </button>
     </DropdownMenu.Trigger>
     <DropdownMenu.Portal>
@@ -645,13 +658,13 @@ const SortDropdown = ({ value, onChange, options, label }) => (
           >
             <span className="absolute left-2 h-4 w-4 flex items-center justify-center">
               {value === option.id ? (
-                <Check className="w-3.5 h-3.5 text-emerald-600" strokeWidth={3} />
+                <Check className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" strokeWidth={3} />
               ) : (
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
               )}
             </span>
             <span className={`text-[10px] font-black uppercase tracking-[0.04em] text-center ${
-              value === option.id ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-200'
+              value === option.id ? 'text-slate-800 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400'
             }`}>
               {option.label}
             </span>
@@ -667,21 +680,19 @@ const FilterDropdown = ({ value, onChange, options, label, icon, isActive, disab
     <DropdownMenu.Trigger asChild disabled={disabled}>
       <button
         disabled={disabled}
-        className={`flex items-center gap-1.5 h-9 rounded-lg border transition-all active:scale-[0.97] pl-2.5 pr-2 ${width || ''} ${disabled
-            ? 'cursor-not-allowed border-slate-200/60 bg-slate-50 dark:border-slate-700/30 dark:bg-slate-800/40'
-            : isActive
-              ? 'bg-white dark:bg-slate-800 border-emerald-400/60 dark:border-emerald-500/30 ring-1 ring-emerald-400/20 shadow-sm'
-              : 'bg-white dark:bg-slate-800 border-slate-200/80 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-sm'
+        className={`flex items-center gap-1 h-7 rounded-md border transition-all active:scale-[0.97] pl-2 pr-1.5 ${width || ''} ${disabled
+            ? 'cursor-not-allowed opacity-45 border-slate-200/60 bg-slate-50 dark:border-slate-700/30 dark:bg-slate-800/40'
+            : 'bg-white dark:bg-slate-800 border-slate-200/80 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-sm'
           }`}
       >
-        {icon && <span className={`shrink-0 ${disabled ? 'text-slate-400 dark:text-slate-500' : isActive ? 'text-emerald-500 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>{icon}</span>}
-        <span className={`flex-1 min-w-0 text-[10px] font-black uppercase tracking-[0.03em] truncate text-left outline-none ${disabled
+        {icon && <span className="shrink-0 [&>svg]:w-3 [&>svg]:h-3 text-slate-400 dark:text-slate-500">{icon}</span>}
+        <span className={`flex-1 min-w-0 text-[10px] font-black uppercase tracking-[0.03em] truncate text-center outline-none ${disabled
             ? 'text-slate-400 dark:text-slate-500'
-            : isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-300'
+            : 'text-slate-700 dark:text-slate-300'
           }`}>
           {label}
         </span>
-        <ChevronDown className={`w-3 h-3 shrink-0 transition-colors ${disabled ? 'text-slate-400 dark:text-slate-500' : isActive ? 'text-emerald-500 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`} />
+        <ChevronDown className="w-2.5 h-2.5 shrink-0 text-slate-400 dark:text-slate-500" />
       </button>
     </DropdownMenu.Trigger>
     <DropdownMenu.Portal>
@@ -694,17 +705,17 @@ const FilterDropdown = ({ value, onChange, options, label, icon, isActive, disab
           <DropdownMenu.Item
             key={option.id}
             onSelect={() => onChange(option.id)}
-            className={`relative flex items-center gap-2 px-2 py-1.5 rounded-lg outline-none cursor-pointer transition-colors ${value === option.id ? 'bg-emerald-50/70 dark:bg-emerald-500/10' : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+            className={`relative flex items-center gap-2 px-2 py-1.5 rounded-lg outline-none cursor-pointer transition-colors ${value === option.id ? 'bg-slate-100 dark:bg-slate-800/60' : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
               }`}
           >
             <span className="h-4 w-4 flex items-center justify-center shrink-0">
               {value === option.id ? (
-                <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" strokeWidth={3} />
+                <Check className="w-3.5 h-3.5 text-slate-700 dark:text-slate-300" strokeWidth={3} />
               ) : (
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
               )}
             </span>
-            <span className={`text-[10px] font-black uppercase tracking-[0.04em] truncate ${value === option.id ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-300'}`}>
+            <span className={`text-[10px] font-black uppercase tracking-[0.04em] truncate ${value === option.id ? 'text-slate-800 dark:text-slate-200' : 'text-slate-600 dark:text-slate-300'}`}>
               {option.label}
             </span>
           </DropdownMenu.Item>

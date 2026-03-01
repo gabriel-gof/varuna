@@ -83,6 +83,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - `OLTSlot` and `OLTPON`: discovered topology map.
 - `ONU`: per-OLT endpoint with active/inactive lifecycle and status.
 - `ONULog`: offline event history and disconnect reasons.
+- `ONUPowerSample`: persisted ONU power snapshots used by Power Report and Alarm History trend APIs.
 - `MaintenanceJob`: persistent OLT-scoped maintenance queue/progress state for manual discovery/polling/power actions.
 
 ## Key Backend Flows
@@ -128,7 +129,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - Frontend hides settings tab and action buttons for viewers via `canManageSettings` derived state.
 
 ## Background Collection Scheduling
-- The `run_scheduler` management command is the primary scheduler. It runs as a long-lived background process alongside the Django server and dispatches polling, discovery, power collection, and SNMP reachability checks on configurable tick intervals.
+- The `run_scheduler` management command is the primary scheduler. It runs as a long-lived background process alongside the Django server and dispatches polling, discovery, power collection, SNMP reachability checks, and periodic history pruning on configurable tick intervals.
 - Discovery and polling commands support due-awareness: they skip OLTs that are not yet due based on `next_*_at` timestamps or computed intervals.
 - Discovery and polling commands can be capped per run (`--max-olts`) so large fleets can be processed in controlled batches (oldest due first).
 - Scheduler supports per-tick OLT caps (`max-poll`, `max-discovery`, `max-power`) for load shaping during high-scale deployments.

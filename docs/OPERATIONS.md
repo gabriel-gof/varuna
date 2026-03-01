@@ -28,7 +28,7 @@ Development service URLs:
 - Backend health endpoint: `http://localhost:8000/api/healthz/`
 
 Backend collection contract:
-- `ENABLE_SCHEDULER=1` must stay enabled in runtime env so discovery, polling, SNMP checks, and power collection run without any frontend session.
+- `ENABLE_SCHEDULER=1` must stay enabled in runtime env so discovery, polling, SNMP checks, power collection, and history pruning run without any frontend session.
 - Collections are shared backend state for all users; frontend reads snapshots and does not need to trigger SNMP collection for normal topology usage.
 - Recommended topology cache TTL for fast first load is `300s` (`OLT_TOPOLOGY_LIST_CACHE_TTL` and `OLT_TOPOLOGY_DETAIL_CACHE_TTL`).
 - Backend SNMP transport uses `puresnmp`.
@@ -203,6 +203,7 @@ backend/venv/bin/python backend/manage.py migrate
 
 Recent schema additions include OLT interval fields such as `power_interval_seconds`, so migrations are mandatory before opening topology/settings.
 Recent schema additions also include persistent maintenance queue tracking (`topology_maintenancejob`, migration `0015_maintenancejob_and_more`), so applying migrations is mandatory before using background discovery/polling/power actions.
+Recent schema additions also include persisted power history (`topology_onupowersample`, migration `0018_onupowersample`) required for Power Report and Alarm History data endpoints.
 
 If running with Docker, also recreate the stack so containers pick up new code and schema:
 ```bash
@@ -268,8 +269,13 @@ backend/venv/bin/python backend/manage.py discover_onus --force
 backend/venv/bin/python backend/manage.py poll_onu_status --force
 ```
 
+Prune historical data manually:
+```bash
+backend/venv/bin/python backend/manage.py prune_history
+```
+
 ## Background Collection (Scheduler)
-The `run_scheduler` management command runs as a background process when backend env sets `ENABLE_SCHEDULER=1`. Current dev/prod env templates enable this by default. It automatically dispatches polling, discovery, power collection, and SNMP reachability checks.
+The `run_scheduler` management command runs as a background process when backend env sets `ENABLE_SCHEDULER=1`. Current dev/prod env templates enable this by default. It automatically dispatches polling, discovery, power collection, SNMP reachability checks, and history prune cycles.
 
 ```bash
 # Scheduler starts automatically when ENABLE_SCHEDULER=1.
@@ -283,6 +289,7 @@ docker compose -f docker-compose.dev.yml exec backend python manage.py run_sched
 docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler \
   --snmp-check-seconds 180 \
   --snmp-check-max-backoff-seconds 1800 \
+  --history-prune-seconds 21600 \
   --max-poll-olts-per-tick 20 \
   --max-discovery-olts-per-tick 10 \
   --max-power-olts-per-tick 10
@@ -313,6 +320,11 @@ SNMP check behavior is adaptive:
 - Reachable OLTs are checked on the base `--snmp-check-seconds` cadence.
 - Repeatedly unreachable OLTs are checked less frequently (exponential backoff) up to `--snmp-check-max-backoff-seconds`.
 - Scheduler logs include SNMP summary lines (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed) for tuning verification.
+
+History retention knobs:
+- `POWER_HISTORY_RETENTION_DAYS` (default `30`)
+- `ALARM_HISTORY_RETENTION_DAYS` (default `90`)
+- `HISTORY_PRUNE_INTERVAL_SECONDS` (default `21600`)
 
 ## Manual Maintenance Queue Observability
 Background actions triggered from Settings (`background=true`) are persisted in `MaintenanceJob` and can be observed via API:
