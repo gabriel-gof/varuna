@@ -343,7 +343,7 @@ export const PowerReport = () => {
         {/* Toolbar */}
         <div className="flex flex-col gap-2 lg:gap-0 mb-4">
           {/* Row 1: OLT + Slot + PON + Sort (mobile) | OLT + Slot + PON + pills + sort (desktop) */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 relative">
             {/* Mobile: OLT in flex wrapper for equal sizing with sort */}
             <div className="flex-1 min-w-0 lg:contents">
               <FilterDropdown
@@ -383,8 +383,8 @@ export const PowerReport = () => {
                 width="w-full"
               />
             </div>
-            {/* Desktop: pills + sort far right */}
-            <div className="hidden lg:flex items-center gap-1 ml-auto">
+            {/* Desktop: pills absolutely centered over full row */}
+            <div className="hidden lg:flex items-center gap-0.5 absolute left-1/2 -translate-x-1/2 pointer-events-auto">
               {signalPills.map((pill) => {
                 const isOn = signalFilter.length === 0 || signalFilter.includes(pill.id)
                 const count = pill.id === 'good' ? stats.good : pill.id === 'warning' ? stats.warning : pill.id === 'critical' ? stats.critical : stats.noReading
@@ -413,8 +413,10 @@ export const PowerReport = () => {
                 )
               })}
               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('Total ONUs')}</span>
-              <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500 mr-3">{locationFiltered.length}</span>
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('Total')}</span>
+              <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500">{locationFiltered.length}</span>
+            </div>
+            <div className="hidden lg:block ml-auto">
               <SortDropdown
                 value={sortMode}
                 onChange={setSortMode}
@@ -425,7 +427,7 @@ export const PowerReport = () => {
           </div>
 
           {/* Row 2 (mobile only): Signal pills centered */}
-          <div className="flex lg:hidden items-center justify-center gap-1 w-full">
+          <div className="flex lg:hidden items-center justify-center gap-0.5 w-full">
             {signalPills.map((pill) => {
               const isOn = signalFilter.length === 0 || signalFilter.includes(pill.id)
               const count = pill.id === 'good' ? stats.good : pill.id === 'warning' ? stats.warning : pill.id === 'critical' ? stats.critical : stats.noReading

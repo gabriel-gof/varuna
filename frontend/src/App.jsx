@@ -2175,7 +2175,7 @@ const App = () => {
                                   key={onu.id}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 transition-colors
+                                    h-11 transition-colors
                                     ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
@@ -2376,18 +2376,20 @@ const App = () => {
                       <div className="shrink-0 overflow-hidden pr-[7px] bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
-                            <col style={{ width: '10%' }} />
-                            {hasOnuNames && <col style={{ width: '24%' }} />}
-                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: '8%' }} />
+                            {hasOnuNames && <col style={{ width: '20%' }} />}
+                            <col style={{ width: hasOnuNames ? '18%' : '26%' }} />
+                            <col style={{ width: hasOnuNames ? '16%' : '20%' }} />
+                            {supportsSelectedOltRxPower && <col style={{ width: hasOnuNames ? '16%' : '20%' }} />}
+                            <col style={{ width: hasOnuNames ? '22%' : '26%' }} />
                           </colgroup>
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU')}</th>
                               {hasOnuNames && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>}
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
-                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Power')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('ONU RX')}</th>
+                              {supportsSelectedOltRxPower && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('OLT RX')}</th>}
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
                             </tr>
                           </thead>
@@ -2396,11 +2398,12 @@ const App = () => {
                       <div className="overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
-                            <col style={{ width: '10%' }} />
-                            {hasOnuNames && <col style={{ width: '24%' }} />}
-                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: '8%' }} />
+                            {hasOnuNames && <col style={{ width: '20%' }} />}
+                            <col style={{ width: hasOnuNames ? '18%' : '26%' }} />
+                            <col style={{ width: hasOnuNames ? '16%' : '20%' }} />
+                            {supportsSelectedOltRxPower && <col style={{ width: hasOnuNames ? '16%' : '20%' }} />}
+                            <col style={{ width: hasOnuNames ? '22%' : '26%' }} />
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
@@ -2409,12 +2412,13 @@ const App = () => {
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                               const hasOnuRx = onuRx !== null
                               const hasOltRx = oltRx !== null
-                              const hasAnyPower = hasOnuRx || (supportsSelectedOltRxPower && hasOltRx)
                               const grayPower = 'text-slate-500 dark:text-slate-400'
                               const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
                               const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
                               const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
                               const readingAt = formatReadingAt(readAt, i18n.language)
+                              const onuRxFormatted = hasOnuRx ? formatPowerValue(onuRx) : null
+                              const oltRxFormatted = hasOltRx ? formatPowerValue(oltRx) : null
                               const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
                               const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
                                 (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
@@ -2426,7 +2430,7 @@ const App = () => {
                                   key={`power-${onu.id}`}
                                   data-onu-highlight={isHighlightedFromSearch ? 'true' : 'false'}
                                   className={`
-                                    h-14 transition-colors
+                                    h-11 transition-colors
                                     ${isHighlightedFromSearch ? 'relative z-10' : 'odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'}
                                   `}
                                   style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
@@ -2446,25 +2450,15 @@ const App = () => {
                                       <span className={serialPlaceholderClass(statusKey)}>{serialValue}</span>
                                     )}
                                   </td>
-                                  <td className="px-2.5 py-0 align-middle text-center">
-                                    {!hasAnyPower ? (
-                                      <span className={`inline-block text-[11px] font-semibold tabular-nums ${disconnectPlaceholderClass(statusKey)}`}>{MISSING_VALUE_PLACEHOLDER}</span>
-                                    ) : (
-                                      <div className="inline-flex flex-col items-center gap-1 leading-snug tabular-nums">
-                                        <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
-                                          <span className="inline-block w-8 text-left">{t('ONU')}</span>
-                                          <span className={`w-[76px] text-right font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
-                                        </span>
-                                        {supportsSelectedOltRxPower && (
-                                          <span className="inline-flex items-center text-[11px] font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
-                                            <span className="inline-block w-8 text-left">{t('OLT')}</span>
-                                            <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
-                                          </span>
-                                        )}
-                                      </div>
-                                    )}
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>
+                                    {onuRxFormatted || '—'}
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${hasReading ? 'text-slate-500 dark:text-slate-400' : disconnectPlaceholderClass(statusKey)}`}>
+                                  {supportsSelectedOltRxPower && (
+                                    <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>
+                                      {oltRxFormatted || '—'}
+                                    </td>
+                                  )}
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${hasReading ? 'text-slate-500 dark:text-slate-400' : 'text-slate-300 dark:text-slate-600'}`}>
                                     {readingAt}
                                   </td>
                                 </tr>
@@ -2472,7 +2466,7 @@ const App = () => {
                             })}
                             {powerRows.length === 0 && (
                               <tr>
-                                <td colSpan={hasOnuNames ? 5 : 4} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
+                                <td colSpan={hasOnuNames ? (supportsSelectedOltRxPower ? 6 : 5) : (supportsSelectedOltRxPower ? 5 : 4)} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
                                 </td>
                               </tr>
