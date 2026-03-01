@@ -76,6 +76,7 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
     return { state: 'gray', reason: 'status_stale' }
   }
 
+  const hasTopologyTree = Object.prototype.hasOwnProperty.call(olt || {}, 'slots')
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   if (activeSlots.length > 0) {
     const slotStates = activeSlots.map((slot) => getSlotHealthState(slot))
@@ -93,6 +94,15 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
       return { state: 'yellow', reason: 'some_slots_red' }
     }
     return { state: 'green', reason: 'slots_healthy' }
+  }
+
+  // Count-only payloads (/api/olts/ without include_topology) can be briefly stale on reload.
+  // Avoid transient warning colors until the topology tree is loaded.
+  if (!hasTopologyTree) {
+    if (olt?.snmp_reachable === true) {
+      return { state: 'green', reason: 'reachable_without_topology' }
+    }
+    return { state: 'neutral', reason: 'topology_not_loaded' }
   }
 
   const online = asCount(olt?.online_count)

@@ -381,6 +381,7 @@ export const NetworkTopology = ({
   const oltFilterContainerRef = useRef(null)
   const alarmMenuContainerRef = useRef(null)
   const hasInitializedDefaultExpansionRef = useRef(false)
+  const wasAlarmEnabledRef = useRef(alarmEnabled)
   const normalizedSearchTerm = normalizeSearch(searchTerm)
 
   useEffect(() => {
@@ -671,7 +672,9 @@ export const NetworkTopology = ({
   }, [searchedOlts])
 
   useEffect(() => {
-    if (!alarmEnabled) return
+    const wasEnabled = wasAlarmEnabledRef.current
+    wasAlarmEnabledRef.current = alarmEnabled
+    if (!alarmEnabled || wasEnabled) return
     setOpenNodes((prev) => {
       const next = { ...prev }
       filteredOlts.forEach((olt) => {
@@ -688,6 +691,7 @@ export const NetworkTopology = ({
   const renderOlt = (olt) => {
     const sourceOlt = searchedOltMap.get(String(olt.id)) || olt
     const oltId = `olt-${olt.id}`
+    const isOltOpen = Boolean(openNodes[oltId])
     const derivedHealth = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
     const oltHealthState = derivedHealth?.state || getOltHealthState(sourceOlt, activeAlarmReasons)
     const isGrayTree = oltHealthState === 'gray'
@@ -707,70 +711,75 @@ export const NetworkTopology = ({
           label={olt.name}
           sublabel={`${slotCount} ${t('SLOTS')}`}
           alertCount={redSlotCount}
-          isOpen={openNodes[oltId]}
+          isOpen={isOltOpen}
           onToggle={() => toggleNode(oltId)}
           healthState={oltHealthState}
           counters={showPonCounts && !isGrayTree ? aggregateStats(sourceOlt, 'olt') : null}
         >
-          {asList(olt?.slots)
-            .filter(isActiveEntity)
-            .map((slot) => {
-              const slotId = `slot-${slot.id}`
-              const sourceSlot = sourceSlotMap.get(String(slot.id)) || slot
-              const sourcePonMap = new Map(
-                asList(sourceSlot?.pons)
-                  .filter(Boolean)
-                  .map((pon) => [String(pon.id), pon])
-              )
-              const slotHealthState = isGrayTree ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons)
-              const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
-              const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
-              const redPonCount = !isGrayTree
-                ? asList(sourceSlot?.pons).filter(isActiveEntity).filter((pon) => getPonHealthState(pon, activeAlarmReasons).state === 'red').length
-                : 0
-              return (
-                <NetworkNode
-                  key={slotId}
-                  type="slot"
-                  label={`${t('SLOT')} ${pad2(slotNumber)}`}
-                  sublabel={`${ponCount} ${t('PONS')}`}
-                  alertCount={redPonCount}
-                  isOpen={openNodes[slotId]}
-                  onToggle={() => toggleNode(slotId)}
-                  healthState={slotHealthState}
-                  counters={showPonCounts && !isGrayTree ? aggregateStats(sourceSlot, 'slot') : null}
-                >
-                  {asList(slot?.pons)
-                    .filter(isActiveEntity)
-                    .map((pon) => {
-                      const sourcePon = sourcePonMap.get(String(pon.id)) || pon
-                      const ponHealth = isGrayTree
-                        ? { state: 'gray', stats: { online: 0, dyingGasp: 0, linkLoss: 0, unknown: 0 }, selectedOfflineCount: 0 }
-                        : getPonHealthState(sourcePon, activeAlarmReasons)
-                      const stats = ponHealth.stats
-                      const ponId = pon.id
-                      const ponNumber = pon.pon_number ?? pon.pon_id ?? pon.id
-                      return (
-                        <NetworkNode
-                          key={ponId}
-                          type="pon"
-                          label={`PON ${pad2(ponNumber)}`}
-                          stats={{
-                            online: stats.online,
-                            dyingGasp: stats.dyingGasp,
-                            linkLoss: stats.linkLoss,
-                            unknown: stats.unknown
-                          }}
-                          active={String(selectedPonId) === String(ponId)}
-                          onToggle={() => onPonSelect(ponId)}
-                          healthState={ponHealth.state}
-                          counters={showPonCounts && !isGrayTree ? { total: stats.total, offline: stats.offline } : null}
-                        />
-                      )
-                    })}
-                </NetworkNode>
-              )
-            })}
+          {isOltOpen
+            ? asList(olt?.slots)
+                .filter(isActiveEntity)
+                .map((slot) => {
+                  const slotId = `slot-${slot.id}`
+                  const isSlotOpen = Boolean(openNodes[slotId])
+                  const sourceSlot = sourceSlotMap.get(String(slot.id)) || slot
+                  const sourcePonMap = new Map(
+                    asList(sourceSlot?.pons)
+                      .filter(Boolean)
+                      .map((pon) => [String(pon.id), pon])
+                  )
+                  const slotHealthState = isGrayTree ? 'gray' : getSlotHealthState(sourceSlot, activeAlarmReasons)
+                  const ponCount = slot.pon_count ?? slot.pons?.length ?? 0
+                  const slotNumber = slot.slot_number ?? slot.slot_id ?? slot.id
+                  const redPonCount = !isGrayTree
+                    ? asList(sourceSlot?.pons).filter(isActiveEntity).filter((pon) => getPonHealthState(pon, activeAlarmReasons).state === 'red').length
+                    : 0
+                  return (
+                    <NetworkNode
+                      key={slotId}
+                      type="slot"
+                      label={`${t('SLOT')} ${pad2(slotNumber)}`}
+                      sublabel={`${ponCount} ${t('PONS')}`}
+                      alertCount={redPonCount}
+                      isOpen={isSlotOpen}
+                      onToggle={() => toggleNode(slotId)}
+                      healthState={slotHealthState}
+                      counters={showPonCounts && !isGrayTree ? aggregateStats(sourceSlot, 'slot') : null}
+                    >
+                      {isSlotOpen
+                        ? asList(slot?.pons)
+                            .filter(isActiveEntity)
+                            .map((pon) => {
+                              const sourcePon = sourcePonMap.get(String(pon.id)) || pon
+                              const ponHealth = isGrayTree
+                                ? { state: 'gray', stats: { online: 0, dyingGasp: 0, linkLoss: 0, unknown: 0 }, selectedOfflineCount: 0 }
+                                : getPonHealthState(sourcePon, activeAlarmReasons)
+                              const stats = ponHealth.stats
+                              const ponId = pon.id
+                              const ponNumber = pon.pon_number ?? pon.pon_id ?? pon.id
+                              return (
+                                <NetworkNode
+                                  key={ponId}
+                                  type="pon"
+                                  label={`PON ${pad2(ponNumber)}`}
+                                  stats={{
+                                    online: stats.online,
+                                    dyingGasp: stats.dyingGasp,
+                                    linkLoss: stats.linkLoss,
+                                    unknown: stats.unknown
+                                  }}
+                                  active={String(selectedPonId) === String(ponId)}
+                                  onToggle={() => onPonSelect(ponId)}
+                                  healthState={ponHealth.state}
+                                  counters={showPonCounts && !isGrayTree ? { total: stats.total, offline: stats.offline } : null}
+                                />
+                              )
+                            })
+                        : null}
+                    </NetworkNode>
+                  )
+                })
+            : null}
         </NetworkNode>
       </div>
     )

@@ -11,7 +11,9 @@ import {
   X,
   RotateCw,
   Check,
-  ArrowDownUp
+  ArrowDownUp,
+  Zap,
+  History
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
@@ -19,6 +21,8 @@ import { LoginPage } from './components/LoginPage'
 import { VarunaIcon } from './components/VarunaIcon'
 import { NetworkTopology } from './components/NetworkTopology'
 import { SettingsPanel } from './components/SettingsPanel'
+import { PowerReport } from './components/PowerReport'
+import { AlarmHistory } from './components/AlarmHistory'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api, { updatePonDescription } from './services/api'
 import { InlineEditableText } from './components/InlineEditableText'
@@ -215,6 +219,54 @@ const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
   return asList(nextOlts).map((nextOlt) => mergeOltPowerSnapshots(previousByOltId.get(String(nextOlt?.id)), nextOlt))
 }
 
+const arePonStatsEqual = (left = {}, right = {}) => {
+  return (
+    Number(left.total || 0) === Number(right.total || 0) &&
+    Number(left.online || 0) === Number(right.online || 0) &&
+    Number(left.offline || 0) === Number(right.offline || 0) &&
+    Number(left.linkLoss || 0) === Number(right.linkLoss || 0) &&
+    Number(left.dyingGasp || 0) === Number(right.dyingGasp || 0) &&
+    Number(left.unknown || 0) === Number(right.unknown || 0)
+  )
+}
+
+const enrichTopologyWithPonStats = (olts) => {
+  return asList(olts).map((olt) => {
+    const slots = asList(olt?.slots)
+    if (!slots.length) return olt
+
+    let oltChanged = false
+    const nextSlots = slots.map((slot) => {
+      const pons = asList(slot?.pons)
+      if (!pons.length) return slot
+
+      let slotChanged = false
+      const nextPons = pons.map((pon) => {
+        const stats = getOnuStats(asList(pon?.onus))
+        if (arePonStatsEqual(pon?.stats, stats)) return pon
+        slotChanged = true
+        return {
+          ...pon,
+          stats
+        }
+      })
+
+      if (!slotChanged) return slot
+      oltChanged = true
+      return {
+        ...slot,
+        pons: nextPons
+      }
+    })
+
+    if (!oltChanged) return olt
+    return {
+      ...olt,
+      slots: nextSlots
+    }
+  })
+}
+
 const mergeBaseOltsPreservingTopology = (previousOlts, nextBaseOlts) => {
   const previousByOltId = new Map(asList(previousOlts).map((olt) => [String(olt?.id), olt]))
   return asList(nextBaseOlts).map((nextOlt) => {
@@ -231,6 +283,7 @@ const mergeBaseOltsPreservingTopology = (previousOlts, nextBaseOlts) => {
 
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
+const TOPOLOGY_REFRESH_MIN_INTERVAL_MS = 30_000
 const SEARCH_HIGHLIGHT_STYLE = {
   boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.6)',
   background: 'rgba(16, 185, 129, 0.06)',
@@ -335,7 +388,8 @@ const patchPonStatusRows = (olts, target, rows) => {
 
         return {
           ...pon,
-          onus: nextOnus
+          onus: nextOnus,
+          stats: getOnuStats(nextOnus)
         }
       })
 
@@ -392,6 +446,23 @@ const mapTopologyToSlots = (olt, topology) => {
     const slotId = `${olt.id}-${slot.slot_id}`
     const pons = asList(slot?.pons).map((pon) => {
       const ponId = `${olt.id}-${slot.slot_id}-${pon.pon_id}`
+      const onus = asList(pon?.onus).map((onu) => ({
+        id: onu.id,
+        onu_number: onu.onu_number ?? onu.onu_id,
+        onu_id: onu.onu_id ?? onu.onu_number,
+        client_name: onu.client_name || onu.name,
+        name: onu.name,
+        serial_number: onu.serial_number ?? onu.serial,
+        serial: onu.serial ?? onu.serial_number,
+        status: onu.status,
+        disconnect_reason: onu.disconnect_reason,
+        offline_since: onu.offline_since,
+        disconnect_window_start: onu.disconnect_window_start,
+        disconnect_window_end: onu.disconnect_window_end,
+        onu_rx_power: onu.onu_rx_power ?? onu.onu_rx ?? onu.rx_onu ?? null,
+        olt_rx_power: onu.olt_rx_power ?? onu.olt_rx ?? onu.rx_olt ?? null,
+        power_read_at: onu.power_read_at ?? onu.read_at ?? onu.power_timestamp ?? null
+      }))
       return {
         id: ponId,
         db_id: pon.id,
@@ -400,23 +471,8 @@ const mapTopologyToSlots = (olt, topology) => {
         pon_key: pon.pon_key,
         name: pon.pon_name,
         description: pon.description || '',
-        onus: asList(pon?.onus).map((onu) => ({
-          id: onu.id,
-          onu_number: onu.onu_number ?? onu.onu_id,
-          onu_id: onu.onu_id ?? onu.onu_number,
-          client_name: onu.client_name || onu.name,
-          name: onu.name,
-          serial_number: onu.serial_number ?? onu.serial,
-          serial: onu.serial ?? onu.serial_number,
-          status: onu.status,
-          disconnect_reason: onu.disconnect_reason,
-          offline_since: onu.offline_since,
-          disconnect_window_start: onu.disconnect_window_start,
-          disconnect_window_end: onu.disconnect_window_end,
-          onu_rx_power: onu.onu_rx_power ?? onu.onu_rx ?? onu.rx_onu ?? null,
-          olt_rx_power: onu.olt_rx_power ?? onu.olt_rx ?? onu.rx_olt ?? null,
-          power_read_at: onu.power_read_at ?? onu.read_at ?? onu.power_timestamp ?? null
-        }))
+        onus,
+        stats: getOnuStats(onus)
       }
     })
     return {
@@ -443,12 +499,36 @@ const findPonById = (olts, ponId) => {
   for (const olt of olts) {
     for (const slot of asList(olt?.slots)) {
       for (const pon of asList(slot?.pons)) {
-        if (String(pon?.id) === String(ponId)) {
+        if (String(pon?.id) === String(ponId) || String(pon?.db_id) === String(ponId)) {
           return { olt, slot, pon }
         }
       }
     }
   }
+  return null
+}
+
+const findPonByCoordinates = (olts, target = {}) => {
+  const normalizedOltId = String(target?.oltId ?? '')
+  const normalizedSlotNumber = String(target?.slotNumber ?? '')
+  const normalizedPonNumber = String(target?.ponNumber ?? '')
+  if (!normalizedOltId || !normalizedSlotNumber || !normalizedPonNumber) return null
+
+  const olt = asList(olts).find((candidate) => String(candidate?.id) === normalizedOltId)
+  if (!olt) return null
+
+  for (const slot of asList(olt?.slots)) {
+    const slotNumber = slot?.slot_number ?? slot?.slot_id ?? slot?.id
+    if (String(slotNumber) !== normalizedSlotNumber) continue
+
+    for (const pon of asList(slot?.pons)) {
+      const ponNumber = pon?.pon_number ?? pon?.pon_id ?? pon?.id
+      if (String(ponNumber) === normalizedPonNumber) {
+        return { olt, slot, pon }
+      }
+    }
+  }
+
   return null
 }
 
@@ -559,7 +639,7 @@ const App = () => {
   })
   const [activeNav, setActiveNav] = useState(() => {
     const saved = localStorage.getItem('varuna_active_tab')
-    return ['topology', 'settings'].includes(saved) ? saved : 'topology'
+    return ['topology', 'settings', 'power-report', 'alarm-history'].includes(saved) ? saved : 'topology'
   })
 
   useEffect(() => {
@@ -567,10 +647,11 @@ const App = () => {
   }, [activeNav])
 
   useEffect(() => {
+    if (!authChecked || !authToken) return
     if (!canManageSettings && activeNav === 'settings') {
       setActiveNav('topology')
     }
-  }, [canManageSettings, activeNav])
+  }, [authChecked, authToken, canManageSettings, activeNav])
 
   useEffect(() => {
     try {
@@ -642,6 +723,8 @@ const App = () => {
   const previousBodyUserSelectRef = useRef('')
   const previousHtmlCursorRef = useRef('')
   const fetchOltsInflightRef = useRef({})
+  const topologySnapshotLoadedRef = useRef(false)
+  const lastTopologyFetchAtRef = useRef(0)
 
   useEffect(() => {
     try {
@@ -677,7 +760,9 @@ const App = () => {
         }
 
         const res = await api.get('/olts/', { params: { include_topology: 'true' } })
-        const nextOlts = normalizeList(res.data)
+        const nextOlts = enrichTopologyWithPonStats(normalizeList(res.data))
+        topologySnapshotLoadedRef.current = true
+        lastTopologyFetchAtRef.current = Date.now()
         setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, nextOlts))
         return { ok: true, includeTopology: true }
       } catch (err) {
@@ -702,7 +787,9 @@ const App = () => {
               }
             })
           )
-          setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, enriched))
+          topologySnapshotLoadedRef.current = true
+          lastTopologyFetchAtRef.current = Date.now()
+          setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, enrichTopologyWithPonStats(enriched)))
           return { ok: true, usedFallback: true, includeTopology: true }
         } catch (fallbackErr) {
           const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, t('Failed to load OLT data'), t), t)
@@ -734,18 +821,56 @@ const App = () => {
 
   useEffect(() => {
     if (!authToken) return
-    const includeTopology = activeNav === 'topology' || !canManageSettings
+    const isTopologyNav = activeNav === 'topology'
+    const includeTopology = isTopologyNav && !topologySnapshotLoadedRef.current
     fetchOlts({ includeTopology })
+
+    let topologyDeferredTimer = null
+    if (isTopologyNav && topologySnapshotLoadedRef.current) {
+      // Render topology instantly from cached in-memory tree, then refresh full topology in background.
+      const now = Date.now()
+      const needsFreshTopology = now - (lastTopologyFetchAtRef.current || 0) >= TOPOLOGY_REFRESH_MIN_INTERVAL_MS
+      if (needsFreshTopology) {
+        topologyDeferredTimer = setTimeout(() => {
+          void fetchOlts({ includeTopology: true })
+        }, 450)
+      }
+    }
+
     if (canManageSettings) {
       fetchVendorProfiles()
     } else {
       setVendorProfiles([])
     }
     const interval = setInterval(() => {
-      void fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
+      void fetchOlts({ includeTopology: activeNav === 'topology' })
     }, 30000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      if (topologyDeferredTimer) clearTimeout(topologyDeferredTimer)
+    }
   }, [activeNav, authToken, canManageSettings, fetchOlts, fetchVendorProfiles])
+
+  useEffect(() => {
+    if (topologySnapshotLoadedRef.current) return
+    const hasAnyTopologySlots = olts.some((olt) => asList(olt?.slots).length > 0)
+    if (hasAnyTopologySlots) {
+      topologySnapshotLoadedRef.current = true
+    }
+  }, [olts])
+
+  useEffect(() => {
+    if (!authToken) return
+    if (activeNav === 'topology') return
+    if (topologySnapshotLoadedRef.current) return
+    if (!olts.length) return
+
+    const timer = setTimeout(() => {
+      if (topologySnapshotLoadedRef.current) return
+      void fetchOlts({ includeTopology: true, surfaceError: false })
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [activeNav, authToken, fetchOlts, olts.length])
 
   useEffect(() => {
     oltsRef.current = olts
@@ -785,7 +910,7 @@ const App = () => {
       if (now - lastResumeRefreshAtRef.current < RESUME_REFRESH_THROTTLE_MS) return
       lastResumeRefreshAtRef.current = now
       setHealthTick(now)
-      void fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
+      void fetchOlts({ includeTopology: activeNav === 'topology' })
     }
 
     const handleVisibilityChange = () => {
@@ -864,7 +989,7 @@ const App = () => {
       'create',
       async () => {
         const response = await api.post('/olts/', payload)
-        fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
+        fetchOlts({ includeTopology: activeNav === 'topology' })
         return response.data
       },
       t('OLT created successfully')
@@ -877,7 +1002,7 @@ const App = () => {
       `update:${oltId}`,
       async () => {
         const response = await api.patch(`/olts/${oltId}/`, payload)
-        fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
+        fetchOlts({ includeTopology: activeNav === 'topology' })
         return response.data
       },
       t('OLT updated successfully'),
@@ -891,7 +1016,7 @@ const App = () => {
       `delete:${oltId}`,
       async () => {
         await api.delete(`/olts/${oltId}/`)
-        fetchOlts({ includeTopology: activeNav === 'topology' || !canManageSettings })
+        fetchOlts({ includeTopology: activeNav === 'topology' })
         return true
       },
       t('OLT removed successfully'),
@@ -949,6 +1074,46 @@ const App = () => {
       selectedPonDataRef.current = null
     }
   }, [rawSelectedPonData, selectedPonId])
+
+  const handlePowerReportDrillToTopology = useCallback((target = {}) => {
+    const fallbackMatch = findPonByCoordinates(olts, target)
+    const resolvedOltId = target?.oltId ?? fallbackMatch?.olt?.id ?? null
+    const resolvedSlotId = target?.slotRefId ?? fallbackMatch?.slot?.id ?? null
+    const resolvedPonId = target?.ponRefId ?? fallbackMatch?.pon?.id ?? fallbackMatch?.pon?.db_id ?? null
+    const normalizedOltId = resolvedOltId !== null && resolvedOltId !== undefined ? String(resolvedOltId) : ''
+    const normalizedPonId = resolvedPonId !== null && resolvedPonId !== undefined ? String(resolvedPonId) : null
+    const normalizedSerial = String(target?.serial || '').trim()
+    const normalizedClientName = String(target?.clientName || '').trim()
+    const searchTerm = normalizedSerial || normalizedClientName || (
+      target?.onuNumber !== null && target?.onuNumber !== undefined
+        ? `ONU ${target.onuNumber}`
+        : ''
+    )
+
+    if (normalizedOltId) {
+      setSelectedOltIds((previous) => (
+        previous.includes(normalizedOltId) ? previous : [...previous, normalizedOltId]
+      ))
+    }
+
+    if (normalizedPonId || normalizedOltId || searchTerm) {
+      const nextSearchMatch = {
+        searchTerm,
+        serial: normalizedSerial,
+        clientName: normalizedClientName,
+        onuId: target?.onuNumber ?? null,
+        oltId: resolvedOltId,
+      }
+      if (resolvedSlotId !== null && resolvedSlotId !== undefined) nextSearchMatch.slotId = resolvedSlotId
+      if (normalizedPonId) nextSearchMatch.ponId = normalizedPonId
+      setSelectedSearchMatch(nextSearchMatch)
+    } else {
+      setSelectedSearchMatch(null)
+    }
+
+    setSelectedPonId(normalizedPonId)
+    setActiveNav('topology')
+  }, [olts])
 
   const collectPowerForSelectedPon = useCallback(async () => {
     const oltId = toIntOrNull(selectedPonData?.olt?.id)
@@ -1041,6 +1206,7 @@ const App = () => {
   }, [activeTab, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, refreshCooldownActive, showPonPanelError, t])
 
   useEffect(() => {
+    if (activeNav !== 'topology') return
     if (!selectedPonId) {
       selectedPonMissingCyclesRef.current = 0
       return
@@ -1057,7 +1223,7 @@ const App = () => {
       setSelectedSearchMatch(null)
       setSelectedPonId(null)
     }
-  }, [selectedPonId, rawSelectedPonData, loading, error, olts.length])
+  }, [activeNav, selectedPonId, rawSelectedPonData, loading, error, olts.length])
 
   const selectedSlotNumber = selectedPonData?.slot?.slot_number ?? selectedPonData?.slot?.slot_id
   const selectedPonNumber = selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id
@@ -1228,12 +1394,12 @@ const App = () => {
   const powerSortOptions = useMemo(() => {
     const options = [
       { id: 'default', label: t('Default order') },
-      { id: 'worst_onu_rx', label: t('Worst ONU RX') },
-      { id: 'best_onu_rx', label: t('Best ONU RX') }
+      { id: 'worst_onu_rx', label: 'ONU RX ↓' },
+      { id: 'best_onu_rx', label: 'ONU RX ↑' }
     ]
     if (supportsSelectedOltRxPower) {
-      options.splice(2, 0, { id: 'worst_olt_rx', label: t('Worst OLT RX') })
-      options.push({ id: 'best_olt_rx', label: t('Best OLT RX') })
+      options.splice(2, 0, { id: 'worst_olt_rx', label: 'OLT RX ↓' })
+      options.push({ id: 'best_olt_rx', label: 'OLT RX ↑' })
     }
     return options
   }, [supportsSelectedOltRxPower, t])
@@ -1497,19 +1663,35 @@ const App = () => {
         <div className="flex items-center gap-1 h-full">
           <button
             onClick={() => setActiveNav('topology')}
-            className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <Network className="w-[18px] h-[18px] shrink-0" />
-            <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Topology')}</span>
+            <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Topology')}</span>
             {activeNav === 'topology' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+          </button>
+          <button
+            onClick={() => setActiveNav('power-report')}
+            className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'power-report' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+          >
+            <Zap className="w-[18px] h-[18px] shrink-0" />
+            <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Power Report')}</span>
+            {activeNav === 'power-report' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+          </button>
+          <button
+            onClick={() => setActiveNav('alarm-history')}
+            className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'alarm-history' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+          >
+            <History className="w-[18px] h-[18px] shrink-0" />
+            <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Alarm History')}</span>
+            {activeNav === 'alarm-history' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
           {canManageSettings && (
             <button
               onClick={() => setActiveNav('settings')}
-              className={`flex items-center justify-center gap-2.5 px-4 h-full sm:w-[156px] transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+              className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
             >
               <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
-              <span className="text-[12px] font-black uppercase tracking-wider hidden sm:block">{t('Settings')}</span>
+              <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Settings')}</span>
               {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
             </button>
           )}
@@ -1606,7 +1788,28 @@ const App = () => {
               : 'flex-1'}
           `}
         >
-          {activeNav === 'topology' || !canManageSettings ? (
+          {activeNav === 'power-report' ? (
+            <PowerReport onDrillToTopology={handlePowerReportDrillToTopology} />
+          ) : activeNav === 'alarm-history' ? (
+            <AlarmHistory />
+          ) : activeNav === 'settings' && canManageSettings ? (
+            <SettingsPanel
+              olts={olts}
+              vendorProfiles={vendorProfiles}
+              loading={loading}
+              vendorLoading={vendorLoading}
+              actionError={settingsActionError}
+              actionMessage={settingsActionMessage}
+              onCreateOlt={createOlt}
+              onUpdateOlt={updateOlt}
+              onDeleteOlt={deleteOlt}
+              onRunDiscovery={runDiscovery}
+              onRunPolling={runPolling}
+              onRefreshPower={refreshPower}
+              actionBusy={settingsActionBusy}
+              oltHealthById={oltHealthById}
+            />
+          ) : (
             <NetworkTopology
               olts={olts}
               loading={loading}
@@ -1632,23 +1835,6 @@ const App = () => {
                   return prevId === nextId ? null : nextId
                 })
               }}
-            />
-          ) : (
-            <SettingsPanel
-              olts={olts}
-              vendorProfiles={vendorProfiles}
-              loading={loading}
-              vendorLoading={vendorLoading}
-              actionError={settingsActionError}
-              actionMessage={settingsActionMessage}
-              onCreateOlt={createOlt}
-              onUpdateOlt={updateOlt}
-              onDeleteOlt={deleteOlt}
-              onRunDiscovery={runDiscovery}
-              onRunPolling={runPolling}
-              onRefreshPower={refreshPower}
-              actionBusy={settingsActionBusy}
-              oltHealthById={oltHealthById}
             />
           )}
         </section>
@@ -1820,7 +2006,7 @@ const App = () => {
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger asChild>
                           <button
-                            className="relative h-9 w-[130px] lg:w-[156px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
+                            className="relative h-9 w-[136px] rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-95"
                             aria-label={t('Sort by')}
                             title={t('Sort by')}
                           >
@@ -1922,7 +2108,7 @@ const App = () => {
                           </colgroup>
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
-                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU')}</th>
                               {hasOnuNames && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>}
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
@@ -2094,7 +2280,7 @@ const App = () => {
                               style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">ONU {onuNumber}</span>
                                 {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
@@ -2177,7 +2363,7 @@ const App = () => {
                           </colgroup>
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
-                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU ID')}</th>
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU')}</th>
                               {hasOnuNames && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>}
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Power')}</th>
@@ -2343,7 +2529,7 @@ const App = () => {
                               style={isHighlightedFromSearch ? SEARCH_HIGHLIGHT_STYLE : undefined}
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
+                                <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">ONU {onuNumber}</span>
                                 {hasOnuNames && <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{clientLabel}</span>}
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
