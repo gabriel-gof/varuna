@@ -42,7 +42,7 @@ test('deriveOltHealthState marks OLT gray when status polling is stale', () => {
     {
       snmp_reachable: true,
       snmp_failure_count: 0,
-      last_poll_at: isoAgoSeconds(660),
+      last_poll_at: isoAgoSeconds(1200),
       polling_interval_seconds: 300,
       online_count: 1,
       offline_count: 0,
@@ -58,7 +58,7 @@ test('deriveOltHealthState uses discovery timestamp when polling timestamp is ab
     {
       snmp_reachable: true,
       snmp_failure_count: 0,
-      last_discovery_at: isoAgoSeconds(900),
+      last_discovery_at: isoAgoSeconds(1200),
       polling_interval_seconds: 300,
       online_count: 1,
       offline_count: 0,
@@ -69,7 +69,7 @@ test('deriveOltHealthState uses discovery timestamp when polling timestamp is ab
   assert.equal(state.reason, 'status_stale')
 })
 
-test('deriveOltHealthState does not mark all-unknown ONUs as red', () => {
+test('deriveOltHealthState marks all-unknown ONUs as yellow', () => {
   const state = deriveOltHealthState(
     {
       snmp_reachable: true,
@@ -93,10 +93,10 @@ test('deriveOltHealthState does not mark all-unknown ONUs as red', () => {
     },
     NOW_MS,
   )
-  assert.equal(state.state, 'neutral')
+  assert.equal(state.state, 'yellow')
 })
 
-test('deriveOltHealthState keeps OLT green when at least one ONU is online', () => {
+test('deriveOltHealthState marks mixed online/offline OLT as yellow', () => {
   const state = deriveOltHealthState(
     {
       snmp_reachable: true,
@@ -121,7 +121,7 @@ test('deriveOltHealthState keeps OLT green when at least one ONU is online', () 
     },
     NOW_MS,
   )
-  assert.equal(state.state, 'green')
+  assert.equal(state.state, 'yellow')
 })
 
 test('deriveOltHealthState keeps red when all ONUs are confirmed offline reasons', () => {

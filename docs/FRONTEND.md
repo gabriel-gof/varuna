@@ -84,21 +84,22 @@ The UI remains topology-first. No dashboard page is required for current product
 - OLT health color is shared between topology and settings views.
 - During bootstrap with lightweight OLT payloads (`/api/olts/` without topology tree), frontend avoids warning colors (`yellow`/`red`) from aggregate counts only; it keeps reachable OLTs green until full topology data arrives. This prevents transient false alarm flashes on hard refresh.
 - Stale status data is considered unreliable and forced to gray:
-  - if `now - last_poll_at > max(polling_interval_seconds + 90s, 390s)`.
+  - if `now - last_poll_at > max(polling_interval_seconds * 3 + 90s, 390s)`.
   - this keeps gray-state timing aligned with backend stale-status protection (`poll_onu_status`).
 - OLT color semantics follow slot health:
   - `red` when all active slots are confirmed offline (`link loss` / `dying gasp` only),
-  - `green` when at least one active slot has online ONUs,
-  - `neutral` when no active slot is confirmed offline and all available states are `unknown`,
+  - `green` when all active slots are healthy (no offline/unknown ONUs),
+  - `yellow` when slot states are mixed (for example, at least one partially offline/unknown slot while another slot remains healthy),
+  - `neutral` only for transitional/no-topology fallback states,
   - `gray` when SNMP is unreachable or status is stale.
 - Slot color semantics follow PON health:
   - `red` when all active PONs are fully confirmed offline (`link loss` / `dying gasp` only),
-  - `green` when at least one active PON has online ONUs,
-  - `neutral` when no active PON is confirmed offline and all available states are `unknown`.
+  - `green` when all active PONs are healthy,
+  - `yellow` when PON states are mixed (online plus offline/unknown or mixed red/green PON set).
 - PON color semantics follow ONU health:
   - `red` when all ONUs are confirmed offline (`link loss` / `dying gasp`),
-  - `green` when there is at least one online ONU (even with mixed offline/unknown ONUs),
-  - `neutral` when all ONUs are `unknown`.
+  - `yellow` when there is any non-online ONU but the PON is not fully red (mixed online/offline/unknown, or all unknown),
+  - `green` only when all ONUs are online.
 - OLT and Slot sublabels show a rose-colored alert count (always visible, no toggle needed):
   - OLT: `{slotCount} PLACAS / {redSlots}` — number of slots where all PONs are fully offline (red health).
   - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).

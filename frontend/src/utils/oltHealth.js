@@ -64,7 +64,7 @@ const isStatusStale = (olt, nowMs = Date.now()) => {
   const pollingIntervalMs = getPollingIntervalSeconds(olt) * 1000
   const staleMarginMs = 90_000
   const staleWindowMs = Math.max(
-    pollingIntervalMs + staleMarginMs,
+    (pollingIntervalMs * 3) + staleMarginMs,
     staleMarginMs + 300_000
   )
 
@@ -81,9 +81,8 @@ const getPonHealthState = (pon) => {
   const { total, online, knownOffline, unknown } = getPonSignalCounts(pon)
 
   if (total <= 0) return 'green'
-  if (online > 0) return 'green'
-  if (knownOffline > 0) return 'red'
-  if (unknown > 0) return 'neutral'
+  if (online === 0 && knownOffline > 0) return 'red'
+  if (knownOffline > 0 || unknown > 0) return 'yellow'
   return 'green'
 }
 
@@ -92,16 +91,12 @@ const getSlotHealthState = (slot) => {
   if (!activePons.length) return 'green'
 
   const ponStates = activePons.map((pon) => getPonHealthState(pon))
-  const greenPons = ponStates.reduce((count, state) => (
-    state === 'green' ? count + 1 : count
-  ), 0)
-  const redPons = ponStates.reduce((count, state) => (
-    state === 'red' ? count + 1 : count
-  ), 0)
+  const allRed = ponStates.every((state) => state === 'red')
+  const allGreen = ponStates.every((state) => state === 'green')
 
-  if (greenPons > 0) return 'green'
-  if (redPons === ponStates.length) return 'red'
-  return 'neutral'
+  if (allRed) return 'red'
+  if (allGreen) return 'green'
+  return 'yellow'
 }
 
 export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
@@ -122,17 +117,11 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   if (activeSlots.length > 0) {
     const slotStates = activeSlots.map((slot) => getSlotHealthState(slot))
-    const greenSlots = slotStates.reduce((count, state) => (
-      state === 'green' ? count + 1 : count
-    ), 0)
-    const redSlots = slotStates.reduce((count, state) => (
-      state === 'red' ? count + 1 : count
-    ), 0)
-    if (greenSlots > 0) return { state: 'green', reason: 'at_least_one_slot_green' }
-    if (redSlots === slotStates.length) {
-      return { state: 'red', reason: 'all_slots_red' }
-    }
-    return { state: 'neutral', reason: 'unknown_only_slots' }
+    const allRed = slotStates.every((state) => state === 'red')
+    const allGreen = slotStates.every((state) => state === 'green')
+    if (allRed) return { state: 'red', reason: 'all_slots_red' }
+    if (allGreen) return { state: 'green', reason: 'all_slots_green' }
+    return { state: 'yellow', reason: 'mixed_slots' }
   }
 
   // Count-only payloads (/api/olts/ without include_topology) can be briefly stale on reload.
@@ -153,7 +142,7 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   if (online <= 0 && offline > 0) {
     return { state: 'red', reason: 'all_offline' }
   }
-  if (online > 0 && offline > 0) return { state: 'green', reason: 'mixed_but_online' }
+  if (online > 0 && offline > 0) return { state: 'yellow', reason: 'mixed_but_online' }
 
   return { state: 'green', reason: 'healthy' }
 }
