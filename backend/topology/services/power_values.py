@@ -5,6 +5,8 @@ from typing import Optional
 
 SENTINEL_ZERO_EPSILON = 1e-6
 SENTINEL_NEG40_EPSILON = 1e-3
+VALID_POWER_MAX_DBM = 0.0
+VALID_POWER_MIN_DBM = -40.0
 
 
 def to_float_or_none(value) -> Optional[float]:
@@ -18,11 +20,10 @@ def to_float_or_none(value) -> Optional[float]:
 
 def normalize_power_value(value) -> Optional[float]:
     """
-    Normalize power readings and discard known invalid sentinels.
+    Normalize optical power readings and discard invalid values.
 
-    Sentinel values:
-    - 0 dBm
-    - -40 dBm
+    Accepted range is strictly:
+    -40 dBm < value < 0 dBm
     """
     numeric = to_float_or_none(value)
     if numeric is None:
@@ -30,5 +31,9 @@ def normalize_power_value(value) -> Optional[float]:
     if abs(numeric) <= SENTINEL_ZERO_EPSILON:
         return None
     if abs(numeric + 40.0) <= SENTINEL_NEG40_EPSILON:
+        return None
+    if numeric <= VALID_POWER_MIN_DBM:
+        return None
+    if numeric >= VALID_POWER_MAX_DBM:
         return None
     return numeric

@@ -3,19 +3,26 @@
 ## Scope
 The UI remains topology-first. No dashboard page is required for current product scope.
 
+## Ownership
+- Frontend implementation ownership is `Opus`.
+- `Opus` must not modify backend/infrastructure/runtime scope (`backend/`, migrations, compose/env, Zabbix runtime integration code).
+- `Codex` should only touch frontend when explicitly requested for cross-cutting fixes or backend contract alignment.
+- Frontend UX/navigation/search decisions should be executed in Opus sessions and then validated against backend contracts.
+
 ## Dev Runtime
 - Frontend Vite dev server runs on port `4000` in Docker development mode.
 - Backend API remains on port `8000` and is proxied via `/api`.
 - Browser tab title is `Varuna`.
 
 ## Structure
-- `frontend/src/App.jsx`: app shell, auth state, nav tabs (topology/settings/power-report/alarm-history), OLT filter persistence, polling refresh. Nav bar has tab buttons grouped on the left; user menu on the right.
+- `frontend/src/App.jsx`: app shell, auth state, nav tabs (topology/power-report/alarm-history/settings), OLT filter persistence, polling refresh, PON highlight target state. Nav bar layout: logo → data tab buttons (Topology, Power Report, Alarm History) on left → Settings button (admin-only) + user menu on right. No global search bar — each tab has its own inline search.
 - `frontend/src/components/LoginPage.jsx`: login page with token-based authentication.
 - `frontend/src/components/VarunaIcon.jsx`: shared Varuna SVG icon component.
-- `frontend/src/components/NetworkTopology.jsx`: topology tree and alarm/search/filter interactions.
+- `frontend/src/components/NetworkTopology.jsx`: topology tree and alarm/filter interactions. Has inline search in toolbar using `useUniversalSearch` hook; manages its own `selectedClient` state for tree expansion, PON selection, and row highlighting.
+- `frontend/src/hooks/useUniversalSearch.jsx`: shared search hook (`normalizeSearch`, `scoreSearchMatch`, `shouldReplaceSearchSuggestion`, `renderHighlightedText`, `useUniversalSearch`) used by NetworkTopology's inline search.
 - `frontend/src/components/SettingsPanel.jsx`: OLT CRUD/configuration UX.
-- `frontend/src/components/PowerReport.jsx`: network-wide power levels report with sortable/filterable table.
-- `frontend/src/components/AlarmHistory.jsx`: client alarm/power history with backend-powered search, monthly disconnection bar chart, optical power line chart, month/year picker, and alerts table.
+- `frontend/src/components/PowerReport.jsx`: network-wide power levels report with sortable/filterable table. Has inline text filter (`searchText`) in toolbar that filters rows by client name or serial.
+- `frontend/src/components/AlarmHistory.jsx`: client alarm/power history with disconnection bar chart, optical power line chart, and alerts table. Has self-contained search via debounced `alarm-clients` API; manages its own `selectedClient` state.
 - `frontend/src/services/api.js`: Axios API client with auth token interceptor.
 - `frontend/src/utils/stats.js`: ONU status classification helpers.
 
@@ -30,9 +37,9 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ### Role-Aware UX
 - `canManageSettings` is derived from `authUser?.can_modify_settings` after login/me response.
-- Settings redirection guard waits for auth bootstrap completion (`authChecked=true`) before enforcing viewer-only redirect. This preserves the last saved tab (`varuna_active_tab`) across hard refreshes for admin users.
+- Settings tab guard waits for auth bootstrap completion (`authChecked=true`) before enforcing viewer-only restrictions. This preserves the last saved tab (`varuna_active_tab`) across hard refreshes for admin users.
 - Viewers (`can_modify_settings=false`):
-  - Settings tab is hidden from nav; if accessed directly, redirected to topology view.
+  - Settings tab is hidden from nav.
   - Vendor profile fetch is skipped.
   - Auto-maintenance (discovery/polling/power) runs on the backend scheduler.
   - PON sidebar refresh is available and can trigger live ONU status/power refresh for the selected PON.
@@ -49,7 +56,7 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Live Data Flow
 - Topology view fetches OLTs with topology (`/api/olts/?include_topology=true`).
-- Settings, Power Report, and Alarm History views use lightweight OLT fetches (`/api/olts/`) and avoid topology-tree payloads unless topology tab is active.
+- Power Report, Alarm History, and Settings views use lightweight OLT fetches (`/api/olts/`) and avoid topology-tree payloads unless topology tab is active.
 - When app starts on a non-topology tab, frontend performs a one-time background topology warm-up fetch so switching to Topology does not wait on first full-tree load.
 - Frontend enriches topology rows with per-PON cached stats (`total/online/offline/linkLoss/dyingGasp/unknown`) once per topology refresh to reduce mount-time recomputation.
 - When switching to Topology and a cached tree already exists in memory, frontend renders cached topology first and triggers full topology refresh shortly after, reducing perceived tab-switch blocking.
@@ -67,8 +74,15 @@ The UI remains topology-first. No dashboard page is required for current product
 - Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
 - Theme selection is persisted in `localStorage` (`varuna.theme`). On reload, the app restores the saved `light`/`dark` mode and reapplies the corresponding root `dark` class.
-- Search match selection (ONU highlight) is persisted in `localStorage` (`varuna.searchMatch`) with full context (ponId, onuId, serial, clientName, oltId, slotId, searchTerm). On reload, the tree expands to the matched ONU, the PON panel opens, and the highlight + scroll-into-view re-apply once data loads. The local `searchTerm` state syncs with `selectedSearchMatch` changes so the input always reflects the active filter state (clearing when the match is dismissed, restoring when remounting after a tab switch).
-- Topology search suggestions are deduplicated by serial (when present) so the same ONU is shown once even if backend topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
+- **Per-Tab Search**: Each monitoring tab has its own inline search, decoupled from the others. Tab switches preserve independent search state.
+  - **Topology**: inline search input in toolbar between OLT filter and alarm buttons. Uses `useUniversalSearch` hook for client-side suggestions from in-memory topology. On select, tree expands to matched ONU, PON panel opens with highlight. Locked state shows client name pill with X to clear.
+  - **Power Report**: text filter input in toolbar (desktop: between pills and sort; mobile: full-width top row). Filters existing rows by client name or serial. No API call needed.
+  - **Alarm History**: search input in toolbar with debounced API lookup (`GET /api/onu/alarm-clients/?search=<term>&limit=7`). On select, loads alarm/power history for that client. Client pill with X to clear.
+- Search suggestions (Topology + Alarm History) use compact two-line cards:
+  - line 1: ONU name (`-` when unavailable),
+  - line 2: `serial · OLT · slot/pon/onu`.
+- ONU name rendering in PON Status/Power tables now uses only backend name fields (`client_name`/`name`); UI no longer falls back to login-like fields that can leak numeric ONU identifiers.
+- Search suggestions (Topology) are deduplicated by serial (when present) so the same ONU is shown once even if topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
 - Client search does not filter the topology tree while typing — the tree stays unchanged until a suggestion is selected. On selection, the tree pins to the exact OLT/slot/PON path containing the matched ONU.
 - Alarm filtering is bypassed while a search match is selected, ensuring the searched client PON remains visible even if it fails current alarm thresholds.
 - Topology expansion state respects manual operator intent during background refreshes: initial default expansion (first OLT/slot) is applied only once on first data load, and later refreshes do not re-open collapsed nodes. Explicit search selection and alarm-mode auto-expansion may still open nodes by design.
@@ -129,20 +143,23 @@ The UI remains topology-first. No dashboard page is required for current product
 - PON sidebar refresh has a 5-second cooldown after each collection completes. During cooldown the button is disabled and shows a depleting SVG ring animation around the icon (CSS `cooldown-ring` keyframe in `index.css`). Cooldown resets when the selected PON changes.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
+- Alarm History power parsing preserves nullable backend values:
+  - `null`/empty power values remain `null` in frontend state and render as `—`.
+  - Missing metric values are never coerced to `0.00` (prevents false zero readings in history rows/charts).
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
-- `Best/Worst OLT RX` sort options are shown only when the selected OLT supports OLT RX (`supports_olt_rx_power=true`).
+- All columns (ONU, Name, Serial, ONU RX, OLT RX, Reading) are always shown regardless of OLT vendor capabilities. Missing values display `—`. No conditional column hiding per vendor — consistency over compactness.
 - In Power tab, placeholder hyphens (`—`) follow the same status/disconnection palette as the status table in both `Potência` and `Leitura` columns/rows (green online, rose offline/link loss, blue dying gasp, purple unknown; gray when OLT is gray/stale).
-- For vendors without OLT RX support, Power tab renders only ONU RX values (no OLT RX line in desktop/mobile rows).
 - During topology reload, if an ONU temporarily arrives without power fields while `last_power_at` has not advanced, the UI keeps the last in-memory ONU power snapshot to avoid false `—` flicker from cache gaps.
 - In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
 - Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
-- Mobile Status and Power cards always render three left-side lines (ONU number, name, serial) regardless of `hasOnuNames`. When no name exists for an ONU, a dash placeholder is shown. This ensures identical left-column structure between tabs, preventing layout shift when switching between Status and Power.
+- Mobile Status and Power cards always render three left-side lines (ONU number, name, serial). When no name exists for an ONU, a dash placeholder is shown. This ensures identical left-column structure between tabs, preventing layout shift when switching between Status and Power.
 - In PON detail tables (`Status` and `Potência`), the second column label is `Name`/`Nome` because it represents ONU name (not customer account/login).
 - Alarm mode no longer injects hidden reason-specific sort modes into the PON table (`link_loss`/`dying_gasp`/`unknown`). Status sorting remains canonical (`Default`, `Offline`, `Online`) to keep dropdown label and row order coherent.
 - When alarm mode is enabled, PON status rows default to `Offline` ordering (inactive-first). Selecting a new PON while alarm is already active also resets sort to offline ordering. If specific alarm reasons are selected, those reasons are prioritized only within the offline group; online rows stay last.
 - Alarm configuration (enabled, reasons, minCount) is persisted in `localStorage` (`varuna.alarmConfig`) per browser. Defaults: enabled=true, reasons=linkLoss only, minOnus=4. Users can change settings freely; preferences survive page reloads.
 
 ## Settings Panel Design
+- Settings is rendered as a modal overlay (not a nav tab). A gear icon button in the navbar opens the modal (visible only for `canManageSettings` users). The modal uses `fixed inset-0 z-[150] bg-black/40 backdrop-blur-[2px]` backdrop with a centered panel (`max-w-[700px] max-h-[85vh] overflow-y-auto rounded-2xl`). Escape key and backdrop click close it.
 - Multiple OLT cards can be expanded simultaneously. Each expanded card maintains independent tab selection, form state, threshold state, and dirty detection.
 - Expanded card IDs are persisted as a JSON array in localStorage (`varuna.settings.expandedOltIds`). Migration from the old single-ID key (`varuna.settings.selectedOltId`) is automatic.
 - OLT cards expand to show an always-editable form — no read-only/edit mode toggle.
@@ -216,10 +233,9 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Toolbar Layout
 - The topology area has two visual rows: a single toolbar row and the container surface below it.
-- The toolbar row contains filter button, search input, and action buttons (collapse, counters, alarm) all on one line. Action buttons are pushed to the right via `ml-auto`. All toolbar icon buttons use a neutral pill container (`bg-white dark:bg-slate-800`, `border-slate-200/80 dark:border-slate-700`, `rounded-lg shadow-sm`) matching the PON sidebar button style. The background never changes. State is communicated through icon color (`text-slate-400` default, `text-slate-600` hover, semantic color when active) and a subtle tinted fill — active buttons get `bg-emerald-50 dark:bg-emerald-500/10` (filter/counters) or `bg-rose-50 dark:bg-rose-500/10` (alarm) while the border stays neutral (`border-slate-200/80`). Filter button also activates (green icon + tinted fill) when its dropdown is open.
+- The toolbar row contains filter button and action buttons (collapse, counters, alarm) all on one line. Action buttons are pushed to the right via `ml-auto`. Client search has moved to the universal search bar in the navbar. All toolbar icon buttons use a neutral pill container (`bg-white dark:bg-slate-800`, `border-slate-200/80 dark:border-slate-700`, `rounded-lg shadow-sm`) matching the PON sidebar button style. The background never changes. State is communicated through icon color (`text-slate-400` default, `text-slate-600` hover, semantic color when active) and a subtle tinted fill — active buttons get `bg-emerald-50 dark:bg-emerald-500/10` (filter/counters) or `bg-rose-50 dark:bg-rose-500/10` (alarm) while the border stays neutral (`border-slate-200/80`). Filter button also activates (green icon + tinted fill) when its dropdown is open.
 - The toolbar is inside a sticky wrapper (`sticky top-0 z-20`). The toolbar itself uses `bg-slate-100 dark:bg-slate-950` matching the topology container surface, so white buttons pop against the tinted background (same relationship as the PON sidebar). Below the toolbar, a 32px gradient fade (`h-8 -mb-8`) goes from the surface color to transparent, creating an Apple-style scroll fade where content dissolves as it scrolls under the toolbar. Uses `from-slate-100` (light) / `from-slate-950` (dark) with `pointer-events-none`.
-- The search input takes remaining space (`flex-1 min-w-0`) capped at `max-w-[200px]` on mobile and `lg:max-w-[268px]` on desktop, so action buttons have room to breathe.
-- Filter and search dropdowns open downward (`top-11`) on all breakpoints.
+- Filter dropdown opens downward (`top-11`) on all breakpoints.
 - Toolbar vertical padding is `pt-4 pb-4`, centering the controls between the nav header and the container surface. Horizontal padding is `px-3` on mobile, `lg:px-8` on desktop — matching the container margins for coherent alignment.
 
 ## Topology Container Surface
@@ -299,7 +315,7 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Mobile UX
 - Viewport meta includes `viewport-fit=cover, maximum-scale=1.0, user-scalable=no` to prevent zoom and handle safe areas on notched devices.
 - Input, select, and textarea elements are forced to 16px font on mobile (`max-width: 1023px`) to prevent iOS Safari auto-zoom on focus.
-- Search input uses `text-base md:text-[11px]` for readable font on mobile while keeping compact desktop sizing.
+- Universal search bar input uses `text-base md:text-[11px]` for readable font on mobile while keeping compact desktop sizing.
 - SettingsPanel inputs use the `text-compact` CSS class to opt out of the global 16px `!important` mobile override, keeping compact 11px/12px sizing on all viewports. The viewport meta (`maximum-scale=1.0, user-scalable=no`) already prevents iOS auto-zoom.
 - Layout uses `h-[100dvh] min-h-[100dvh]` instead of `h-screen` for correct mobile viewport height on Safari.
 
@@ -322,12 +338,12 @@ The UI remains topology-first. No dashboard page is required for current product
 - Signal classification uses `getPowerColor` from `powerThresholds.js` — an ONU is "critical" if any reading is red, "warning" if any is yellow, "good" if all are green.
 - Default report mode is "problems first": signal filter starts with `Critical + Warning + No reading` and sort starts at `Worst ONU RX`.
 - Toolbar is flat on the page surface (no wrapping card), organized in two rows:
-  - Row 1: OLT dropdown (116px desktop) + Slot dropdown (80px / 72px desktop) + PON dropdown (80px / 72px desktop) grouped left, Sort dropdown pushed far right via `ml-auto`. All three location dropdowns show "Tudo" (PT) / "All" (EN) when nothing is selected. When a value is selected, the OLT shows its name; Slot/PON show their number.
-  - Row 2: signal toggle pills (Good/Warning/Critical/No reading) centered, with inline count badges and a total ONU count after a divider.
-- Signal pills act as both filter toggles and summary indicators. Desktop pill format: `● SHORT_LABEL COUNT` (e.g. `● GOOD 2963`) using a short all-caps label (`GOOD`/`WARN`/`CRIT`/`N/A` in EN; `NORMAL`/`ALERTA`/`CRITICO`/`N/A` in PT). Mobile pills retain the full label. Each pill is colored when active, faded when inactive. This eliminates the need for separate stat cards.
+  - Row 1: OLT dropdown (160px desktop) + Slot dropdown (80px / 72px desktop) + PON dropdown (80px / 72px desktop) grouped left, Sort dropdown pushed far right via `ml-auto`. All three location dropdowns show "Tudo" (PT) / "All" (EN) when nothing is selected. When a value is selected, the OLT shows its name; Slot/PON show their number.
+  - Row 2: signal toggle pills (Good/Warning/Critical/No reading) centered, with inline count badges and a total ONU count (number only, no label) after a divider.
+- Signal pills act as both filter toggles and summary indicators. Format: `● SHORT_LABEL COUNT` (e.g. `● GOOD 2963`) using a short all-caps label (`GOOD`/`WARN`/`CRIT`/`N/A` in EN; `NORMAL`/`ALERTA`/`CRITICO`/`N/A` in PT). Desktop and mobile use same `text-[10px]` size and `w-2 h-2` dots; mobile row is `justify-between` with `px-2` inset for even distribution at any count size. Each pill is colored when active, faded when inactive.
 - Sort options: `ONU RX ↓`, `OLT RX ↓`, `ONU RX ↑`, `OLT RX ↑`.
-- Desktop: split header/body table with 9 `colgroup` columns (OLT, Slot, PON, ONU, Name, Serial, ONU RX, OLT RX, Reading). Compact row height (h-11) with hover highlight. Infinite scroll via `IntersectionObserver` on a sentinel row — more rows load automatically as the user scrolls near the bottom.
-- Mobile (<1024px): card layout with OLT/Slot/PON path, client info, power values (ONU RX + OLT RX). Same infinite scroll behavior.
+- Desktop: split header/body table with 9 `colgroup` columns (OLT, Slot, PON, ONU, Name, Serial, ONU RX, OLT RX, Reading). Compact row height (h-11) with hover highlight. Infinite scroll via `IntersectionObserver` on a sentinel row with explicit `root` set to the scroll container ref — more rows load automatically as the user scrolls near the bottom. Desktop and mobile use separate sentinel/scroll refs since both DOM trees coexist (toggled by CSS).
+- Mobile (<1024px): card layout with OLT/Slot/PON path, client info, power values (ONU RX + OLT RX). Same infinite scroll behavior with its own `mobileScrollRef`/`mobileSentinelRef`.
 - Row rendering is windowed (initial 300 rows + incremental "Load more") to avoid mounting/unmounting extremely large DOM tables during tab switches.
 - Frontend no longer strips sentinel power values (`0`, `-40`) client-side. Sentinel discard is enforced upstream (Zabbix template preprocessing + backend normalization guard), so UI only consumes collector/backend-validated readings.
 - All power values are color-coded using existing `powerColorClass` utility.
@@ -337,28 +353,28 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Alarm History Tab
 - Accessible via "History" nav tab (`activeNav === 'alarm-history'`); available to all roles. Label: "History" (en) / "Histórico" (pt).
 - Component: `frontend/src/components/AlarmHistory.jsx`.
-- Client search input uses `GET /api/onu/alarm-clients/` for fast backend suggestions.
+- Client selection comes from the universal search bar in the navbar (`selectedClient` prop). When a client is selected, AlarmHistory resolves the serial to an alarm-client `id` via `GET /api/onu/alarm-clients/` to load history data. If no matching alarm-client is found, displays "No history available for this client" message.
 - Empty state shown when no client is selected; vertically centered with `pb-[28vh]` optical lift so the prompt sits well above geometric center. The "Last N days" toolbar label is hidden until a client is selected.
 - History window is per-OLT configurable via `OLT.history_days` (default 7, range 7–30). Frontend reads `selectedClient.history_days` (returned by `alarm-clients`) and falls back to 7. Label in toolbar: "Last {{days}} days" (localized).
-- Toolbar: compact search input (`max-w-[200px] lg:max-w-[268px]`) on the left, "Last N days" label on the right. No desktop tab switcher (desktop is always side-by-side).
+- Toolbar: shows selected client name (if any) on the left, "Last N days" label on the right. No desktop tab switcher (desktop is always side-by-side).
 - Mobile toolbar contains a centered STATUS/POTÊNCIA tab switcher (`flex lg:hidden`) in the middle of the toolbar row.
-- Selected client and search term persist in `localStorage` across page reloads.
+- Selected client persists via universal search bar `selectedClient` in App.jsx `localStorage`.
 - The `<section>` in App.jsx uses `overflow-hidden` (not `overflow-y-auto`) when `alarm-history` is active. This gives AlarmHistory's `h-full` root a proper viewport-bounded height so the internal grid panels can scroll independently. All other tabs retain `overflow-y-auto` for page-level scroll.
 - The inner flex container (`flex-1 flex flex-col`) carries `min-h-0` — required at every flex level so that child `flex-1 min-h-0` elements can be properly bounded and scroll. Without it the container grows unbounded and scroll never triggers.
 - **Desktop layout (≥1024px)**: Side-by-side `grid-cols-2 gap-3` grid within `max-w-[1400px]` container.
   - Left card: "Disconnection History" — chart on top (pinned), split header/body table (Event Type, Start, End, Duration) with scrollable body (`flex-1 overflow-y-auto`).
   - Right card: "Power History" — chart on top (pinned), split header/body table (Reading, ONU Rx, OLT Rx) with scrollable body.
   - Grid container has `overflow-hidden` so card heights are properly constrained for independent scroll.
-- **Mobile layout (<1024px)**: Single tab-switched card; `activeTab` (`'status'` | `'power'`) controlled by toolbar tab switcher. Card structure: title (pinned) → chart (pinned, full N days, no horizontal scroll) → column headers (pinned) → rows (scrollable) → footer "Last N days" (pinned). Same table structure as desktop (4 cols for status, 3 cols for power).
+- **Mobile layout (<1024px)**: Single tab-switched card; `activeTab` (`'status'` | `'power'`) controlled by toolbar tab switcher. Card structure: title (pinned) → chart (always rendered, even when empty — consistent with desktop) → column headers (pinned) → rows (scrollable) → footer "Last N days" (pinned). Same table structure as desktop (4 cols for status, 3 cols for power).
 - **Mobile Status rows**: Table rows — Event pill | Start | End | Duration (9px font, `h-8`).
 - **Mobile Power rows**: Table rows — Reading timestamp | ONU Rx | OLT Rx (9px font, `h-8`, threshold-aware color on values).
 - **Disconnection History card**: Bar chart (rose=Link Loss, blue=Dying Gasp, purple=Unknown) with Y-axis step of 2, minimum top of 6. All N days always rendered on x-axis. Bar opacity 0.9 (1.0 on hover). Table shows all alarms newest first; Event badge, Start, End, Duration columns. "Total: N" count uses `t('Total')` (translated).
 - **Event type pills**: Match Topology tab style — `ring-1 ring-inset` border, color dot (`w-1.5 h-1.5 rounded-full`) before label. Dying Gasp = blue-50/blue-700/ring-blue-200. Link Loss = rose-50/rose-600/ring-rose-200. Unknown = purple-50/purple-600/ring-purple-200. Mobile column header uses `t('Event')` (shorter) instead of `t('Event Type')`.
-- **Power History card**: Dual-line chart — ONU Rx `#38bdf8` (light blue), OLT Rx `#1d4ed8` (dark blue). Fixed colors, not health-color-per-segment. Horizontal background zones behind data: green (good), amber (warning), red (critical) based on `onu_rx_good`/`onu_rx_bad` thresholds; drawn at full chart width, opacity 0.12/0.11/0.11. When no power data exists, the chart still renders its grid/axes/legend with no data points (coherent with the disconnection chart's zero-state). Table shows individual power samples sorted newest first. Desktop power table is a clean 3-column layout (`auto | 100px | 100px`); no spacer columns. Value columns are `text-right`.
+- **Power History card**: Column-based chart — each day gets an equal-width column (same geometry as DisconnectionChart), with individual readings plotted at their intra-day position within the column (`toX(ts)` = column start + time-of-day fraction * column width). Data is `sortedPowerAsc` (individual readings sorted oldest-first by timestamp, no day-bucketing/averaging). Day labels at column centers via `xForDay(i)` — visually aligned with disconnection chart labels. ONU Rx `#38bdf8` (light blue), OLT Rx `#1d4ed8` (dark blue). Fixed colors, not health-color-per-segment. Hover finds nearest data point by x-distance linear scan; tooltip shows exact `dd/mm/yy HH:mm` via `formatTimestamp`. No background quality zones — thresholds differ between ONU Rx and OLT Rx so a single-zone overlay would be misleading; health coloring remains in the table via `getPowerColor`/`powerColorClass`. When no power data exists, the chart still renders its grid/axes/legend with no data points (coherent with the disconnection chart's zero-state). Table shows individual power samples sorted newest first. Desktop power table is a clean 3-column layout (`auto | 100px | 100px`); no spacer columns. Value columns are `text-right`.
 - **Chart x-axis**: Single row, `dd/mm` format (e.g. `24/02`), 8px bold. No month transition row. `padB = 34`. Label density is adaptive: all labels shown for ≤10 days, every 2nd for 11–20 days, every 4th for >20 days — prevents overlap at 30-day range.
 - **Chart legend**: Bar chart (Disconnection) always shows all three reason legend items (Link Loss, Dying Gasp, Unknown) even when counts are zero — faded at `opacity-35` when zero to keep vertical alignment with the Power chart. Line chart (Power) always shows both ONU Rx and OLT Rx legend items. Both use `text-[10px]` labels with `mb-2` bottom margin.
-- **Power threshold coloring**: Table values colored via `getPowerColor`/`powerColorClass`. Chart uses fixed light-blue/dark-blue lines (no health coloring on lines). Threshold breakpoints included in `rawMin` so quality zones always visible.
-- **Chart hover tooltips**: Both charts have hover interaction. Disconnection chart: invisible full-height rect per day triggers `onMouseEnter`; tooltip shows date + per-reason counts. Power chart: `onMouseMove` on SVG computes nearest day index; dashed vertical cursor line drawn in SVG; tooltip shows date + ONU/OLT readings. Tooltip position is percentage-based; flips left when `hoveredCssLeft > 60%`.
+- **Power threshold coloring**: Table values colored via `getPowerColor`/`powerColorClass`. Chart uses fixed light-blue/dark-blue lines with no background quality zones (thresholds differ per signal type so a single overlay would be misleading).
+- **Chart hover tooltips**: Both charts have hover interaction. Disconnection chart: invisible full-height rect per day triggers `onMouseEnter`; tooltip shows date + per-reason counts. Power chart: `onMouseMove` on SVG finds nearest data point by x-position distance; dashed vertical cursor line drawn at `toX(data[hoveredIdx].timestamp)`; tooltip shows exact `dd/mm/yy HH:mm` timestamp + ONU/OLT readings. Tooltip position is percentage-based; flips left when `hoveredCssLeft > 60%`.
 - Mobile charts fill full container width via `w-full h-auto` SVG scaling — no horizontal scroll needed for 7 days.
 - ONU detail data loads from `GET /api/onu/{id}/alarm-history/` with `alarm_days=historyDays`, `power_days=historyDays`, `alarm_limit=1000`, `max_power_points=744`. `historyDays` = `selectedClient.history_days || 7`.
 - `alarm-history` response now includes `source` (`zabbix` or `varuna`) so UI/debug tooling can tell whether the timeline came directly from Zabbix history or local fallback rows.

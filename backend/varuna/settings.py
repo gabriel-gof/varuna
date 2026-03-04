@@ -145,6 +145,7 @@ ZABBIX_HOST_GROUP_LEGACY_NAMES = tuple(
     for name in str(config('ZABBIX_HOST_GROUP_LEGACY_NAMES', default='OLT,OLTs') or '').split(',')
     if name.strip()
 )
+ZABBIX_HOST_NAME_PREFIX = config('ZABBIX_HOST_NAME_PREFIX', default='')
 COLLECTOR_CHECK_SECONDS = config('COLLECTOR_CHECK_SECONDS', default=30, cast=int)
 COLLECTOR_CHECK_MAX_BACKOFF_SECONDS = config('COLLECTOR_CHECK_MAX_BACKOFF_SECONDS', default=1800, cast=int)
 

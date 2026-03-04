@@ -142,6 +142,17 @@ class PowerService:
             metrics = counters_by_olt.get(olt.id, {})
             interval_ttl = int(getattr(olt, "power_interval_seconds", 0) or 0) * 2
             ttl = max(base_ttl, interval_ttl, 300)
+            refresh_requested_epoch: Optional[int] = None
+            refresh_clock_grace_seconds = int(
+                getattr(settings, "ZABBIX_REFRESH_CLOCK_GRACE_SECONDS", 15) or 15
+            )
+            refresh_wait_seconds = int(
+                getattr(settings, "ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS", 12) or 12
+            )
+            refresh_wait_step_seconds = max(
+                1,
+                int(getattr(settings, "ZABBIX_REFRESH_UPSTREAM_WAIT_STEP_SECONDS", 2) or 2),
+            )
             stale_power_max_age_seconds = max(
                 int(getattr(olt, "power_interval_seconds", 0) or 0) * 3 + stale_margin_seconds,
                 stale_margin_seconds + 300,
@@ -182,6 +193,7 @@ class PowerService:
 
             if should_refresh_upstream:
                 try:
+                    refresh_requested_epoch = int(time.time())
                     hostid = zabbix_service.get_hostid(olt)
                     if hostid:
                         keys = self._build_zabbix_power_keys(list(index_to_onu.keys()), onu_pattern, olt_pattern)
@@ -197,16 +209,55 @@ class PowerService:
                 except Exception:
                     logger.exception("Power refresh OLT %s: failed to request immediate Zabbix item execution.", olt.id)
 
-            try:
-                zabbix_map, _ = zabbix_service.fetch_power_by_index(
-                    olt,
-                    index_to_onu.keys(),
-                    onu_rx_item_key_pattern=onu_pattern,
-                    olt_rx_item_key_pattern=olt_pattern,
+            refresh_required_epoch = None
+            if refresh_requested_epoch is not None:
+                refresh_required_epoch = max(0, int(refresh_requested_epoch) - refresh_clock_grace_seconds)
+
+            fetch_attempts = 1
+            if refresh_required_epoch is not None and refresh_wait_seconds > 0:
+                fetch_attempts = max(1, int(refresh_wait_seconds // refresh_wait_step_seconds) + 1)
+
+            zabbix_map = {}
+            pending_indexes = 0
+            for attempt in range(fetch_attempts):
+                try:
+                    zabbix_map, _ = zabbix_service.fetch_power_by_index(
+                        olt,
+                        index_to_onu.keys(),
+                        onu_rx_item_key_pattern=onu_pattern,
+                        olt_rx_item_key_pattern=olt_pattern,
+                    )
+                except Exception as exc:
+                    logger.warning("Power refresh OLT %s via Zabbix failed: %s", olt.id, exc)
+                    zabbix_map = {}
+                    break
+
+                if refresh_required_epoch is None:
+                    break
+
+                pending_indexes = 0
+                for index in index_to_onu.keys():
+                    row = zabbix_map.get(index) or {}
+                    clock_epoch = _to_int_or_none(row.get("power_clock_epoch")) or 0
+                    onu_rx = normalize_power_value(row.get("onu_rx_power"))
+                    olt_rx = normalize_power_value(row.get("olt_rx_power"))
+                    if (onu_rx is not None or olt_rx is not None) and clock_epoch >= refresh_required_epoch:
+                        continue
+                    pending_indexes += 1
+
+                if pending_indexes == 0:
+                    break
+
+                if attempt < (fetch_attempts - 1):
+                    time.sleep(refresh_wait_step_seconds)
+
+            if refresh_required_epoch is not None and pending_indexes > 0:
+                logger.info(
+                    "Power refresh OLT %s: using partial refresh result (%s item(s) still pending after %s attempt(s)).",
+                    olt.id,
+                    pending_indexes,
+                    fetch_attempts,
                 )
-            except Exception as exc:
-                logger.warning("Power refresh OLT %s via Zabbix failed: %s", olt.id, exc)
-                zabbix_map = {}
 
             for index, onu in index_to_onu.items():
                 row = zabbix_map.get(index) or {}

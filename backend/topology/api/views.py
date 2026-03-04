@@ -1482,34 +1482,77 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
 
         return alarms, stats
 
-    def _build_zabbix_power_history(self, *, onu_rx_samples, olt_rx_samples, max_power_points):
-        merged = {}
+    def _build_zabbix_power_history(
+        self,
+        *,
+        onu_rx_samples,
+        olt_rx_samples,
+        max_power_points,
+        merge_window_seconds: int = 15,
+    ):
+        window = max(1, int(merge_window_seconds or 1))
+        merged_rows = []
+
+        def _upsert(sample, *, field_name: str, field_epoch_key: str):
+            epoch = self._parse_epoch((sample or {}).get('clock_epoch'))
+            if epoch is None:
+                return
+            value = normalize_power_value((sample or {}).get('value'))
+            if value is None:
+                return
+
+            target = None
+            best_delta = None
+            for row in merged_rows:
+                row_epoch = self._parse_epoch(row.get('clock_epoch'))
+                if row_epoch is None:
+                    continue
+                delta = abs(epoch - row_epoch)
+                if delta > window:
+                    continue
+                if best_delta is None or delta < best_delta:
+                    target = row
+                    best_delta = delta
+
+            if target is None:
+                target = {
+                    'clock_epoch': epoch,
+                    'timestamp': self._epoch_to_iso(epoch),
+                    'onu_rx_power': None,
+                    'olt_rx_power': None,
+                    'onu_rx_epoch': None,
+                    'olt_rx_epoch': None,
+                }
+                merged_rows.append(target)
+
+            previous_field_epoch = self._parse_epoch(target.get(field_epoch_key))
+            if previous_field_epoch is None or epoch >= previous_field_epoch:
+                target[field_name] = value
+                target[field_epoch_key] = epoch
+
+            row_epoch = self._parse_epoch(target.get('clock_epoch')) or 0
+            if epoch > row_epoch:
+                target['clock_epoch'] = epoch
+                target['timestamp'] = self._epoch_to_iso(epoch)
 
         for sample in onu_rx_samples or []:
-            epoch = self._parse_epoch((sample or {}).get('clock_epoch'))
-            if epoch is None:
-                continue
-            row = merged.setdefault(epoch, {'timestamp': self._epoch_to_iso(epoch), 'onu_rx_power': None, 'olt_rx_power': None})
-            try:
-                row['onu_rx_power'] = normalize_power_value(float((sample or {}).get('value')))
-            except (TypeError, ValueError):
-                pass
+            _upsert(sample, field_name='onu_rx_power', field_epoch_key='onu_rx_epoch')
 
         for sample in olt_rx_samples or []:
-            epoch = self._parse_epoch((sample or {}).get('clock_epoch'))
-            if epoch is None:
-                continue
-            row = merged.setdefault(epoch, {'timestamp': self._epoch_to_iso(epoch), 'onu_rx_power': None, 'olt_rx_power': None})
-            try:
-                row['olt_rx_power'] = normalize_power_value(float((sample or {}).get('value')))
-            except (TypeError, ValueError):
-                pass
+            _upsert(sample, field_name='olt_rx_power', field_epoch_key='olt_rx_epoch')
 
-        rows = [
-            row
-            for _, row in sorted(merged.items(), key=lambda entry: entry[0])
-            if row.get('onu_rx_power') is not None or row.get('olt_rx_power') is not None
-        ]
+        rows = []
+        for row in sorted(merged_rows, key=lambda entry: self._parse_epoch(entry.get('clock_epoch')) or 0):
+            if row.get('onu_rx_power') is None and row.get('olt_rx_power') is None:
+                continue
+            rows.append(
+                {
+                    'timestamp': row.get('timestamp'),
+                    'onu_rx_power': row.get('onu_rx_power'),
+                    'olt_rx_power': row.get('olt_rx_power'),
+                }
+            )
+
         rows = self._downsample_samples(rows, max_points=max_power_points)
         return rows
 
@@ -1532,7 +1575,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         rows = [
             {
                 'id': onu.id,
-                'client_name': onu.name or f"ONU {onu.onu_id}",
+                'client_name': (onu.name or '').strip() or '-',
                 'serial': onu.serial or '',
                 'olt_id': onu.olt_id,
                 'olt_name': onu.olt.name,
@@ -1641,10 +1684,18 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                         status_map=status_map_cfg,
                         disconnect_reason_map=disconnect_reason_map,
                     )
+                    merge_window_seconds = max(
+                        5,
+                        min(
+                            60,
+                            int((onu.olt.power_interval_seconds or 300) * 0.2),
+                        ),
+                    )
                     power_history = self._build_zabbix_power_history(
                         onu_rx_samples=zabbix_payload.get('onu_rx_samples') or [],
                         olt_rx_samples=zabbix_payload.get('olt_rx_samples') or [],
                         max_power_points=max_power_points,
+                        merge_window_seconds=merge_window_seconds,
                     )
                     data_source = 'zabbix'
             except Exception:

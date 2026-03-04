@@ -12,7 +12,7 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 ## Runtime Architecture
 - `frontend`: React app (Vite dev / Nginx prod)
 - `backend`: Django + DRF API and collection orchestration
-- `db`: PostgreSQL
+- `varuna-db`: PostgreSQL
 - `redis`: Redis
 - Optional (enabled in current dev compose): `zabbix-db`, `zabbix-server`, `zabbix-web`, `zabbix-agent` for full Zabbix-based collection.
 
@@ -32,12 +32,13 @@ Topology-heavy API reads are served through short-lived Redis response cache to 
   - per-client Varuna app stack: `frontend + backend + redis`.
   - each client uses its own logical database inside shared `pg-varuna` (`varuna_client_a`, `varuna_client_b`, ...).
   - each client instance sets its own Zabbix host group namespace via `ZABBIX_HOST_GROUP_NAME` (for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`).
-- Default standalone mode is still available in `docker-compose.prod.yml` (includes per-stack `db` service).
+  - each client instance should set its own `ZABBIX_HOST_NAME_PREFIX` (for example `GabSAT-`, `VNET-`) so OLT host names are unique in shared Zabbix.
+- Default standalone mode is still available in `docker-compose.prod.yml` (includes per-stack `varuna-db` service).
 - Shared-infra files:
   - `docker-compose.infra.shared.yml` (shared `pg-varuna` + `pg-zabbix` + Zabbix services)
-  - `docker-compose.prod.shared-pg.yml` (per-client app stack using shared `pg-varuna`, no local `db`)
+  - `docker-compose.prod.shared-pg.yml` (per-client app stack using shared `pg-varuna`, no local `varuna-db`)
 - `docker-compose.prod.yml` now supports per-instance overrides through env vars:
-  - `VARUNA_ENV_FILE` (container env file used by `backend` and standalone `db`)
+  - `VARUNA_ENV_FILE` (container env file used by `backend` and standalone `varuna-db`)
   - `VARUNA_FRONTEND_BIND_IP`
   - `VARUNA_FRONTEND_HTTP_HOST_PORT`
   - `VARUNA_BACKEND_BIND_IP`
@@ -48,6 +49,7 @@ Topology-heavy API reads are served through short-lived Redis response cache to 
 - Frontend Nginx preserves upstream `X-Forwarded-Proto` when proxying `/api`, and Django trusts it in production for secure redirect/cookie behavior behind host TLS termination.
 - Production backend serves with Gunicorn (container command) and frontend serves Django `/static` from a shared volume.
 - Always use a unique Compose project name (`-p varuna_<client>`) per instance.
+- Production Zabbix auth policy: use two users (`varuna_api` for API integration + personal admin for UI), with strong credentials only; never use default `Admin/zabbix`.
 
 Example (same host, second production instance):
 ```bash
@@ -70,7 +72,7 @@ cp docker/infra.shared.env /etc/varuna/infra.shared.env
 # start shared pg-varuna + pg-zabbix + zabbix stack once
 docker compose --env-file /etc/varuna/infra.shared.env -f docker-compose.infra.shared.yml up -d
 
-# per Varuna client stack, point to shared pg-varuna and disable local db service
+# per Varuna client stack, point to shared pg-varuna and disable local varuna-db service
 # in docker/prod.<client>.env set:
 # VARUNA_POSTGRES_HOST=pg-varuna
 # ZABBIX_API_URL=http://zabbix-web:8080/api_jsonrpc.php
@@ -177,6 +179,11 @@ Roles: `admin` (full access), `operator` (full access), `viewer` (read-only, no 
 - `docs/FRONTEND.md`
 - `docs/OPERATIONS.md`
 - `docs/LLM_CONTEXT.md`
+
+Agent ownership note:
+- Backend/infrastructure work: Codex.
+- Frontend/UI/UX work: Opus.
+- Opus should not touch backend/infrastructure/runtime files.
 
 Zabbix template files in repo root:
 - `snmp-avail-template.yaml`

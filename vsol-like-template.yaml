@@ -129,6 +129,10 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_status
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
             - uuid: 3b25e5d5046b480ca827b66d0bdb4e84
               name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: ONU Rx power'
               type: SNMP_AGENT
@@ -149,13 +153,13 @@ zabbix_export:
                       }
 
                       var n = raw;
-                      if (n < -50 || n > 10) {
+                      if (n <= -40 || n >= 0) {
                           var by10 = raw / 10;
-                          if (by10 >= -50 && by10 <= 10) {
+                          if (by10 > -40 && by10 < 0) {
                               n = by10;
                           } else {
                               var by100 = raw / 100;
-                              if (by100 >= -50 && by100 <= 10) {
+                              if (by100 > -40 && by100 < 0) {
                                   n = by100;
                               } else {
                                   return '';
@@ -166,6 +170,9 @@ zabbix_export:
                       if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
                           return '';
                       }
+                      if (n <= -40 || n >= 0) {
+                          return '';
+                      }
                       return Math.round(n * 100) / 100;
                   error_handler: DISCARD_VALUE
               tags:
@@ -173,3 +180,7 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_rx_power
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'

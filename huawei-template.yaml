@@ -157,6 +157,10 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_status
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
             - uuid: a1f1f7dcfe9d4005ab32a112cdbf4119
               name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: Disconnect reason'
               type: SNMP_AGENT
@@ -184,6 +188,10 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: disconnect_reason
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
             - uuid: e66d4e3982624888b6c40e18a4ad38a7
               name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: ONU Rx power'
               type: SNMP_AGENT
@@ -206,7 +214,7 @@ zabbix_export:
                       if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
                           return '';
                       }
-                      if (n < -50 || n > 10) {
+                      if (n <= -40 || n >= 0) {
                           return '';
                       }
                       return Math.round(n * 100) / 100;
@@ -216,6 +224,10 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_rx_power
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
             - uuid: d68342b4bd3a412f820ad876774f56a5
               name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: OLT Rx power'
               type: SNMP_AGENT
@@ -238,7 +250,7 @@ zabbix_export:
                       if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
                           return '';
                       }
-                      if (n < -50 || n > 10) {
+                      if (n <= -40 || n >= 0) {
                           return '';
                       }
                       return Math.round(n * 100) / 100;
@@ -248,3 +260,7 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: olt_rx_power
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'

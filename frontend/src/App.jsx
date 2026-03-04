@@ -56,7 +56,6 @@ const ALARM_REASON_TO_STATUS_KEY = {
   unknown: 'unknown'
 }
 const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
-const SEARCH_MATCH_STORAGE_KEY = 'varuna.searchMatch'
 const SELECTED_OLT_IDS_STORAGE_KEY = 'varuna.selectedOltIds'
 const THEME_STORAGE_KEY = 'varuna.theme'
 
@@ -453,30 +452,6 @@ const findPonById = (olts, ponId) => {
   return null
 }
 
-const findPonByCoordinates = (olts, target = {}) => {
-  const normalizedOltId = String(target?.oltId ?? '')
-  const normalizedSlotNumber = String(target?.slotNumber ?? '')
-  const normalizedPonNumber = String(target?.ponNumber ?? '')
-  if (!normalizedOltId || !normalizedSlotNumber || !normalizedPonNumber) return null
-
-  const olt = asList(olts).find((candidate) => String(candidate?.id) === normalizedOltId)
-  if (!olt) return null
-
-  for (const slot of asList(olt?.slots)) {
-    const slotNumber = slot?.slot_number ?? slot?.slot_id ?? slot?.id
-    if (String(slotNumber) !== normalizedSlotNumber) continue
-
-    for (const pon of asList(slot?.pons)) {
-      const ponNumber = pon?.pon_number ?? pon?.pon_id ?? pon?.id
-      if (String(ponNumber) === normalizedPonNumber) {
-        return { olt, slot, pon }
-      }
-    }
-  }
-
-  return null
-}
-
 const SegmentedControl = ({ options, value, onChange, compact = false }) => (
   <div className="inline-flex w-full items-center gap-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-slate-100/80 dark:bg-slate-800/80 p-1">
     {options.map((opt) => (
@@ -545,14 +520,7 @@ const App = () => {
       return null
     }
   })
-  const [selectedSearchMatch, setSelectedSearchMatch] = useState(() => {
-    try {
-      const saved = window.localStorage.getItem(SEARCH_MATCH_STORAGE_KEY)
-      return saved ? JSON.parse(saved) : null
-    } catch {
-      return null
-    }
-  })
+  const [ponHighlightTarget, setPonHighlightTarget] = useState(null)
   const [isDarkMode, setIsDarkMode] = useState(() => {
     try {
       if (typeof window === 'undefined') return false
@@ -584,19 +552,25 @@ const App = () => {
   })
   const [activeNav, setActiveNav] = useState(() => {
     const saved = localStorage.getItem('varuna_active_tab')
-    return ['topology', 'settings', 'power-report', 'alarm-history'].includes(saved) ? saved : 'topology'
+    return ['topology', 'power-report', 'alarm-history', 'settings'].includes(saved) ? saved : 'topology'
   })
+  const settingsOpen = activeNav === 'settings'
 
   useEffect(() => {
     localStorage.setItem('varuna_active_tab', activeNav)
   }, [activeNav])
 
+  // Clean up stale localStorage key from removed universal search
+  useEffect(() => {
+    try { localStorage.removeItem('varuna.searchMatch') } catch {}
+  }, [])
+
   useEffect(() => {
     if (!authChecked || !authToken) return
-    if (!canManageSettings && activeNav === 'settings') {
+    if (!canManageSettings && settingsOpen) {
       setActiveNav('topology')
     }
-  }, [authChecked, authToken, canManageSettings, activeNav])
+  }, [authChecked, authToken, canManageSettings, settingsOpen])
 
   useEffect(() => {
     try {
@@ -610,17 +584,6 @@ const App = () => {
       // noop
     }
   }, [selectedPonId])
-  useEffect(() => {
-    try {
-      if (selectedSearchMatch) {
-        window.localStorage.setItem(SEARCH_MATCH_STORAGE_KEY, JSON.stringify(selectedSearchMatch))
-      } else {
-        window.localStorage.removeItem(SEARCH_MATCH_STORAGE_KEY)
-      }
-    } catch {
-      // noop
-    }
-  }, [selectedSearchMatch])
   const [isResizingPonPanel, setIsResizingPonPanel] = useState(false)
   const [ponPanelWidth, setPonPanelWidth] = useState(() => {
     try {
@@ -1020,45 +983,6 @@ const App = () => {
     }
   }, [rawSelectedPonData, selectedPonId])
 
-  const handlePowerReportDrillToTopology = useCallback((target = {}) => {
-    const fallbackMatch = findPonByCoordinates(olts, target)
-    const resolvedOltId = target?.oltId ?? fallbackMatch?.olt?.id ?? null
-    const resolvedSlotId = target?.slotRefId ?? fallbackMatch?.slot?.id ?? null
-    const resolvedPonId = target?.ponRefId ?? fallbackMatch?.pon?.id ?? fallbackMatch?.pon?.db_id ?? null
-    const normalizedOltId = resolvedOltId !== null && resolvedOltId !== undefined ? String(resolvedOltId) : ''
-    const normalizedPonId = resolvedPonId !== null && resolvedPonId !== undefined ? String(resolvedPonId) : null
-    const normalizedSerial = String(target?.serial || '').trim()
-    const normalizedClientName = String(target?.clientName || '').trim()
-    const searchTerm = normalizedSerial || normalizedClientName || (
-      target?.onuNumber !== null && target?.onuNumber !== undefined
-        ? `ONU ${target.onuNumber}`
-        : ''
-    )
-
-    if (normalizedOltId) {
-      setSelectedOltIds((previous) => (
-        previous.includes(normalizedOltId) ? previous : [...previous, normalizedOltId]
-      ))
-    }
-
-    if (normalizedPonId || normalizedOltId || searchTerm) {
-      const nextSearchMatch = {
-        searchTerm,
-        serial: normalizedSerial,
-        clientName: normalizedClientName,
-        onuId: target?.onuNumber ?? null,
-        oltId: resolvedOltId,
-      }
-      if (resolvedSlotId !== null && resolvedSlotId !== undefined) nextSearchMatch.slotId = resolvedSlotId
-      if (normalizedPonId) nextSearchMatch.ponId = normalizedPonId
-      setSelectedSearchMatch(nextSearchMatch)
-    } else {
-      setSelectedSearchMatch(null)
-    }
-
-    setSelectedPonId(normalizedPonId)
-    setActiveNav('topology')
-  }, [olts])
 
   const collectPowerForSelectedPon = useCallback(async () => {
     const oltId = toIntOrNull(selectedPonData?.olt?.id)
@@ -1165,7 +1089,7 @@ const App = () => {
     selectedPonMissingCyclesRef.current += 1
     if (selectedPonMissingCyclesRef.current >= 3) {
       selectedPonMissingCyclesRef.current = 0
-      setSelectedSearchMatch(null)
+      setPonHighlightTarget(null)
       setSelectedPonId(null)
     }
   }, [activeNav, selectedPonId, rawSelectedPonData, loading, error, olts.length])
@@ -1252,12 +1176,14 @@ const App = () => {
 
     const handleKeyDown = (event) => {
       if (event.key !== 'Escape') return
-      event.preventDefault()
-      if (isResizingPonPanel) {
-        stopPonPanelResize()
+      if (isPonPanelOpen) {
+        event.preventDefault()
+        if (isResizingPonPanel) {
+          stopPonPanelResize()
+        }
+        setPonHighlightTarget(null)
+        setSelectedPonId(null)
       }
-      setSelectedSearchMatch(null)
-      setSelectedPonId(null)
     }
 
     window.addEventListener('keydown', handleKeyDown, true)
@@ -1287,11 +1213,6 @@ const App = () => {
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
 
-  const supportsSelectedOltRxPower = useMemo(() => {
-    const explicit = selectedPonData?.olt?.supports_olt_rx_power
-    if (typeof explicit === 'boolean') return explicit
-    return true
-  }, [selectedPonData])
 
   const availableStatusCounts = useMemo(() => {
     return selectedOnus.reduce((acc, onu) => {
@@ -1336,18 +1257,13 @@ const App = () => {
     { id: 'online', label: t('Online') }
   ]
 
-  const powerSortOptions = useMemo(() => {
-    const options = [
-      { id: 'default', label: t('Default order') },
-      { id: 'worst_onu_rx', label: 'ONU RX ↓' },
-      { id: 'best_onu_rx', label: 'ONU RX ↑' }
-    ]
-    if (supportsSelectedOltRxPower) {
-      options.splice(2, 0, { id: 'worst_olt_rx', label: 'OLT RX ↓' })
-      options.push({ id: 'best_olt_rx', label: 'OLT RX ↑' })
-    }
-    return options
-  }, [supportsSelectedOltRxPower, t])
+  const powerSortOptions = useMemo(() => [
+    { id: 'default', label: t('Default order') },
+    { id: 'worst_onu_rx', label: 'ONU RX ↓' },
+    { id: 'worst_olt_rx', label: 'OLT RX ↓' },
+    { id: 'best_onu_rx', label: 'ONU RX ↑' },
+    { id: 'best_olt_rx', label: 'OLT RX ↑' },
+  ], [t])
 
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
@@ -1435,8 +1351,6 @@ const App = () => {
 
   const selectedPonStats = useMemo(() => getOnuStats(selectedOnus), [selectedOnus])
 
-  const hasOnuNames = true
-
   const powerRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
       const classification = classifyOnu(onu)
@@ -1462,9 +1376,7 @@ const App = () => {
     }
 
     const sortBy = (primaryKey, direction) => {
-      const secondaryKey = supportsSelectedOltRxPower
-        ? (primaryKey === 'oltRx' ? 'onuRx' : 'oltRx')
-        : 'onuRx'
+      const secondaryKey = primaryKey === 'oltRx' ? 'onuRx' : 'oltRx'
       return [...baseRows].sort((a, b) => {
         const primaryDelta = compareNullable(a[primaryKey], b[primaryKey], direction)
         if (primaryDelta !== 0) return primaryDelta
@@ -1477,16 +1389,12 @@ const App = () => {
     }
 
     if (powerSortMode === 'default') return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
-    if (powerSortMode === 'worst_olt_rx') {
-      return supportsSelectedOltRxPower ? sortBy('oltRx', 'asc') : sortBy('onuRx', 'asc')
-    }
+    if (powerSortMode === 'worst_olt_rx') return sortBy('oltRx', 'asc')
     if (powerSortMode === 'worst_onu_rx') return sortBy('onuRx', 'asc')
-    if (powerSortMode === 'best_olt_rx') {
-      return supportsSelectedOltRxPower ? sortBy('oltRx', 'desc') : sortBy('onuRx', 'desc')
-    }
+    if (powerSortMode === 'best_olt_rx') return sortBy('oltRx', 'desc')
     if (powerSortMode === 'best_onu_rx') return sortBy('onuRx', 'desc')
     return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
-  }, [selectedOnus, powerSortMode, supportsSelectedOltRxPower])
+  }, [selectedOnus, powerSortMode])
 
   const powerSignalCounts = useMemo(() => {
     const oltId = selectedPonData?.olt?.id
@@ -1504,8 +1412,8 @@ const App = () => {
   }, [powerRows, selectedPonData])
 
   useEffect(() => {
-    if (!selectedSearchMatch) return
-    if (!selectedPonId || String(selectedSearchMatch.ponId) !== String(selectedPonId)) return
+    if (!ponHighlightTarget) return
+    if (!selectedPonId) return
 
     const scrollToHighlight = () => {
       const rows = document.querySelectorAll('[data-onu-highlight="true"]')
@@ -1520,7 +1428,7 @@ const App = () => {
       setTimeout(scrollToHighlight, 120)
     })
     return () => cancelAnimationFrame(frame)
-  }, [selectedSearchMatch, selectedPonId, selectedOnus, activeTab])
+  }, [ponHighlightTarget, selectedPonId, selectedOnus, activeTab])
 
   const isSelectedOltGray = useMemo(() => {
     const oltId = selectedPonData?.olt?.id
@@ -1607,18 +1515,18 @@ const App = () => {
 
   return (
     <div className="h-[100dvh] min-h-[100dvh] bg-white dark:bg-slate-950 flex flex-col font-sans transition-colors duration-300">
-      <nav className="h-16 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-700/50 flex items-center px-6 sticky top-0 z-[100] transition-colors shadow-sm">
-        <div className="flex items-center gap-3 mr-4 sm:mr-10">
-          <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20">
+      <nav className="h-16 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-700/50 flex items-center px-3 lg:px-6 sticky top-0 z-[100] transition-colors shadow-sm gap-2 lg:gap-0">
+        <div className="flex items-center gap-3 mr-2 lg:mr-4">
+          <div className="w-9 h-9 bg-emerald-600 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20 shrink-0">
             <VarunaIcon className="w-6 h-6 text-white" />
           </div>
           <span className="text-[12px] font-black text-slate-900 dark:text-white tracking-widest uppercase hidden md:block">VARUNA</span>
         </div>
 
-        <div className="flex items-center gap-1 h-full">
+        <div className="flex items-center gap-1 h-full lg:ml-4">
           <button
             onClick={() => setActiveNav('topology')}
-            className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            className={`flex items-center justify-center gap-2.5 px-3 lg:px-4 h-full transition-all relative group ${activeNav === 'topology' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <Network className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Topology')}</span>
@@ -1626,7 +1534,7 @@ const App = () => {
           </button>
           <button
             onClick={() => setActiveNav('power-report')}
-            className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'power-report' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            className={`flex items-center justify-center gap-2.5 px-3 lg:px-4 h-full transition-all relative group ${activeNav === 'power-report' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <Zap className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Power Report')}</span>
@@ -1634,25 +1542,25 @@ const App = () => {
           </button>
           <button
             onClick={() => setActiveNav('alarm-history')}
-            className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'alarm-history' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+            className={`flex items-center justify-center gap-2.5 px-3 lg:px-4 h-full transition-all relative group ${activeNav === 'alarm-history' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
           >
             <History className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Alarm History')}</span>
             {activeNav === 'alarm-history' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
+        </div>
+
+        <div className="flex items-center gap-1 ml-auto">
           {canManageSettings && (
             <button
               onClick={() => setActiveNav('settings')}
-              className={`flex items-center justify-center gap-2.5 px-4 h-full transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
+              className={`flex items-center justify-center gap-2.5 px-3 lg:px-4 h-16 transition-all relative group ${activeNav === 'settings' ? 'text-emerald-600' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
             >
               <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
               <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Settings')}</span>
               {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
             </button>
           )}
-        </div>
-
-        <div className="ml-auto flex items-center gap-3">
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all group outline-none">
@@ -1664,64 +1572,58 @@ const App = () => {
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
               <DropdownMenu.Content
-                className="w-[252px] bg-white dark:bg-slate-900 rounded-2xl p-2.5 shadow-2xl border border-slate-100 dark:border-slate-700/50 z-[200] animate-in fade-in zoom-in-95 duration-200"
+                className="w-[240px] bg-white dark:bg-slate-900 rounded-xl p-1.5 shadow-xl shadow-black/8 dark:shadow-black/30 border border-slate-200/60 dark:border-slate-700/50 z-[200] animate-in fade-in zoom-in-95 duration-200"
                 sideOffset={8}
                 align="end"
               >
-                <div className="px-2 py-2 mb-1.5 border-b border-slate-100 dark:border-slate-700/50">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-                      <User className="w-[17px] h-[17px]" />
+                {/* User identity */}
+                <div className="flex items-center gap-2.5 px-2.5 pt-2 pb-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-100 dark:bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                    <User className="w-4 h-4" />
+                  </div>
+                  <p className="text-[11px] font-extrabold text-slate-900 dark:text-white leading-none">{authUser?.username || 'User'}</p>
+                </div>
+
+                <div className="h-px bg-slate-100 dark:bg-slate-800 my-1.5 mx-1" />
+
+                {/* Preferences group */}
+                <div className="flex flex-col gap-2 px-1.5 py-1.5">
+                  {/* Theme */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2 px-1">
+                      <Palette className="w-3 h-3 text-indigo-400 dark:text-indigo-500" />
+                      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{t('THEME')}</span>
                     </div>
-                    <div>
-                      <p className="text-[12px] font-extrabold text-slate-900 dark:text-white leading-none">{authUser?.username || 'User'}</p>
+                    <SegmentedControl
+                      compact
+                      value={isDarkMode ? 'dark' : 'light'}
+                      onChange={(val) => setIsDarkMode(val === 'dark')}
+                      options={[{ id: 'light', label: t('LIGHT') }, { id: 'dark', label: t('DARK') }]}
+                    />
+                  </div>
+                  {/* Language */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2 px-1">
+                      <Languages className="w-3 h-3 text-emerald-400 dark:text-emerald-500" />
+                      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">{t('LANGUAGE')}</span>
                     </div>
+                    <SegmentedControl
+                      compact
+                      value={i18n.language}
+                      onChange={(val) => i18n.changeLanguage(val)}
+                      options={[{ id: 'pt', label: 'PT-BR' }, { id: 'en', label: 'EN' }]}
+                    />
                   </div>
                 </div>
 
-                <div className="px-0.5 py-0.5">
-                  <div className="flex flex-col gap-3">
-                    {/* Theme Section */}
-                    <div className="flex flex-col gap-1.5">
-                       <div className="flex items-center gap-2.5">
-                          <div className="w-6 h-6 rounded-md bg-indigo-100/80 dark:bg-indigo-500/15 text-indigo-500 dark:text-indigo-400 flex items-center justify-center">
-                              <Palette className="w-3.5 h-3.5" />
-                          </div>
-                          <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">{t('THEME')}</span>
-                       </div>
-                       <SegmentedControl
-                        compact
-                        value={isDarkMode ? 'dark' : 'light'}
-                        onChange={(val) => setIsDarkMode(val === 'dark')}
-                        options={[{ id: 'light', label: t('LIGHT') }, { id: 'dark', label: t('DARK') }]}
-                      />
-                    </div>
+                <div className="h-px bg-slate-100 dark:bg-slate-800 my-1.5 mx-1" />
 
-                    {/* Language Section */}
-                    <div className="flex flex-col gap-1.5">
-                       <div className="flex items-center gap-2.5">
-                          <div className="w-6 h-6 rounded-md bg-emerald-100/80 dark:bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 flex items-center justify-center">
-                               <Languages className="w-3.5 h-3.5" />
-                          </div>
-                          <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">{t('LANGUAGE')}</span>
-                       </div>
-                      <SegmentedControl
-                        compact
-                        value={i18n.language}
-                        onChange={(val) => i18n.changeLanguage(val)}
-                        options={[{ id: 'pt', label: 'PT-BR' }, { id: 'en', label: 'EN' }]}
-                      />
-                    </div>
-                  </div>
-                </div>
-                <DropdownMenu.Separator className="h-px bg-slate-100 dark:bg-slate-800 my-2 mx-0.5" />
+                {/* Logout */}
                 <DropdownMenu.Item
                   onSelect={handleLogout}
-                  className="flex items-center gap-2.5 px-2 py-2 text-[10px] font-black text-rose-500 rounded-xl cursor-pointer outline-none transition-colors hover:bg-rose-50 dark:hover:bg-rose-900/20 uppercase group"
+                  className="flex items-center gap-2.5 px-2.5 py-2 text-[10px] font-bold text-rose-500 rounded-lg cursor-pointer outline-none transition-colors hover:bg-rose-50 dark:hover:bg-rose-900/20 uppercase tracking-wide group"
                 >
-                  <div className="w-6 h-6 rounded-md bg-rose-100 dark:bg-rose-900/30 flex items-center justify-center text-rose-500 group-hover:bg-rose-200 dark:group-hover:bg-rose-800/50 transition-colors">
-                    <LogOut className="w-3.5 h-3.5" />
-                  </div>
+                  <LogOut className="w-3.5 h-3.5 ml-1 text-rose-400 group-hover:text-rose-500 dark:group-hover:text-rose-400 transition-colors" />
                   <span>{t('LOGOUT')}</span>
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
@@ -1743,11 +1645,7 @@ const App = () => {
               : 'flex-1'}
           `}
         >
-          {activeNav === 'power-report' ? (
-            <PowerReport onDrillToTopology={handlePowerReportDrillToTopology} />
-          ) : activeNav === 'alarm-history' ? (
-            <AlarmHistory />
-          ) : activeNav === 'settings' && canManageSettings ? (
+          {activeNav === 'settings' && canManageSettings ? (
             <SettingsPanel
               olts={olts}
               vendorProfiles={vendorProfiles}
@@ -1764,6 +1662,10 @@ const App = () => {
               actionBusy={settingsActionBusy}
               oltHealthById={oltHealthById}
             />
+          ) : activeNav === 'power-report' ? (
+            <PowerReport />
+          ) : activeNav === 'alarm-history' ? (
+            <AlarmHistory />
           ) : (
             <NetworkTopology
               olts={olts}
@@ -1773,13 +1675,13 @@ const App = () => {
               selectedOltIds={selectedOltIds}
               onSelectedOltIdsChange={setSelectedOltIds}
               selectedPonId={selectedPonId}
-              selectedSearchMatch={selectedSearchMatch}
               onAlarmModeChange={handleAlarmModeChange}
-              onSearchMatchSelect={setSelectedSearchMatch}
               onPonSelect={(id, options = {}) => {
                 const nextId = id !== null && id !== undefined ? String(id) : null
-                if (!options?.force) {
-                  setSelectedSearchMatch(null)
+                if (options?.highlight) {
+                  setPonHighlightTarget(options.highlight)
+                } else {
+                  setPonHighlightTarget(null)
                 }
                 if (options?.force) {
                   setSelectedPonId(nextId)
@@ -1853,7 +1755,7 @@ const App = () => {
                 }
               }
               const handleClosePanel = () => {
-                setSelectedSearchMatch(null)
+                setPonHighlightTarget(null)
                 setSelectedPonId(null)
               }
               const renderDescriptionField = () => {
@@ -1885,10 +1787,10 @@ const App = () => {
                 <div className="hidden lg:flex pl-8 pr-4 py-3.5 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 items-center">
                   <div className="w-full flex items-start justify-between gap-3">
                     <div className="min-w-0 flex flex-col">
-                      <div className="flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
+                      <div className="flex items-center gap-1.5 text-[12px] font-semibold tracking-[0.03em]">
                         {selectedPonPath.map((part, idx) => (
                           <React.Fragment key={`${part}-${idx}`}>
-                            {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600" strokeWidth={2.5} />}
+                            {idx > 0 && <ChevronRight className="w-3 h-3 text-slate-300 dark:text-slate-600" strokeWidth={2.5} />}
                             <span className={`${idx === selectedPonPath.length - 1 ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'} ${idx === 0 ? 'truncate' : 'whitespace-nowrap'}`}>
                               {part}
                             </span>
@@ -1910,10 +1812,10 @@ const App = () => {
                 <div className="flex lg:hidden flex-col px-4 py-3 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 gap-1">
                   <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-wide">
+                      <div className="flex items-center gap-1.5 text-[12px] font-semibold tracking-[0.03em]">
                         {selectedPonPath.map((part, idx) => (
                           <React.Fragment key={`m-${part}-${idx}`}>
-                            {idx > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 shrink-0" strokeWidth={2.5} />}
+                            {idx > 0 && <ChevronRight className="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" strokeWidth={2.5} />}
                             <span className={`${idx === selectedPonPath.length - 1 ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'} ${idx === 0 ? 'truncate' : 'whitespace-nowrap'}`}>
                               {part}
                             </span>
@@ -2056,15 +1958,15 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '10%' }} />
-                            {hasOnuNames && <col style={{ width: '24%' }} />}
-                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '24%' }} />
                           </colgroup>
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU')}</th>
-                              {hasOnuNames && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>}
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="pl-4 pr-6 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Status')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Desconexão')}</th>
@@ -2076,10 +1978,10 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '10%' }} />
-                            {hasOnuNames && <col style={{ width: '24%' }} />}
-                            <col style={{ width: hasOnuNames ? '18%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
-                            <col style={{ width: hasOnuNames ? '24%' : '30%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '24%' }} />
+                            <col style={{ width: '24%' }} />
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {statusRows.map(({ onu, statusKey }) => {
@@ -2092,7 +1994,7 @@ const App = () => {
                                     : statusKey === 'unknown'
                                       ? t('Unknown')
                                       : t('Offline')
-                              const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                              const rawClientName = String(onu.client_name || onu.name || '').trim()
                               const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                               const { serialValue, hasSerial } = getDisplaySerial(onu)
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
@@ -2103,11 +2005,10 @@ const App = () => {
                                     onu.disconnect_window_end,
                                     i18n.language
                                   )
-                              const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
-                              const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
-                                (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
-                                (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                                (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
+                              const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
+                                (ponHighlightTarget.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(ponHighlightTarget.serial)) ||
+                                (ponHighlightTarget.onuId && Number(onuNumber) === Number(ponHighlightTarget.onuId)) ||
+                                (ponHighlightTarget.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(ponHighlightTarget.clientName))
                               ))
                               return (
                                 <tr
@@ -2122,13 +2023,11 @@ const App = () => {
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
                                   </td>
-                                  {hasOnuNames && (
                                   <td className="px-2.5 py-0 align-middle">
                                     <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
                                       {clientLabel}
                                     </span>
                                   </td>
-                                  )}
                                   <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
                                     {hasSerial ? serialValue : (
                                       <span className={serialPlaceholderClass(statusKey)}>{serialValue}</span>
@@ -2150,7 +2049,7 @@ const App = () => {
                             })}
                             {statusRows.length === 0 && (
                               <tr>
-                                <td colSpan={hasOnuNames ? 5 : 4} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                                <td colSpan={5} className="p-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
                                 </td>
                               </tr>
@@ -2212,7 +2111,7 @@ const App = () => {
                                 : statusKey === 'unknown'
                                   ? t('Unknown')
                                   : t('Offline')
-                          const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                          const rawClientName = String(onu.client_name || onu.name || '').trim()
                           const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                           const { serialValue, hasSerial } = getDisplaySerial(onu)
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
@@ -2223,11 +2122,10 @@ const App = () => {
                                 onu.disconnect_window_end,
                                 i18n.language
                               )
-                          const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
-                          const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
-                            (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
-                            (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                            (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
+                          const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
+                            (ponHighlightTarget.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(ponHighlightTarget.serial)) ||
+                            (ponHighlightTarget.onuId && Number(onuNumber) === Number(ponHighlightTarget.onuId)) ||
+                            (ponHighlightTarget.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(ponHighlightTarget.clientName))
                           ))
                           return (
                             <div
@@ -2317,19 +2215,19 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '8%' }} />
-                            {hasOnuNames && <col style={{ width: '20%' }} />}
-                            <col style={{ width: hasOnuNames ? '18%' : '26%' }} />
-                            <col style={{ width: hasOnuNames ? '16%' : '20%' }} />
-                            {supportsSelectedOltRxPower && <col style={{ width: hasOnuNames ? '16%' : '20%' }} />}
-                            <col style={{ width: hasOnuNames ? '22%' : '26%' }} />
+                            <col style={{ width: '20%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '14%' }} />
+                            <col style={{ width: '14%' }} />
+                            <col style={{ width: '26%' }} />
                           </colgroup>
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-800/90">
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('ONU')}</th>
-                              {hasOnuNames && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>}
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Name')}</th>
                               <th className="pl-2.5 pr-4 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Serial')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('ONU RX')}</th>
-                              {supportsSelectedOltRxPower && <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('OLT RX')}</th>}
+                              <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-right">{t('OLT RX')}</th>
                               <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap text-center">{t('Leitura')}</th>
                             </tr>
                           </thead>
@@ -2339,15 +2237,15 @@ const App = () => {
                         <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '520px' }}>
                           <colgroup>
                             <col style={{ width: '8%' }} />
-                            {hasOnuNames && <col style={{ width: '20%' }} />}
-                            <col style={{ width: hasOnuNames ? '18%' : '26%' }} />
-                            <col style={{ width: hasOnuNames ? '16%' : '20%' }} />
-                            {supportsSelectedOltRxPower && <col style={{ width: hasOnuNames ? '16%' : '20%' }} />}
-                            <col style={{ width: hasOnuNames ? '22%' : '26%' }} />
+                            <col style={{ width: '20%' }} />
+                            <col style={{ width: '18%' }} />
+                            <col style={{ width: '14%' }} />
+                            <col style={{ width: '14%' }} />
+                            <col style={{ width: '26%' }} />
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
-                              const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                              const rawClientName = String(onu.client_name || onu.name || '').trim()
                               const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                               const { serialValue, hasSerial } = getDisplaySerial(onu)
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
@@ -2360,11 +2258,10 @@ const App = () => {
                               const readingAt = formatReadingAt(readAt, i18n.language)
                               const onuRxFormatted = hasOnuRx ? formatPowerValue(onuRx) : null
                               const oltRxFormatted = hasOltRx ? formatPowerValue(oltRx) : null
-                              const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
-                              const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
-                                (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
-                                (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                                (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
+                              const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
+                                (ponHighlightTarget.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(ponHighlightTarget.serial)) ||
+                                (ponHighlightTarget.onuId && Number(onuNumber) === Number(ponHighlightTarget.onuId)) ||
+                                (ponHighlightTarget.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(ponHighlightTarget.clientName))
                               ))
                               return (
                                 <tr
@@ -2379,13 +2276,11 @@ const App = () => {
                                   <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center">
                                     {onuNumber}
                                   </td>
-                                  {hasOnuNames && (
                                   <td className="px-2.5 py-0 align-middle">
                                     <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
                                       {clientLabel}
                                     </span>
                                   </td>
-                                  )}
                                   <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
                                     {hasSerial ? serialValue : (
                                       <span className={serialPlaceholderClass(statusKey)}>{serialValue}</span>
@@ -2394,11 +2289,9 @@ const App = () => {
                                   <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>
                                     {onuRxFormatted || '—'}
                                   </td>
-                                  {supportsSelectedOltRxPower && (
-                                    <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>
-                                      {oltRxFormatted || '—'}
-                                    </td>
-                                  )}
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>
+                                    {oltRxFormatted || '—'}
+                                  </td>
                                   <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${hasReading ? 'text-slate-500 dark:text-slate-400' : 'text-slate-300 dark:text-slate-600'}`}>
                                     {readingAt}
                                   </td>
@@ -2407,7 +2300,7 @@ const App = () => {
                             })}
                             {powerRows.length === 0 && (
                               <tr>
-                                <td colSpan={hasOnuNames ? (supportsSelectedOltRxPower ? 6 : 5) : (supportsSelectedOltRxPower ? 5 : 4)} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
+                                <td colSpan={6} className="p-8 text-center text-[12px] font-bold text-slate-400 uppercase tracking-widest">
                                   {t('No ONU data available')}
                                 </td>
                               </tr>
@@ -2450,23 +2343,22 @@ const App = () => {
                     <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
                         {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
-                          const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                          const rawClientName = String(onu.client_name || onu.name || '').trim()
                           const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                           const { serialValue, hasSerial } = getDisplaySerial(onu)
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                           const hasOnuRx = onuRx !== null
                           const hasOltRx = oltRx !== null
-                          const hasAnyPower = hasOnuRx || (supportsSelectedOltRxPower && hasOltRx)
+                          const hasAnyPower = hasOnuRx || hasOltRx
                           const grayPower = 'text-slate-500 dark:text-slate-400'
                           const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
                           const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
                           const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
                           const readingAt = formatReadingAt(readAt, i18n.language)
-                          const searchTargetMatchesPon = selectedSearchMatch && String(selectedSearchMatch.ponId) === String(selectedPonId)
-                          const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
-                            (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
-                            (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                            (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
+                          const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
+                            (ponHighlightTarget.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(ponHighlightTarget.serial)) ||
+                            (ponHighlightTarget.onuId && Number(onuNumber) === Number(ponHighlightTarget.onuId)) ||
+                            (ponHighlightTarget.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(ponHighlightTarget.clientName))
                           ))
                           return (
                             <div
@@ -2495,12 +2387,10 @@ const App = () => {
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
                                       <span className={`w-[76px] text-right font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                     </span>
-                                    {supportsSelectedOltRxPower && (
-                                      <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
-                                        <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                        <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
-                                      </span>
-                                    )}
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
+                                      <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
+                                      <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                    </span>
                                     <span className={`self-stretch text-left text-[10px] font-semibold tabular-nums ${hasReading ? 'text-slate-400 dark:text-slate-500' : disconnectPlaceholderClass(statusKey)}`}>{readingAt}</span>
                                   </>
                                 ) : (
@@ -2560,6 +2450,7 @@ const App = () => {
         <span>{t('Version')} {__APP_VERSION__}</span>
         <span>{lastCollectionAt ? `${t('Last update')}: ${formatReadingAt(lastCollectionAt, i18n.language)}` : ''}</span>
       </footer>
+
     </div>
   )
 }

@@ -268,7 +268,7 @@ const resources = {
       'Slot': 'Slot',
       'PON': 'PON',
       'Reading': 'Reading',
-      'Search client...': 'Search client...',
+      'Search ONU...': 'Search ONU...',
       'Select a client to view alarm history': 'Select a client to view alarm history',
       'Last {{days}} days': 'Last {{days}} days',
       'Disconnections': 'Disconnections',
@@ -292,8 +292,10 @@ const resources = {
       'Open in topology': 'Open in topology',
       'Select all': 'All',
       'Clear': 'Clear',
-      'Search client, serial or PON...': 'Search client, serial or PON...',
       'Location': 'Location',
+      'No history available for this client': 'No history available for this client',
+      'Close settings': 'Close settings',
+      'Clear search': 'Clear search',
     }
   },
   pt: {
@@ -562,7 +564,7 @@ const resources = {
       'Slot': 'Placa',
       'PON': 'PON',
       'Reading': 'Leitura',
-      'Search client...': 'Buscar cliente...',
+      'Search ONU...': 'Buscar ONU...',
       'Select a client to view alarm history': 'Selecione um cliente para ver o histórico de alarmes',
       'Last {{days}} days': 'Últimos {{days}} dias',
       'Disconnections': 'Desconexões',
@@ -586,8 +588,10 @@ const resources = {
       'Open in topology': 'Abrir na topologia',
       'Select all': 'Selecionar tudo',
       'Clear': 'Limpar',
-      'Search client, serial or PON...': 'Buscar cliente, serial ou PON...',
       'Location': 'Localização',
+      'No history available for this client': 'Nenhum histórico disponível para este cliente',
+      'Close settings': 'Fechar configurações',
+      'Clear search': 'Limpar busca',
     }
   }
 }

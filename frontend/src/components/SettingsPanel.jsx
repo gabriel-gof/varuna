@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2, RefreshCcw, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Clock } from 'lucide-react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useTranslation } from 'react-i18next'
-import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds, hasOltOverride } from '../utils/powerThresholds'
+import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds } from '../utils/powerThresholds'
 import { HEALTH_STYLES } from '../utils/healthStyles'
 
 const MAX_OLT_NAME = 12
@@ -404,7 +404,7 @@ export const SettingsPanel = ({
   onRunPolling,
   onRefreshPower,
   actionBusy,
-  oltHealthById = {}
+  oltHealthById = {},
 }) => {
   const { t, i18n } = useTranslation()
   const [showAddForm, setShowAddForm] = useState(false)
@@ -1143,7 +1143,6 @@ export const SettingsPanel = ({
               ? cardThresholdKeys.some((k) => cardThresholdForm[k] !== cardOriginalThresholds[k])
               : false
             const cardDirty = cardFormDirty || cardThresholdDirty
-            const cardIsOverride = hasOltOverride(oltId)
 
             return (
               <div key={olt.id}>
@@ -1378,8 +1377,6 @@ export const SettingsPanel = ({
                             )}
                          </div>
 
-                        {/* Reset & Instructions (optional, keeps it clean) */}
-                        {cardIsOverride && null}
                       </div>
                     )}
                     </div>{/* End fixed height */}

@@ -707,6 +707,76 @@ class ZabbixModeTests(TestCase):
         execute_now_mock.assert_called_once()
         self.assertEqual(execute_now_mock.call_args.args[0], "10090")
 
+    @override_settings(
+        ZABBIX_REFRESH_CLOCK_GRACE_SECONDS=0,
+        ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS=2,
+        ZABBIX_REFRESH_UPSTREAM_WAIT_STEP_SECONDS=1,
+    )
+    @patch("topology.services.power_service.time.sleep")
+    @patch("topology.services.power_service.zabbix_service.execute_items_now_by_keys")
+    @patch("topology.services.power_service.zabbix_service.get_hostid")
+    @patch("topology.services.power_service.zabbix_service.fetch_power_by_index")
+    def test_power_service_refresh_upstream_retries_until_fresh_clock(
+        self,
+        fetch_power_mock,
+        get_hostid_mock,
+        execute_now_mock,
+        sleep_mock,
+    ):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=21,
+            snmp_index="11.21",
+            serial="ABCD12340021",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        now_epoch = int(timezone.now().timestamp())
+        stale_epoch = now_epoch - 120
+        fresh_epoch = now_epoch + 5
+        fetch_power_mock.side_effect = [
+            (
+                {
+                    "11.21": {
+                        "onu_rx_power": -24.8,
+                        "olt_rx_power": None,
+                        "power_read_at": datetime.fromtimestamp(stale_epoch, tz=dt_timezone.utc).isoformat(),
+                        "power_clock_epoch": stale_epoch,
+                    }
+                },
+                timezone.now().isoformat(),
+            ),
+            (
+                {
+                    "11.21": {
+                        "onu_rx_power": -24.6,
+                        "olt_rx_power": None,
+                        "power_read_at": datetime.fromtimestamp(fresh_epoch, tz=dt_timezone.utc).isoformat(),
+                        "power_clock_epoch": fresh_epoch,
+                    }
+                },
+                timezone.now().isoformat(),
+            ),
+        ]
+        get_hostid_mock.return_value = "10090"
+        execute_now_mock.return_value = 1
+
+        result = power_service.refresh_for_onus(
+            [onu],
+            force_refresh=True,
+            refresh_upstream=True,
+            force_upstream=True,
+        )
+
+        row = result.get(onu.id) or {}
+        self.assertEqual(row.get("onu_rx_power"), -24.6)
+        self.assertTrue(row.get("power_read_at"))
+        self.assertEqual(fetch_power_mock.call_count, 2)
+        sleep_mock.assert_any_call(1)
+        execute_now_mock.assert_called_once()
+
     @patch("topology.services.power_service.zabbix_service.fetch_power_by_index")
     def test_power_service_refresh_upstream_does_not_fallback_to_cached_stale_values(self, fetch_power_mock):
         onu = ONU.objects.create(
@@ -1276,6 +1346,7 @@ class ZabbixModeTests(TestCase):
             ],
         )
 
+    @override_settings(ZABBIX_HOST_NAME_PREFIX="")
     def test_sync_olt_host_runtime_updates_host_interface_and_macros(self):
         service = ZabbixService()
         api_calls = []
@@ -1541,6 +1612,7 @@ class ZabbixModeTests(TestCase):
     @override_settings(
         ZABBIX_HOST_GROUP_NAME="OLT",
         ZABBIX_HOST_GROUP_LEGACY_NAMES=("OLT", "OLTs"),
+        ZABBIX_HOST_NAME_PREFIX="",
     )
     def test_sync_olt_host_runtime_creates_host_when_missing(self):
         service = ZabbixService()
@@ -1674,6 +1746,81 @@ class ZabbixModeTests(TestCase):
         # Ensure we first probed cached hostid, then recovered by host name.
         self.assertEqual(api_calls[0][0], "host.get")
         self.assertEqual((api_calls[0][1] or {}).get("hostids"), ["99999"])
+
+    @override_settings(ZABBIX_HOST_NAME_PREFIX="GabSA-")
+    def test_resolve_host_candidate_names_include_prefixed_and_plain(self):
+        service = ZabbixService()
+        names = service._resolve_host_candidate_names(self.olt)
+        self.assertIn(self.olt.name, names)
+        self.assertIn(f"GabSA-{self.olt.name}", names)
+
+    @override_settings(
+        ZABBIX_HOST_GROUP_NAME="OLT",
+        ZABBIX_HOST_GROUP_LEGACY_NAMES=("OLT", "OLTs"),
+        ZABBIX_HOST_NAME_PREFIX="GabSA-",
+    )
+    def test_sync_olt_host_runtime_applies_host_name_prefix(self):
+        service = ZabbixService()
+        api_calls = []
+        expected_name = f"GabSA-{self.olt.name}"
+
+        def _fake_call(method, params):
+            api_calls.append((method, params))
+            if method == "hostgroup.get":
+                names = ((params or {}).get("filter") or {}).get("name") or []
+                if "OLT" in names:
+                    return [{"groupid": "301", "name": "OLT"}]
+                return []
+            if method == "host.get":
+                if params.get("hostids"):
+                    return [
+                        {
+                            "hostid": "10090",
+                            "hostgroups": [{"groupid": "301", "name": "OLT"}],
+                            "tags": [],
+                        }
+                    ]
+                return []
+            if method == "hostinterface.get":
+                return [
+                    {
+                        "interfaceid": "9004",
+                        "type": "2",
+                        "main": "1",
+                        "useip": "1",
+                        "ip": VARUNA_SNMP_IP_MACRO,
+                        "dns": "",
+                        "port": VARUNA_SNMP_PORT_MACRO,
+                        "details": {
+                            "version": "2",
+                            "community": VARUNA_SNMP_COMMUNITY_MACRO,
+                            "bulk": "1",
+                        },
+                    }
+                ]
+            if method == "usermacro.get":
+                return []
+            return {}
+
+        with (
+            patch.object(
+                service,
+                "resolve_host",
+                return_value={"hostid": "10090", "host": self.olt.name, "name": self.olt.name},
+            ),
+            patch.object(service, "_call", side_effect=_fake_call),
+        ):
+            synced = service.sync_olt_host_runtime(self.olt)
+
+        self.assertTrue(synced)
+        host_name_updates = [
+            params
+            for method, params in api_calls
+            if method == "host.update" and isinstance(params, dict) and "host" in params and "name" in params
+        ]
+        self.assertEqual(len(host_name_updates), 1)
+        self.assertEqual(host_name_updates[0].get("host"), expected_name)
+        self.assertEqual(host_name_updates[0].get("name"), expected_name)
 
     @override_settings(
         ZABBIX_HOST_GROUP_NAME="OLT",
@@ -1821,6 +1968,7 @@ class ZabbixModeTests(TestCase):
             [{"groupid": "88"}, {"groupid": "901"}],
         )
 
+    @override_settings(ZABBIX_HOST_NAME_PREFIX="")
     def test_sync_olt_host_runtime_resolves_host_by_previous_name(self):
         service = ZabbixService()
         api_calls = []
@@ -2045,6 +2193,32 @@ class ZabbixModeTests(TestCase):
         self.assertIsNotNone(power_history[0].get("onu_rx_power"))
         self.assertIsNotNone(power_history[0].get("olt_rx_power"))
 
+    def test_alarm_clients_returns_hyphen_when_name_is_missing(self):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=106,
+            snmp_index="11.106",
+            serial="ABCD01020106",
+            name="",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        request = self.api_factory.get(
+            "/api/onu/alarm-clients/",
+            {"search": "ABCD01020106", "limit": 7},
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "alarm_clients"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        results = response.data.get("results") or []
+        row = next((item for item in results if item.get("id") == onu.id), None)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.get("client_name"), "-")
+
     @patch("topology.api.views.zabbix_service.fetch_onu_item_timelines")
     def test_alarm_history_falls_back_to_local_source_when_zabbix_has_no_status(self, fetch_timeline_mock):
         onu = ONU.objects.create(
@@ -2141,6 +2315,43 @@ class ZabbixModeTests(TestCase):
         self.assertIsNone(row.get("olt_rx_power"))
         self.assertIsNone(row.get("power_read_at"))
 
+    def test_power_report_discards_out_of_range_power_values(self):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=203,
+            snmp_index="11.203",
+            serial="ABCD01020203",
+            name="cliente-power-range-guard",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        ONUPowerSample.objects.create(
+            olt=onu.olt,
+            onu=onu,
+            slot_id=onu.slot_id,
+            pon_id=onu.pon_id,
+            onu_number=onu.onu_id,
+            onu_rx_power=-80.0,
+            olt_rx_power=1.0,
+            read_at=timezone.now(),
+            source=ONUPowerSample.SOURCE_MANUAL,
+        )
+        cache_service.delete(cache_service.get_onu_power_key(onu.olt_id, onu.id))
+
+        request = self.api_factory.get("/api/onu/power-report/")
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "power_report"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") or []
+        row = next((item for item in rows if item.get("id") == onu.id), None)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row.get("onu_rx_power"))
+        self.assertIsNone(row.get("olt_rx_power"))
+        self.assertIsNone(row.get("power_read_at"))
+
     @patch("topology.api.views.zabbix_service.fetch_onu_item_timelines")
     def test_alarm_history_discards_sentinel_power_from_zabbix(self, fetch_timeline_mock):
         onu = ONU.objects.create(
@@ -2186,3 +2397,98 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data.get("source"), "zabbix")
         self.assertEqual(response.data.get("power_history") or [], [])
+
+    @patch("topology.api.views.zabbix_service.fetch_onu_item_timelines")
+    def test_alarm_history_discards_out_of_range_power_from_zabbix(self, fetch_timeline_mock):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=204,
+            snmp_index="11.204",
+            serial="ABCD01020204",
+            name="cliente-power-zabbix-range-guard",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        now = timezone.now()
+        epoch = int(now.timestamp())
+        fetch_timeline_mock.return_value = {
+            "status_samples": [
+                {"clock_epoch": epoch - 120, "value": "1"},
+                {"clock_epoch": epoch - 60, "value": "1"},
+            ],
+            "reason_samples": [],
+            "status_previous": None,
+            "onu_rx_samples": [
+                {"clock_epoch": epoch - 60, "value": "-80"},
+            ],
+            "olt_rx_samples": [
+                {"clock_epoch": epoch - 60, "value": "1"},
+            ],
+        }
+
+        request = self.api_factory.get(
+            f"/api/onu/{onu.id}/alarm-history/",
+            {
+                "alarm_days": 7,
+                "power_days": 7,
+                "alarm_limit": 1000,
+                "max_power_points": 744,
+            },
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "alarm_history"})(request, pk=str(onu.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("source"), "zabbix")
+        self.assertEqual(response.data.get("power_history") or [], [])
+
+    @patch("topology.api.views.zabbix_service.fetch_onu_item_timelines")
+    def test_alarm_history_merges_close_onu_and_olt_power_samples(self, fetch_timeline_mock):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=105,
+            snmp_index="11.105",
+            serial="ABCD01020105",
+            name="cliente-power-merge-window",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        now = timezone.now()
+        epoch = int(now.timestamp())
+        fetch_timeline_mock.return_value = {
+            "status_samples": [
+                {"clock_epoch": epoch - 180, "value": "online"},
+                {"clock_epoch": epoch - 60, "value": "online"},
+            ],
+            "reason_samples": [],
+            "status_previous": None,
+            "onu_rx_samples": [
+                {"clock_epoch": epoch - 60, "value": "-21.94"},
+            ],
+            "olt_rx_samples": [
+                {"clock_epoch": epoch - 54, "value": "-27.75"},
+            ],
+        }
+
+        request = self.api_factory.get(
+            f"/api/onu/{onu.id}/alarm-history/",
+            {
+                "alarm_days": 7,
+                "power_days": 7,
+                "alarm_limit": 1000,
+                "max_power_points": 744,
+            },
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "alarm_history"})(request, pk=str(onu.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("source"), "zabbix")
+        power_history = response.data.get("power_history") or []
+        self.assertEqual(len(power_history), 1)
+        self.assertEqual(power_history[0].get("onu_rx_power"), -21.94)
+        self.assertEqual(power_history[0].get("olt_rx_power"), -27.75)

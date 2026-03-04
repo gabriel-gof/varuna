@@ -50,6 +50,7 @@ VARUNA_AVAILABILITY_INTERVAL_MACRO = "{$VARUNA.AVAILABILITY_INTERVAL}"
 VARUNA_HISTORY_DAYS_MACRO = "{$VARUNA.HISTORY_DAYS}"
 DEFAULT_VARUNA_HOST_GROUP_NAME = "OLT"
 DEFAULT_VARUNA_LEGACY_HOST_GROUP_NAMES = ("OLT", "OLTs")
+DEFAULT_VARUNA_HOST_NAME_PREFIX = ""
 VARUNA_HOST_TAG_SOURCE = "source"
 VARUNA_HOST_TAG_VENDOR = "vendor"
 VARUNA_HOST_TAG_MODEL = "model"
@@ -212,7 +213,37 @@ class ZabbixService:
         name = str(getattr(olt, "name", "") or "").strip()
         if name:
             candidates.append(name)
-        return self._dedupe_values(candidates)
+        return self._expand_host_name_candidates(candidates)
+
+    @staticmethod
+    def _host_name_prefix() -> str:
+        return str(getattr(settings, "ZABBIX_HOST_NAME_PREFIX", DEFAULT_VARUNA_HOST_NAME_PREFIX) or "").strip()
+
+    def _desired_host_name_for_olt(self, olt) -> str:
+        base_name = str(getattr(olt, "name", "") or "").strip()
+        if not base_name:
+            return ""
+        prefix = self._host_name_prefix()
+        if not prefix:
+            return base_name
+        if base_name.startswith(prefix):
+            return base_name
+        return f"{prefix}{base_name}"
+
+    def _expand_host_name_candidates(self, names: Iterable[str]) -> List[str]:
+        prefix = self._host_name_prefix()
+        expanded: List[str] = []
+        for raw_name in self._dedupe_values(names):
+            expanded.append(raw_name)
+            if not prefix:
+                continue
+            if raw_name.startswith(prefix):
+                unprefixed = raw_name[len(prefix):].strip()
+                if unprefixed:
+                    expanded.append(unprefixed)
+            else:
+                expanded.append(f"{prefix}{raw_name}")
+        return self._dedupe_values(expanded)
 
     @staticmethod
     def _dedupe_values(values: Iterable[str]) -> List[str]:
@@ -317,7 +348,7 @@ class ZabbixService:
         name_candidates = self._resolve_host_candidate_names(olt)
         previous_name = str(previous.get("name") or "").strip()
         if previous_name:
-            name_candidates.append(previous_name)
+            name_candidates.extend(self._expand_host_name_candidates([previous_name]))
 
         ip_candidates = [str(getattr(olt, "ip_address", "") or "").strip()]
         previous_ip = str(previous.get("ip_address") or "").strip()
@@ -537,7 +568,7 @@ class ZabbixService:
         return template_ids
 
     def _create_host_for_olt(self, olt) -> Optional[Dict]:
-        olt_name = str(getattr(olt, "name", "") or "").strip()
+        olt_name = self._desired_host_name_for_olt(olt)
         if not olt_name:
             return None
 
@@ -844,7 +875,7 @@ class ZabbixService:
         if not hostid:
             return False
 
-        olt_name = str(getattr(olt, "name", "") or "").strip()
+        olt_name = self._desired_host_name_for_olt(olt)
         if olt_name:
             current_host_name = str((host or {}).get("host") or "").strip()
             current_visible_name = str((host or {}).get("name") or "").strip()

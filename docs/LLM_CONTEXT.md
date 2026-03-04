@@ -3,9 +3,16 @@
 ## What Varuna Is
 Varuna is an OLT/ONU monitoring platform focused on topology-first operational visibility, not dashboard-heavy analytics.
 
+## Agent Ownership Split
+- `Codex` is responsible for backend/infrastructure/runtime work (Django API, scheduler, Zabbix integration, compose/env, operations docs).
+- `Opus` is responsible for frontend/UI/UX work (layout, navigation flow, search UX, responsive behavior, visual interactions).
+- `Opus` must not change backend/infrastructure files (`backend/`, `docker*`, runtime env, migrations, backend APIs).
+- If a request is primarily frontend behavior/design, route it to Opus and document backend impacts only when needed.
+
 ## Current Product Decisions
 - No dashboard tab in current scope.
-- Primary views: topology + settings (settings hidden for viewer role).
+- Primary views: topology, power report, alarm history, settings. Settings is a dedicated nav tab (visible for admin/operator only).
+- Per-tab search: Topology has inline search (client-side via `useUniversalSearch` hook), Power Report has text filter (filters rows by name/serial), Alarm History has API-based search (debounced `alarm-clients` endpoint). Each tab manages its own search state independently. Power Report → Topology drill-through uses `ponHighlightTarget` state in App.jsx.
 - Unreachable OLTs must be visually gray.
 - Backend domain app is `topology`; do not reintroduce backend `dashboard` naming.
 - Backend is currently single-tenant at application level.
@@ -13,6 +20,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Recommended practical production topology on one VM:
   - shared infra stack with `pg-varuna` (all Varuna logical DBs), `pg-zabbix`, `zabbix-server`, `zabbix-web`,
   - per-client app stacks with `frontend` + `backend` + `redis`.
+- Production Zabbix security rule: keep a dedicated API account (`varuna_api`) for Varuna and a separate personal admin/operator account for UI; never use default credentials.
 - Role-based access: `admin`/`operator` (full), `viewer` (read-only). Enforce via `can_modify_settings()` on backend, `canManageSettings` on frontend.
 - PON descriptions are operator-managed metadata: editable by `admin`/`operator`, read-only for `viewer`, and must persist across discovery refreshes.
 - Discovery, polling, power collection, and reachability checks are scheduled by the backend `run_scheduler` command. The frontend does not submit automatic maintenance; it relies on backend scheduling and provides manual trigger buttons.
@@ -28,8 +36,10 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Product version source-of-truth is root `VERSION`; frontend version labels are injected from this file through `__APP_VERSION__` (no hardcoded UI version text).
 - Varuna owns Zabbix host runtime lifecycle for OLTs: create/update syncs host group/tags/interface macros, missing hosts are auto-created, and OLT delete attempts `host.delete`.
 - Host group for managed OLT hosts is instance-configurable (`ZABBIX_HOST_GROUP_NAME`) so each Varuna instance can keep its own client namespace on a shared Zabbix server.
+- Host names in Zabbix can be instance-prefixed with `ZABBIX_HOST_NAME_PREFIX` to avoid collisions across multiple Varuna instances sharing one Zabbix server.
 - Zabbix host tags are lowercase; Huawei/Fiberhome `UNIFICADO` model is normalized to tag `model=unified` for English consistency.
 - Vendor templates must define `oid_templates.zabbix` keys (`discovery_item_key`, status/reason key patterns, power key patterns).
+- ONU item prototypes should carry `slot={#SLOT}` and `pon={#PON}` tags so operators can filter item data by slot/PON directly in Zabbix.
 - Template-first hygiene is mandatory: serial/status/power normalization belongs to Zabbix template preprocessing. Frontend must not implement vendor-specific data repair.
 - Manual/scoped refresh can request immediate Zabbix item execution; this is capped by `ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS` (default `512`) to avoid overload on global runs.
 - Reachability is sentinel-first: shared template `Varuna SNMP Availability` provides `varunaSnmpAvailability` (sysName.0) at 30s cadence, and backend validates its freshness before falling back to status-item freshness.
@@ -76,6 +86,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - **Indexing: `pon_resolve: interface_map`** — Huawei ONU index still uses `{pon_ifindex}.{onu_id}` semantics and is parsed through vendor profile metadata.
 - **Status reason mapping** — Fiberhome reason can come directly from status value (`link_loss` / `dying_gasp`) while Huawei can use separate reason item keys.
 - **Power normalization in templates** — Zabbix templates normalize vendor raw values before Varuna reads them.
+- **Power validity contract** — accepted optical RX values are strictly `-40 dBm < value < 0 dBm`; template-level preprocessing enforces this first, and backend `normalize_power_value` mirrors it as a defensive guard.
 - **Serial normalization in templates** — discovery preprocessing must sanitize malformed serial payloads (comma/punctuation artifacts) before Varuna consumes LLD rows.
 - Current vendor profiles: ZTE C300, VSOL LIKE GPON 8P, Huawei MA5680T (seed migration `0012`), Fiberhome AN5516 (seed migration `0013`).
 - Zabbix template set in repo root includes: `snmp-avail-template.yaml`, `huawei-template.yaml`, `fiberhome-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`.

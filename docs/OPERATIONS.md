@@ -22,6 +22,12 @@ cd /Users/gabriel/Documents/varuna
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
+Core app services in compose:
+- `frontend`
+- `backend`
+- `varuna-db`
+- `redis`
+
 Development service URLs:
 - Frontend: `http://localhost:4000`
 - Backend API: `http://localhost:8000/api/`
@@ -58,6 +64,7 @@ Backend collection contract:
   - optional `ZABBIX_STATUS_STALE_MARGIN_SECONDS` (default `90`) as stale-sample safety margin for status freshness checks.
   - optional `ZABBIX_HOST_GROUP_NAME` (default `OLT`) to place OLT hosts into a client-specific Zabbix host group (recommended Title Case with spaces/slashes, for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`).
   - optional `ZABBIX_HOST_GROUP_LEGACY_NAMES` (default `OLT,OLTs`) to define old group names that should be removed from managed hosts during sync.
+  - optional `ZABBIX_HOST_NAME_PREFIX` (default empty) to namespace host names per client instance (for example `GabSAT-`, producing `GabSAT-OLT-BSJ-01`).
   - optional `COLLECTOR_CHECK_SECONDS` (default `30`) for scheduler reachability cadence.
   - optional `COLLECTOR_CHECK_MAX_BACKOFF_SECONDS` (default `1800`, compatibility knob).
 
@@ -117,7 +124,7 @@ Template import workflow:
 - On OLT create/update, Varuna also synchronizes Zabbix host runtime fields:
   - auto-create missing Zabbix host with vendor template + shared `Varuna SNMP Availability` linkage when possible,
   - host group membership to `ZABBIX_HOST_GROUP_NAME` (legacy names from `ZABBIX_HOST_GROUP_LEGACY_NAMES` are migrated automatically),
-  - host name + visible name,
+  - host technical/visible names using optional prefix (`ZABBIX_HOST_NAME_PREFIX + OLT.name`),
   - host tags (`source=varuna`, `vendor`, `model`) from Varuna vendor profile in lowercase values,
   - SNMP interface `ip/port/community` references to `{$VARUNA.SNMP_IP}` / `{$VARUNA.SNMP_PORT}` / `{$VARUNA.SNMP_COMMUNITY}`,
   - fallback creation of sentinel item `varunaSnmpAvailability` on host when missing,
@@ -127,6 +134,7 @@ Template import workflow:
 - Huawei and Fiberhome vendor profiles are standardized to model `UNIFICADO`; host tag `model` is synced as lowercase `unified` (English normalization in Zabbix).
 - Trends are disabled in Varuna templates (`trends=0`) to reduce Zabbix storage overhead.
 - Item history in Varuna templates is driven by `{$VARUNA.HISTORY_DAYS}` (default `7d`) for ONU status and power metrics.
+- ONU item prototypes include `slot` and `pon` tags (`slot={#SLOT}`, `pon={#PON}`) for direct slot/PON filtering in Zabbix item views.
 - Dev self-monitoring note:
   - `Zabbix server` host agent interface must target `zabbix-agent:10050` (DNS), not `127.0.0.1:10050` inside `zabbix-server`.
 
@@ -147,6 +155,16 @@ Production ingress contract:
 - host-level reverse proxy terminates TLS and forwards `X-Forwarded-Proto` to frontend,
 - frontend forwards that header to backend `/api`,
 - backend trusts `X-Forwarded-Proto=https` for `SECURE_SSL_REDIRECT` and secure-cookie behavior.
+
+## Production Zabbix Access Policy
+If `zabbix-web` is exposed for operator debugging, keep this mandatory policy:
+- expose only over HTTPS (`443`) behind a reverse proxy;
+- use strong credentials only (long random passwords/tokens, never default `Admin/zabbix`);
+- keep two separate users:
+  - `varuna_api` for Varuna integration (`ZABBIX_USERNAME`/`ZABBIX_PASSWORD` or `ZABBIX_API_TOKEN`);
+  - personal operator/admin user (for example `gabriel`) for manual Zabbix UI access;
+- do not use personal admin credentials in Varuna env files;
+- keep `zabbix-web` bound to private/localhost interfaces when possible, or restrict with IP allowlist/VPN.
 
 ## Multi-Instance Production (Per Client)
 Use one production Compose stack per client when serving different OLT fleets.

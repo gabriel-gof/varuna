@@ -3,7 +3,7 @@
 ## Goals
 - Monitor many OLTs from multiple vendors using one coherent topology-first UX.
 - Keep backend logic vendor-extensible and failure-tolerant.
-- Preserve a simple runtime footprint: `frontend`, `backend`, `db`, `redis` (plus optional Zabbix services when enabled).
+- Preserve a simple runtime footprint: `frontend`, `backend`, `varuna-db`, `redis` (plus optional Zabbix services when enabled).
 - Keep tenant isolation operationally simple by scaling with stack-level boundaries.
 
 ## Runtime Services
@@ -14,7 +14,7 @@
   - Production compose runs backend with Gunicorn on internal port `80`.
   - Scheduler startup is controlled by `ENABLE_SCHEDULER=1` at backend container boot.
   - Optional auth bootstrap at container boot: when `VARUNA_AUTH_BOOTSTRAP=1`, backend entrypoint runs `ensure_auth_user` using `VARUNA_AUTH_*` envs before serving traffic.
-- `db`: PostgreSQL source of truth.
+- `varuna-db`: PostgreSQL source of truth.
 - `redis`: low-latency status/power cache.
 - Optional collector stack (enabled in current dev compose):
   - `zabbix-db`
@@ -48,7 +48,11 @@ Container/runtime health:
   - shared `pg-varuna` PostgreSQL container for all Varuna logical DBs,
   - separate shared `pg-zabbix` PostgreSQL container for Zabbix only,
   - shared `zabbix-server` + `zabbix-web`.
-- Standalone mode (per-stack local `db`) is still supported for simpler single-instance deployments.
+- Zabbix auth boundary:
+  - Varuna integration should use a dedicated API user/token (`varuna_api`),
+  - human debugging should use a separate operator/admin user,
+  - never couple personal admin credentials to runtime integration envs.
+- Standalone mode (per-stack local `varuna-db`) is still supported for simpler single-instance deployments.
 
 ### Multi-Instance on One Host
 - Running multiple Varuna instances on one machine is supported when each stack uses:
@@ -57,7 +61,7 @@ Container/runtime health:
   - isolated env vars/secrets.
 - Current gabisat production hostname is `varuna.gabisat.com.br` (single canonical host, no secondary alias).
 - `docker-compose.prod.yml` is instance-parameterized via:
-  - `VARUNA_ENV_FILE` (env file injected into `backend` and standalone `db`),
+  - `VARUNA_ENV_FILE` (env file injected into `backend` and standalone `varuna-db`),
   - `VARUNA_FRONTEND_BIND_IP`,
   - `VARUNA_FRONTEND_HTTP_HOST_PORT`,
   - `VARUNA_BACKEND_BIND_IP`,
@@ -133,6 +137,7 @@ When to split into dedicated `discovery` and `poller` workers:
 
 ### 3. OLT <-> Zabbix Runtime Sync
 - On OLT create/update, Varuna synchronizes Zabbix host runtime (group, tags, interface macro refs, macro values).
+- Host naming can be namespaced per Varuna instance with `ZABBIX_HOST_NAME_PREFIX` (`<prefix><OLT.name>`) to avoid collisions on shared Zabbix servers.
 - If host is missing in Zabbix, Varuna auto-creates it and links the vendor template plus shared `Varuna SNMP Availability` template when available.
 - On Varuna OLT delete, backend attempts Zabbix `host.delete` for the resolved host.
 

@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, Check, ArrowDownUp, Server, CircuitBoard, Cable } from 'lucide-react'
+import { ChevronDown, Check, ArrowDownUp, Server, CircuitBoard, Cable, Search, X } from 'lucide-react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 
 import api from '../services/api'
@@ -13,11 +13,6 @@ const DEFAULT_SORT_MODE = 'worst_onu_rx'
 let powerReportRowsCache = []
 
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
-const parseTimestampMs = (value) => {
-  if (!value) return null
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return null
   const numeric = Number(value)
@@ -59,7 +54,6 @@ const normalizeRow = (row) => {
     id: row?.id ?? null,
     oltName: row?.olt_name || row?.olt || 'OLT',
     oltId: row?.olt_id ?? row?.oltId,
-    powerIntervalSeconds: row?.power_interval_seconds ?? row?.powerIntervalSeconds ?? null,
     slotNumber: row?.slot_id ?? row?.slot_number ?? '',
     slotRefId: row?.slot_ref_id ?? row?.slotRefId ?? null,
     ponNumber: row?.pon_id ?? row?.pon_number ?? '',
@@ -71,7 +65,6 @@ const normalizeRow = (row) => {
     onuRx,
     oltRx,
     readingAt: row?.power_read_at || row?.reading_at || null,
-    readingAtMs: parseTimestampMs(row?.power_read_at || row?.reading_at || null),
     signal: classifySignal(onuRx, oltRx, row?.olt_id ?? row?.oltId),
   }
 }
@@ -212,6 +205,8 @@ export const PowerReport = () => {
     } catch {}
   }, [])
 
+  const [searchText, setSearchText] = useState('')
+
   // Location-filtered rows (before signal filter) — used for stable counts
   const locationFiltered = useMemo(() => {
     let result = rows
@@ -236,6 +231,15 @@ export const PowerReport = () => {
     return locationFiltered.filter((row) => sigSet.has(row.signal))
   }, [locationFiltered, signalFilter])
 
+  const searchFiltered = useMemo(() => {
+    const term = searchText.trim().toLowerCase()
+    if (!term) return filtered
+    return filtered.filter(row =>
+      (row.clientName || '').toLowerCase().includes(term) ||
+      (row.serial || '').toLowerCase().includes(term)
+    )
+  }, [filtered, searchText])
+
   const sortOptions = useMemo(() => [
     { id: 'worst_onu_rx', label: 'ONU RX ↓' },
     { id: 'worst_olt_rx', label: 'OLT RX ↓' },
@@ -244,7 +248,7 @@ export const PowerReport = () => {
   ], [])
 
   const sorted = useMemo(() => {
-    const result = [...filtered]
+    const result = [...searchFiltered]
     const numericVal = (value) => {
       const numeric = Number(value)
       return Number.isFinite(numeric) ? numeric : Infinity
@@ -268,11 +272,13 @@ export const PowerReport = () => {
     }
 
     return result
-  }, [filtered, sortMode])
+  }, [searchFiltered, sortMode])
 
   useEffect(() => {
     setVisibleRowsLimit(INITIAL_VISIBLE_ROWS)
-  }, [signalFilter, sortMode, rows, selectedOltId, selectedSlot, selectedPon])
+    scrollRef.current?.scrollTo(0, 0)
+    mobileScrollRef.current?.scrollTo(0, 0)
+  }, [signalFilter, sortMode, rows, selectedOltId, selectedSlot, selectedPon, searchText])
 
   const visibleRows = useMemo(() => {
     return sorted.slice(0, visibleRowsLimit)
@@ -280,6 +286,9 @@ export const PowerReport = () => {
 
   const hasMore = visibleRows.length < sorted.length
   const sentinelRef = useRef(null)
+  const mobileSentinelRef = useRef(null)
+  const scrollRef = useRef(null)
+  const mobileScrollRef = useRef(null)
 
   useEffect(() => {
     if (!hasMore) return
@@ -291,20 +300,35 @@ export const PowerReport = () => {
           setVisibleRowsLimit((prev) => prev + LOAD_MORE_ROWS)
         }
       },
-      { rootMargin: '200px' }
+      { root: scrollRef.current, rootMargin: '200px' }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasMore, visibleRows.length])
+
+  useEffect(() => {
+    if (!hasMore) return
+    const el = mobileSentinelRef.current
+    if (!el) return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisibleRowsLimit((prev) => prev + LOAD_MORE_ROWS)
+        }
+      },
+      { root: mobileScrollRef.current, rootMargin: '200px' }
     )
     observer.observe(el)
     return () => observer.disconnect()
   }, [hasMore, visibleRows.length])
 
   const stats = useMemo(() => {
-    const summary = { measured: 0, good: 0, warning: 0, critical: 0, noReading: 0 }
+    const summary = { good: 0, warning: 0, critical: 0, noReading: 0 }
     locationFiltered.forEach((row) => {
       if (row.signal === 'unknown') {
         summary.noReading += 1
         return
       }
-      summary.measured += 1
       if (row.signal === 'good') summary.good += 1
       else if (row.signal === 'warning') summary.warning += 1
       else if (row.signal === 'critical') summary.critical += 1
@@ -342,20 +366,17 @@ export const PowerReport = () => {
       <div className="flex-1 min-h-0 flex flex-col px-3 lg:px-8 pt-5 pb-4">
 
         {/* Toolbar */}
-        <div className="flex flex-col gap-2 lg:gap-0 mb-4 w-full lg:max-w-[1100px] lg:mx-auto">
-          {/* Row 1: OLT + Slot + PON + Sort (mobile) | OLT + Slot + PON + pills + sort (desktop) */}
-          <div className="flex items-center gap-1 relative">
-            {/* Mobile: OLT in flex wrapper for equal sizing with sort */}
-            <div className="flex-1 min-w-0 lg:contents">
-              <FilterDropdown
-                value={selectedOltId}
-                onChange={changeOlt}
-                options={[{ id: null, label: t('All OLTs') }, ...availableOlts.map(o => ({ id: o.id, label: o.name }))]}
-                label={selectedOltId && availableOlts.find(o => o.id === selectedOltId) ? availableOlts.find(o => o.id === selectedOltId).name : t('All OLTs')}
-                icon={<Server className="w-4 h-4" />}
-                width="w-full lg:w-[116px]"
-              />
-            </div>
+        <div className="flex flex-col gap-2.5 lg:gap-0 mb-4 w-full lg:max-w-[1100px] lg:mx-auto">
+          {/* Row 1 (mobile) / Row 1 (desktop): OLT + Slot + PON + pills + search + sort */}
+          <div className="flex items-center gap-1.5 relative">
+            <FilterDropdown
+              value={selectedOltId}
+              onChange={changeOlt}
+              options={[{ id: null, label: t('All OLTs') }, ...availableOlts.map(o => ({ id: o.id, label: o.name }))]}
+              label={selectedOltId && availableOlts.find(o => o.id === selectedOltId) ? availableOlts.find(o => o.id === selectedOltId).name : t('All OLTs')}
+              icon={<Server className="w-4 h-4" />}
+              width="flex-1 min-w-0 lg:w-[160px] lg:flex-none"
+            />
             <FilterDropdown
               value={selectedSlot}
               onChange={changeSlot}
@@ -363,7 +384,7 @@ export const PowerReport = () => {
               label={selectedSlot !== null ? selectedSlot : t('All slots')}
               disabled={!hasOlt || availableSlots.length === 0}
               icon={<CircuitBoard className="w-4 h-4" />}
-              width="w-[80px] lg:w-[72px]"
+              width="flex-1 min-w-0 lg:w-[72px] lg:flex-none"
             />
             <FilterDropdown
               value={selectedPon}
@@ -372,18 +393,8 @@ export const PowerReport = () => {
               label={selectedPon !== null ? selectedPon : t('All PONs')}
               disabled={selectedSlot === null || availablePons.length === 0}
               icon={<Cable className="w-4 h-4" />}
-              width="w-[80px] lg:w-[72px]"
+              width="flex-1 min-w-0 lg:w-[72px] lg:flex-none"
             />
-            {/* Mobile: sort */}
-            <div className="lg:hidden flex-1 min-w-0">
-              <SortDropdown
-                value={sortMode}
-                onChange={setSortMode}
-                options={sortOptions}
-                label={currentSortLabel}
-                width="w-full"
-              />
-            </div>
             {/* Desktop: pills absolutely centered over full row */}
             <div className="hidden lg:flex items-center gap-0.5 absolute left-1/2 -translate-x-1/2 pointer-events-auto">
               {signalPills.map((pill) => {
@@ -408,11 +419,31 @@ export const PowerReport = () => {
               })}
               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
               <div className="inline-flex items-center gap-1 h-7 px-1.5">
-                <span className="text-[10px] font-black uppercase tracking-[0.04em] text-slate-400 dark:text-slate-500">Total</span>
                 <span className="text-[10px] font-black tabular-nums text-slate-500 dark:text-slate-400">{locationFiltered.length}</span>
               </div>
             </div>
-            <div className="hidden lg:block ml-auto">
+            {/* Desktop: search + sort right-aligned */}
+            <div className="hidden lg:flex items-center gap-1.5 ml-auto">
+              <div className="relative w-[180px]">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300 dark:text-slate-500 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder={t('Search ONU...')}
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  className="h-7 w-full bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-md pl-7 pr-6 text-[10px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+                />
+                {searchText && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchText('')}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 h-4 w-4 flex items-center justify-center rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                    aria-label={t('Clear')}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
               <SortDropdown
                 value={sortMode}
                 onChange={setSortMode}
@@ -423,7 +454,7 @@ export const PowerReport = () => {
           </div>
 
           {/* Row 2 (mobile only): Signal pills centered */}
-          <div className="flex lg:hidden items-center justify-center gap-0.5 w-full">
+          <div className="flex lg:hidden items-center justify-between w-full px-2">
             {signalPills.map((pill) => {
               const isOn = signalFilter.length === 0 || signalFilter.includes(pill.id)
               const count = pill.id === 'good' ? stats.good : pill.id === 'warning' ? stats.warning : pill.id === 'critical' ? stats.critical : stats.noReading
@@ -438,20 +469,44 @@ export const PowerReport = () => {
                       : 'opacity-35 hover:opacity-55'
                   }`}
                 >
-                  <span className="h-3.5 w-3.5 flex items-center justify-center shrink-0">
-                    {isOn ? (
-                      <Check className="w-3 h-3 text-slate-600 dark:text-slate-400" strokeWidth={3} />
-                    ) : (
-                      <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
-                    )}
-                  </span>
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${pill.dot}`} />
-                  <span className={`text-[10px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
+                  <span className={`w-[7px] h-[7px] rounded-full shrink-0 ${pill.dot}`} />
+                  <span className={`text-[9.5px] font-black uppercase tracking-[0.03em] ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{pill.shortLabel}</span>
+                  <span className={`text-[9.5px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
                 </button>
               )
             })}
-            <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
-            <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500">{locationFiltered.length}</span>
+            <div className="w-px h-3.5 bg-slate-300/80 dark:bg-slate-600/60 mx-0.5" />
+            <span className="text-[9.5px] font-black tabular-nums text-slate-400 dark:text-slate-500 px-1">{locationFiltered.length}</span>
+          </div>
+
+          {/* Row 3 (mobile only): Search + Sort */}
+          <div className="flex lg:hidden items-center gap-1.5">
+            <div className="relative flex-1 min-w-0">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300 dark:text-slate-500 pointer-events-none" />
+              <input
+                type="text"
+                placeholder={t('Search ONU...')}
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                className="h-7 w-full bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-md pl-7 pr-6 text-[10px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+              />
+              {searchText && (
+                <button
+                  type="button"
+                  onClick={() => setSearchText('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  aria-label={t('Clear')}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <SortDropdown
+              value={sortMode}
+              onChange={setSortMode}
+              options={sortOptions}
+              label={currentSortLabel}
+            />
           </div>
         </div>
 
@@ -466,7 +521,7 @@ export const PowerReport = () => {
           <div className="shrink-0 overflow-hidden bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-700/50">
             <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '800px' }}>
               <colgroup>
-                <col style={{ width: '10%' }} />
+                <col style={{ width: '13%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
@@ -492,10 +547,10 @@ export const PowerReport = () => {
             </table>
           </div>
 
-          <div className="flex-1 overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
+          <div ref={scrollRef} className="flex-1 overflow-x-auto overflow-y-auto min-h-0 custom-scrollbar">
             <table className="w-full table-fixed text-left border-collapse" style={{ minWidth: '800px' }}>
               <colgroup>
-                <col style={{ width: '10%' }} />
+                <col style={{ width: '13%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '5%' }} />
@@ -528,7 +583,7 @@ export const PowerReport = () => {
                   return (
                     <tr
                       key={`d-${row.id ?? idx}`}
-                      className="h-11 odd:bg-white even:bg-slate-50/50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors"
+                      className="h-11 transition-colors odd:bg-white even:bg-slate-50/50 dark:odd:bg-slate-900 dark:even:bg-slate-800/40 hover:bg-slate-100/70 dark:hover:bg-slate-800/60"
                     >
                       <td className="px-3 py-0 align-middle text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">{row.oltName}</td>
                       <td className="px-2 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{row.slotNumber}</td>
@@ -556,7 +611,7 @@ export const PowerReport = () => {
 
         {/* Mobile cards */}
         <div className="flex lg:hidden flex-col flex-1 min-h-0 w-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-          <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
+          <div ref={mobileScrollRef} className="flex-1 overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
             {loading && rows.length === 0 && (
               <div className="py-16 text-center">
                 <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Loading live data')}</p>
@@ -577,7 +632,7 @@ export const PowerReport = () => {
               return (
                 <div
                   key={`m-${row.id ?? idx}`}
-                  className="rounded-md border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-3 py-2 flex items-center gap-2 active:bg-slate-50 dark:active:bg-slate-800/60 transition-colors"
+                  className="rounded-md border px-3 py-2 flex items-center gap-2 transition-colors border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 active:bg-slate-50 dark:active:bg-slate-800/60"
                 >
                   <div className="min-w-0 flex-1 flex flex-col gap-1">
                     <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums uppercase">
@@ -624,7 +679,7 @@ export const PowerReport = () => {
               )
             })}
             {hasMore && (
-              <div ref={sentinelRef} className="py-3 text-center">
+              <div ref={mobileSentinelRef} className="py-3 text-center">
                 <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{t('Loading live data')}</p>
               </div>
             )}
@@ -635,11 +690,11 @@ export const PowerReport = () => {
   )
 }
 
-const SortDropdown = ({ value, onChange, options, label, width }) => (
+const SortDropdown = ({ value, onChange, options, label }) => (
   <DropdownMenu.Root>
     <DropdownMenu.Trigger asChild>
       <button
-        className={`flex items-center gap-0.5 h-7 rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all active:scale-[0.97] pl-1.5 pr-1 ${width || 'w-[120px]'}`}
+        className="flex items-center gap-0.5 h-7 w-[120px] rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-all active:scale-[0.97] pl-1.5 pr-1"
       >
         <ArrowDownUp className="w-3.5 h-3.5 shrink-0" />
         <span className="flex-1 min-w-0 text-center text-[10px] font-black uppercase tracking-[0.03em] truncate text-emerald-600 dark:text-emerald-400">

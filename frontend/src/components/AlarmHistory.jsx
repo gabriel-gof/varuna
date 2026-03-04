@@ -1,11 +1,9 @@
-import React, { useRef, useState, useEffect, useMemo } from 'react'
+import { useCallback, useRef, useState, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Search, X } from 'lucide-react'
 
 import api from '../services/api'
-import { getPowerColor, powerColorClass, getOltThresholds } from '../utils/powerThresholds'
-
-const normalizeSearch = (value) => String(value || '').toLowerCase().trim()
+import { getPowerColor, powerColorClass } from '../utils/powerThresholds'
 
 const toDateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
@@ -52,15 +50,20 @@ const normalizeAlarm = (alarm) => ({
 })
 
 const normalizePowerPoint = (point) => {
+  const toNullableNumber = (value) => {
+    if (value === null || value === undefined || value === '') return null
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
   const timestamp = Date.parse(point?.timestamp || '')
   if (!Number.isFinite(timestamp)) return null
-  const onuRx = Number(point?.onu_rx_power)
-  const oltRx = Number(point?.olt_rx_power)
+  const onuRx = toNullableNumber(point?.onu_rx_power)
+  const oltRx = toNullableNumber(point?.olt_rx_power)
   if (!Number.isFinite(onuRx) && !Number.isFinite(oltRx)) return null
   return {
     timestamp,
-    onuRx: Number.isFinite(onuRx) ? onuRx : null,
-    oltRx: Number.isFinite(oltRx) ? oltRx : null,
+    onuRx,
+    oltRx,
   }
 }
 
@@ -80,73 +83,83 @@ export const AlarmHistory = () => {
   const { t } = useTranslation()
 
   const [activeTab, setActiveTab] = useState('status')
-  const [searchTerm, setSearchTerm] = useState(() => {
-    try { return localStorage.getItem('varuna.history.searchTerm') || '' } catch { return '' }
-  })
-  const [searchFocused, setSearchFocused] = useState(false)
-  const [selectedClient, setSelectedClient] = useState(() => {
-    try {
-      const saved = localStorage.getItem('varuna.history.selectedClient')
-      return saved ? JSON.parse(saved) : null
-    } catch { return null }
-  })
-  const [suggestions, setSuggestions] = useState([])
-  const [suggestionsLoading, setSuggestionsLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [alarms, setAlarms] = useState([])
   const [powerHistory, setPowerHistory] = useState([])
+
+  // Local search state
+  const [searchTerm, setSearchTerm] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [selectedClient, setSelectedClient] = useState(null)
   const searchContainerRef = useRef(null)
 
-  const historyDays = selectedClient?.history_days || 7
-
+  // Debounced search effect
   useEffect(() => {
-    try { localStorage.setItem('varuna.history.searchTerm', searchTerm) } catch {}
+    const trimmed = searchTerm.trim()
+    if (trimmed.length < 2) {
+      setSearchResults([])
+      setSearchLoading(false)
+      return
+    }
+
+    setSearchLoading(true)
+    const timer = setTimeout(() => {
+      let cancelled = false
+      const doSearch = async () => {
+        try {
+          const response = await api.get('/onu/alarm-clients/', { params: { search: trimmed, limit: 7 } })
+          if (cancelled) return
+          const results = Array.isArray(response?.data?.results) ? response.data.results : []
+          setSearchResults(results)
+        } catch {
+          if (cancelled) return
+          setSearchResults([])
+        } finally {
+          if (!cancelled) setSearchLoading(false)
+        }
+      }
+      doSearch()
+      return () => { cancelled = true }
+    }, 300)
+    return () => clearTimeout(timer)
   }, [searchTerm])
 
+  // Click-outside to close suggestions
   useEffect(() => {
-    try {
-      if (selectedClient) localStorage.setItem('varuna.history.selectedClient', JSON.stringify(selectedClient))
-      else localStorage.removeItem('varuna.history.selectedClient')
-    } catch {}
-  }, [selectedClient])
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
+    const handlePointerDown = (event) => {
       if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
         setSearchFocused(false)
       }
     }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [])
 
-  useEffect(() => {
-    if (!searchFocused || selectedClient) return
+  const handleSelectClient = useCallback((client) => {
+    setSelectedClient(client)
+    setSearchTerm('')
+    setSearchResults([])
+    setSearchFocused(false)
+    setDetailError('')
+  }, [])
 
-    const term = normalizeSearch(searchTerm)
-    if (!term) {
-      setSuggestions([])
-      setSuggestionsLoading(false)
-      return
-    }
-
-    const timeout = setTimeout(async () => {
-      setSuggestionsLoading(true)
-      try {
-        const response = await api.get('/onu/alarm-clients/', {
-          params: { search: term, limit: 7 }
-        })
-        setSuggestions(Array.isArray(response?.data?.results) ? response.data.results : [])
-      } catch {
-        setSuggestions([])
-      } finally {
-        setSuggestionsLoading(false)
-      }
-    }, 180)
-
-    return () => clearTimeout(timeout)
-  }, [searchFocused, searchTerm, selectedClient])
+  const handleClearClient = useCallback(() => {
+    setSelectedClient(null)
+    setSearchTerm('')
+    setSearchResults([])
+    setAlarms([])
+    setPowerHistory([])
+    setDetailError('')
+  }, [])
+  const historyDays = selectedClient?.history_days || 7
+  const selectedClientLabel = selectedClient
+    ? ((selectedClient.client_name && selectedClient.client_name !== '-')
+      ? selectedClient.client_name
+      : (selectedClient.serial || '-'))
+    : searchTerm
 
   useEffect(() => {
     if (!selectedClient?.id) {
@@ -192,43 +205,6 @@ export const AlarmHistory = () => {
     return () => { cancelled = true }
   }, [selectedClient, t])
 
-  const handleSelectSuggestion = (client) => {
-    setSelectedClient(client)
-    setSearchTerm(client.client_name || client.clientName || '')
-    setSearchFocused(false)
-  }
-
-  const renderHighlightedText = (value, term) => {
-    const source = String(value || '')
-    const normalizedTerm = normalizeSearch(term)
-    if (!normalizedTerm || !source) return source
-
-    const lowerSource = source.toLowerCase()
-    const parts = []
-    let cursor = 0
-    let key = 0
-
-    while (cursor < source.length) {
-      const matchIndex = lowerSource.indexOf(normalizedTerm, cursor)
-      if (matchIndex === -1) {
-        parts.push(<span key={`p-${key++}`}>{source.slice(cursor)}</span>)
-        break
-      }
-      if (matchIndex > cursor) {
-        parts.push(<span key={`p-${key++}`}>{source.slice(cursor, matchIndex)}</span>)
-      }
-      const matchEnd = matchIndex + normalizedTerm.length
-      parts.push(
-        <mark key={`m-${key++}`} className="px-[1px] rounded-sm bg-emerald-100 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300">
-          {source.slice(matchIndex, matchEnd)}
-        </mark>
-      )
-      cursor = matchEnd
-    }
-
-    return parts
-  }
-
   const eventTypeStyle = (type) => {
     if (type === 'dying_gasp') return 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/30'
     if (type === 'link_loss') return 'bg-rose-50 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
@@ -249,7 +225,7 @@ export const AlarmHistory = () => {
 
   const lastNDays = useMemo(() => buildLastNDays(historyDays), [historyDays])
 
-  // All 30 days, zeros for days with no events
+  // All N days, zeros for days with no events
   const dailyDisconnections = useMemo(() => {
     const buckets = {}
     for (const alarm of alarms) {
@@ -262,24 +238,11 @@ export const AlarmHistory = () => {
     return lastNDays.map(date => buckets[date] || { date, link_loss: 0, dying_gasp: 0, unknown: 0 })
   }, [alarms, lastNDays])
 
-  const dailyPower = useMemo(() => {
-    const buckets = {}
-    for (const pt of powerHistory) {
-      const key = toDateKey(new Date(pt.timestamp))
-      if (!buckets[key]) buckets[key] = { onuRxSum: 0, onuRxCount: 0, oltRxSum: 0, oltRxCount: 0 }
-      if (pt.onuRx != null) { buckets[key].onuRxSum += pt.onuRx; buckets[key].onuRxCount++ }
-      if (pt.oltRx != null) { buckets[key].oltRxSum += pt.oltRx; buckets[key].oltRxCount++ }
-    }
-    return lastNDays.map((date) => {
-      const b = buckets[date]
-      if (!b) return { date, onuRx: null, oltRx: null }
-      return {
-        date,
-        onuRx: b.onuRxCount > 0 ? Math.round((b.onuRxSum / b.onuRxCount) * 100) / 100 : null,
-        oltRx: b.oltRxCount > 0 ? Math.round((b.oltRxSum / b.oltRxCount) * 100) / 100 : null,
-      }
-    })
-  }, [powerHistory, lastNDays])
+  const sortedPowerAsc = useMemo(() =>
+    [...powerHistory].sort((a, b) => a.timestamp - b.timestamp),
+    [powerHistory]
+  )
+
 
   // Individual samples sorted newest first for the table
   const sortedPowerHistory = useMemo(() =>
@@ -299,51 +262,51 @@ export const AlarmHistory = () => {
         {/* Toolbar */}
         <div className="mb-4 w-full lg:max-w-[1400px] lg:mx-auto">
           <div className="flex items-center gap-1.5 lg:gap-2">
-            <div ref={searchContainerRef} className="relative min-w-0 max-w-[200px] lg:max-w-[268px]">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 dark:text-slate-500" />
+            {/* Search */}
+            <div ref={searchContainerRef} className="relative min-w-0 flex-1 lg:flex-none lg:w-[280px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 dark:text-slate-500 pointer-events-none" />
               <input
                 type="text"
-                placeholder={t('Search client...')}
-                value={searchTerm}
-                onFocus={() => setSearchFocused(true)}
-                onChange={(event) => {
-                  setSearchTerm(event.target.value)
-                  if (!event.target.value) setSelectedClient(null)
-                  else if (selectedClient) setSelectedClient(null)
-                }}
+                placeholder={t('Search ONU...')}
+                value={selectedClientLabel}
+                readOnly={Boolean(selectedClient)}
+                onFocus={() => { if (!selectedClient) setSearchFocused(true) }}
+                onChange={(e) => { if (!selectedClient) setSearchTerm(e.target.value) }}
                 className="h-9 w-full bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-lg pl-9 pr-8 text-[11px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
               />
-              {searchTerm && (
+              {(selectedClient || searchTerm) && (
                 <button
                   type="button"
-                  onClick={() => { setSearchTerm(''); setSelectedClient(null); setSuggestions([]) }}
+                  onClick={selectedClient ? handleClearClient : () => { setSearchTerm(''); setSearchResults([]) }}
                   className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  aria-label={t('Clear')}
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               )}
-
-              {searchFocused && normalizeSearch(searchTerm) && !selectedClient && (
-                <div className="absolute left-0 top-[calc(100%+4px)] z-30 w-[320px] p-2 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl max-h-[280px] overflow-y-auto">
-                  {suggestionsLoading && (
-                    <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('Loading live data')}</p>
+              {!selectedClient && searchFocused && searchTerm.trim().length >= 2 && (
+                <div className="absolute left-0 top-11 z-30 w-full lg:w-[340px] p-2 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl max-h-[320px] overflow-y-auto">
+                  {searchLoading && searchResults.length === 0 && (
+                    <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('Loading...')}</p>
                   )}
-                  {!suggestionsLoading && suggestions.length === 0 && (
+                  {!searchLoading && searchResults.length === 0 && (
                     <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('No clients found')}</p>
                   )}
-                  {!suggestionsLoading && suggestions.map((suggestion) => (
+                  {searchResults.map((client) => (
                     <button
-                      key={suggestion.id}
+                      key={client.id}
                       type="button"
-                      onClick={() => handleSelectSuggestion(suggestion)}
+                      onClick={() => handleSelectClient(client)}
                       className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                     >
                       <p className="text-[11px] font-black tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
-                        {renderHighlightedText(suggestion.client_name || `ONU ${suggestion.onu_number}`, searchTerm)}
+                        {client.client_name || '-'}
                       </p>
-                      <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis">
-                        {renderHighlightedText(suggestion.serial || '—', searchTerm)}
-                        <span className="ml-2 text-slate-400 dark:text-slate-500">{suggestion.olt_name} &middot; {t('Slot')} {suggestion.slot_id} &middot; PON {suggestion.pon_id}</span>
+                      <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis mt-0.5">
+                        {client.serial || '-'}
+                      </p>
+                      <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 whitespace-nowrap overflow-hidden text-ellipsis mt-0.5">
+                        {client.olt_name} · {client.slot_id}/{client.pon_id}/{client.onu_number}
                       </p>
                     </button>
                   ))}
@@ -351,8 +314,8 @@ export const AlarmHistory = () => {
               )}
             </div>
 
-            {/* Mobile: tab switcher — far right, only when client selected */}
-            {selectedClient && <div className="flex lg:hidden ml-auto">
+            {/* Mobile: tab switcher — always visible */}
+            <div className="flex lg:hidden shrink-0">
               <div className="inline-flex h-7 items-center gap-0.5 p-0.5 rounded-md border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-900/70">
                 {[
                   { id: 'status', label: t('Status') },
@@ -375,7 +338,7 @@ export const AlarmHistory = () => {
                   )
                 })}
               </div>
-            </div>}
+            </div>
 
             {selectedClient && <span className="hidden lg:inline ml-auto text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">{t('Last {{days}} days', { days: historyDays })}</span>}
           </div>
@@ -475,7 +438,7 @@ export const AlarmHistory = () => {
                 {detailLoading && powerHistory.length === 0 ? (
                   <p className="text-[11px] font-semibold text-slate-400 py-4">{t('Loading live data')}</p>
                 ) : (
-                  <PowerChart data={dailyPower} t={t} oltId={selectedClient.olt_id} />
+                  <PowerChart data={sortedPowerAsc} lastNDays={lastNDays} t={t} />
                 )}
               </div>
               <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-y border-slate-200/80 dark:border-slate-700/50">
@@ -536,11 +499,9 @@ export const AlarmHistory = () => {
                 </div>
 
                 {/* Chart — all N days, no scroll */}
-                {alarms.length > 0 && (
-                  <div className="shrink-0 border-y border-slate-200/80 dark:border-slate-700/50 px-2 pt-1">
-                    <DisconnectionChart data={dailyDisconnections} t={t} mobile />
-                  </div>
-                )}
+                <div className="shrink-0 border-y border-slate-200/80 dark:border-slate-700/50 px-2 pt-1">
+                  <DisconnectionChart data={dailyDisconnections} t={t} mobile />
+                </div>
 
                 {/* Column headers — pinned */}
                 <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-700/50">
@@ -599,7 +560,7 @@ export const AlarmHistory = () => {
 
                 {/* Chart — all N days, no scroll */}
                 <div className="shrink-0 border-y border-slate-200/80 dark:border-slate-700/50 px-2 pt-1">
-                  <PowerChart data={dailyPower} t={t} oltId={selectedClient.olt_id} mobile />
+                  <PowerChart data={sortedPowerAsc} lastNDays={lastNDays} t={t} mobile />
                 </div>
 
                 {/* Column headers — pinned */}
@@ -806,13 +767,11 @@ const DisconnectionChart = ({ data, t, mobile = false }) => {
   )
 }
 
-const PowerChart = ({ data, t, oltId, mobile = false }) => {
+const PowerChart = ({ data, lastNDays, t, mobile = false }) => {
   const [hoveredIdx, setHoveredIdx] = useState(null)
 
   const hasOnuRx = data.some((d) => d.onuRx != null)
   const hasOltRx = data.some((d) => d.oltRx != null)
-
-  const thresholds = getOltThresholds(oltId)
 
   const width = 500
   const height = 200
@@ -823,12 +782,8 @@ const PowerChart = ({ data, t, oltId, mobile = false }) => {
   const chartW = width - padL - padR
   const chartH = height - padT - padB
 
-  const totalDays = data.length
-
   const allValues = data.flatMap((d) => [d.onuRx, d.oltRx]).filter((v) => v != null)
-  // Include threshold breakpoints so quality band zones are always visible
-  const threshBreak = [thresholds.onu_rx_good, thresholds.onu_rx_bad].filter(v => Number.isFinite(v))
-  const rawMin = allValues.length ? Math.min(...allValues, ...threshBreak) : -30
+  const rawMin = allValues.length ? Math.min(...allValues) : -30
   const rawMax = allValues.length ? Math.max(...allValues) : -15
   const yMin = Math.floor(rawMin / 5) * 5
   const yMax = Math.ceil(rawMax / 5) * 5 || yMin + 5
@@ -837,25 +792,48 @@ const PowerChart = ({ data, t, oltId, mobile = false }) => {
   const ySteps = []
   for (let v = yMin; v <= yMax; v += 5) ySteps.push(v)
 
-  const innerPadX = 12
-  const toX = (i) => padL + innerPadX + (i / (totalDays - 1 || 1)) * (chartW - innerPadX * 2)
+  // Column-based x-axis — same geometry as DisconnectionChart
+  const totalDays = lastNDays.length || 1
+  const groupWidth = chartW / totalDays
+  const xForDay = (i) => padL + groupWidth * i + groupWidth / 2
+
+  // Day index lookup for mapping timestamps to columns
+  const dayIdx = {}
+  lastNDays.forEach((key, i) => { dayIdx[key] = i })
+
+  const toX = (ts) => {
+    const d = new Date(ts)
+    const key = toDateKey(d)
+    const col = dayIdx[key]
+    if (col === undefined) return padL + chartW
+    const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+    const frac = (ts - dayStart) / 86400000
+    return padL + groupWidth * col + frac * groupWidth
+  }
   const toY = (v) => padT + chartH - ((v - yMin) / yRange) * chartH
 
   const onuColor = '#38bdf8'  // sky-400 — ONU Rx (light blue)
   const oltColor = '#1d4ed8'  // blue-700 — OLT Rx (dark blue)
 
   const hovered = hoveredIdx !== null ? data[hoveredIdx] : null
-  const hoveredCssLeft = hoveredIdx !== null ? (toX(hoveredIdx) / width) * 100 : 0
+  const hoveredCssLeft = hoveredIdx !== null ? (toX(data[hoveredIdx].timestamp) / width) * 100 : 0
 
   const handleMouseMove = (e) => {
+    if (data.length === 0) return
     const svg = e.currentTarget
     const rect = svg.getBoundingClientRect()
     const relX = (e.clientX - rect.left) / rect.width
     const vbX = relX * width
-    const rawIdx = (vbX - padL - innerPadX) / ((chartW - innerPadX * 2) / (totalDays - 1 || 1))
-    const idx = Math.max(0, Math.min(totalDays - 1, Math.round(rawIdx)))
-    setHoveredIdx(idx)
+    let best = 0
+    let bestDist = Math.abs(toX(data[0].timestamp) - vbX)
+    for (let i = 1; i < data.length; i++) {
+      const dist = Math.abs(toX(data[i].timestamp) - vbX)
+      if (dist < bestDist) { best = i; bestDist = dist }
+    }
+    setHoveredIdx(best)
   }
+
+  const dayStep = lastNDays.length > 20 ? 4 : lastNDays.length > 10 ? 2 : 1
 
   return (
     <div className="relative">
@@ -878,29 +856,10 @@ const PowerChart = ({ data, t, oltId, mobile = false }) => {
           </text>
         ))}
 
-        {/* Quality zones — horizontal bands + threshold lines */}
-        {Number.isFinite(thresholds.onu_rx_good) && Number.isFinite(thresholds.onu_rx_bad) && (() => {
-          const top = padT
-          const bot = padT + chartH
-          const yGood = Math.max(top, Math.min(bot, toY(thresholds.onu_rx_good)))
-          const yBad  = Math.max(top, Math.min(bot, toY(thresholds.onu_rx_bad)))
-          const dark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
-          const zone = dark
-            ? { good: 'rgba(52,211,153,0.28)', warn: 'rgba(251,191,36,0.22)', crit: 'rgba(251,113,133,0.22)' }
-            : { good: 'rgba(16,185,129,0.12)', warn: 'rgba(245,158,11,0.11)', crit: 'rgba(244,63,94,0.11)' }
-          return (
-            <g pointerEvents="none">
-              {yGood > top && <rect x={padL} y={top} width={chartW} height={yGood - top} fill={zone.good} />}
-              {yBad > yGood && <rect x={padL} y={yGood} width={chartW} height={yBad - yGood} fill={zone.warn} />}
-              {yBad < bot && <rect x={padL} y={yBad} width={chartW} height={bot - yBad} fill={zone.crit} />}
-            </g>
-          )
-        })()}
-
         {/* Vertical cursor */}
         {hoveredIdx !== null && (
           <line
-            x1={toX(hoveredIdx)} x2={toX(hoveredIdx)}
+            x1={toX(data[hoveredIdx].timestamp)} x2={toX(data[hoveredIdx].timestamp)}
             y1={padT} y2={padT + chartH}
             stroke="currentColor" strokeWidth="1" strokeDasharray="3,2"
             className="text-slate-400/60 dark:text-slate-500/60"
@@ -908,23 +867,22 @@ const PowerChart = ({ data, t, oltId, mobile = false }) => {
           />
         )}
 
-        {/* ONU Rx — health-colored segments */}
         {/* ONU Rx line + dots */}
         {hasOnuRx && (() => {
           const lines = []; let prev = null
           for (let i = 0; i < data.length; i++) {
             if (data[i].onuRx == null) { prev = null; continue }
             if (prev !== null) lines.push(
-              <line key={`onu-ln-${i}`} x1={toX(prev.i)} y1={toY(prev.v)} x2={toX(i)} y2={toY(data[i].onuRx)}
+              <line key={`onu-ln-${i}`} x1={toX(prev.ts)} y1={toY(prev.v)} x2={toX(data[i].timestamp)} y2={toY(data[i].onuRx)}
                 stroke={onuColor} strokeWidth="1.5" strokeLinecap="round" />
             )
-            prev = { i, v: data[i].onuRx }
+            prev = { ts: data[i].timestamp, v: data[i].onuRx }
           }
           return lines
         })()}
         {hasOnuRx && data.map((d, i) => {
           if (d.onuRx == null) return null
-          return <circle key={`onu-d-${i}`} cx={toX(i)} cy={toY(d.onuRx)} r={hoveredIdx === i ? 3 : 2} fill={onuColor} />
+          return <circle key={`onu-d-${i}`} cx={toX(d.timestamp)} cy={toY(d.onuRx)} r={hoveredIdx === i ? 3 : 2} fill={onuColor} />
         })}
 
         {/* OLT Rx line + dots */}
@@ -933,25 +891,24 @@ const PowerChart = ({ data, t, oltId, mobile = false }) => {
           for (let i = 0; i < data.length; i++) {
             if (data[i].oltRx == null) { prev = null; continue }
             if (prev !== null) lines.push(
-              <line key={`olt-ln-${i}`} x1={toX(prev.i)} y1={toY(prev.v)} x2={toX(i)} y2={toY(data[i].oltRx)}
+              <line key={`olt-ln-${i}`} x1={toX(prev.ts)} y1={toY(prev.v)} x2={toX(data[i].timestamp)} y2={toY(data[i].oltRx)}
                 stroke={oltColor} strokeWidth="1.5" strokeLinecap="round" />
             )
-            prev = { i, v: data[i].oltRx }
+            prev = { ts: data[i].timestamp, v: data[i].oltRx }
           }
           return lines
         })()}
         {hasOltRx && data.map((d, i) => {
           if (d.oltRx == null) return null
-          return <circle key={`olt-d-${i}`} cx={toX(i)} cy={toY(d.oltRx)} r={hoveredIdx === i ? 3 : 2} fill={oltColor} />
+          return <circle key={`olt-d-${i}`} cx={toX(d.timestamp)} cy={toY(d.oltRx)} r={hoveredIdx === i ? 3 : 2} fill={oltColor} />
         })}
 
-        {/* X-axis: dd/mm labels — thin out when dense */}
-        {data.map((d, i) => {
-          const step = data.length > 20 ? 4 : data.length > 10 ? 2 : 1
-          if (i % step !== 0) return null
+        {/* X-axis: dd/mm labels at column centers — matches DisconnectionChart */}
+        {lastNDays.map((dateKey, i) => {
+          if (i % dayStep !== 0) return null
           return (
-            <text key={`day-${d.date}`} x={toX(i)} y={height - 14} textAnchor="middle" className="fill-slate-500 dark:fill-slate-400" style={{ fontSize: mobile ? '10px' : '8px', fontWeight: mobile ? 700 : 600 }}>
-              {formatDateLabel(d.date)}
+            <text key={`day-${dateKey}`} x={xForDay(i)} y={height - 14} textAnchor="middle" className="fill-slate-500 dark:fill-slate-400" style={{ fontSize: mobile ? '10px' : '8px', fontWeight: mobile ? 700 : 600 }}>
+              {formatDateLabel(dateKey)}
             </text>
           )
         })}
@@ -963,7 +920,7 @@ const PowerChart = ({ data, t, oltId, mobile = false }) => {
           className={`absolute top-0 z-20 pointer-events-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/60 rounded-lg shadow-xl px-2.5 py-2 min-w-[110px] ${hoveredCssLeft > 60 ? '-translate-x-full' : ''}`}
           style={{ left: `${hoveredCssLeft}%` }}
         >
-          <p className="text-[10px] font-black text-slate-700 dark:text-slate-200 mb-1 tabular-nums">{formatDateLabel(hovered.date)}</p>
+          <p className="text-[10px] font-black text-slate-700 dark:text-slate-200 mb-1 tabular-nums">{formatTimestamp(new Date(hovered.timestamp).toISOString())}</p>
           {hovered.onuRx != null ? (
             <p className="text-[10px] font-semibold"><span className="text-slate-400 dark:text-slate-500">ONU Rx </span><span className="tabular-nums" style={{ color: onuColor }}>{hovered.onuRx.toFixed(2)}</span></p>
           ) : (

@@ -64,7 +64,7 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
   - OLT runtime connection fields are also synchronized from Varuna to Zabbix host runtime on OLT create/update:
     - if the Zabbix host is missing, Varuna auto-creates it and links the vendor template (`OLT Fiberhome Unified`, `OLT Huawei Unified`, `OLT ZTE C300`, `OLT VSOL GPON 8P`) plus shared sentinel template (`Varuna SNMP Availability`) with legacy-name fallback support.
     - host cache safety: if a cached Zabbix host id becomes stale (for example after host delete/recreate), runtime resolution validates cached hostid and automatically re-resolves by host name/IP before reading items.
-    - Zabbix host technical name (`host`) and visible name (`name`) <- `OLT.name`
+    - Zabbix host technical name (`host`) and visible name (`name`) <- `ZABBIX_HOST_NAME_PREFIX + OLT.name` (prefix optional; default empty).
     - host group is synced to `ZABBIX_HOST_GROUP_NAME` (legacy groups from `ZABBIX_HOST_GROUP_LEGACY_NAMES` are removed during sync)
     - host tags are standardized and refreshed from Varuna:
       - `source=varuna`
@@ -83,9 +83,10 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
   - Template naming convention in Zabbix is Title Case with preserved acronyms and spaces (for example `OLT Huawei Unified`, `OLT Fiberhome Unified`, `OLT ZTE C300`, `OLT VSOL GPON 8P`).
   - Vendor model naming policy: active Huawei and Fiberhome profiles are standardized to `UNIFICADO` (migration `0021`) for Varuna UI compatibility, but exported to Zabbix host tag `model=unified` (English normalization).
   - Trends are disabled in Varuna templates (`trends: 0`) for status/power.
-  - Power item preprocessing in Huawei/Fiberhome templates discards sentinel readings `0 dBm` and `-40 dBm` (plus out-of-range values), so invalid optical values do not enter new Zabbix history used by Varuna.
-  - Backend applies a second guard (`normalize_power_value`) on Zabbix fetch, cache fallback, history persistence, and API serialization to prevent legacy sentinel rows from surfacing in UI responses.
+  - Power item preprocessing in Huawei/Fiberhome/VSOL-like templates accepts only realistic optical RX values (`-40 dBm < value < 0 dBm`) and discards sentinel/out-of-range readings.
+  - Backend applies a second guard (`normalize_power_value`) on Zabbix fetch, cache fallback, history persistence, and API serialization with the same strict range (`-40 < dBm < 0`) so legacy/template-fallback sentinels never surface in UI responses.
   - History retention policy for template items is macroized (`{$VARUNA.HISTORY_DAYS}`), default `7d`.
+  - ONU item prototypes in vendor templates include `slot={#SLOT}` and `pon={#PON}` tags (plus existing `collector`/`metric`) to support Zabbix-side filtering/debug by slot and PON.
   - Varuna persists power snapshots (`ONUPowerSample`) for report/history APIs.
   - discovery source supports both:
     - normal item key with `lastvalue`,
@@ -101,7 +102,7 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
   - ZTE C300 power conversion is template-specific (not generic float scaling):
     - `ONU Rx`: raw 16-bit register converted with vendor formula (`<=32767: raw*0.002-30`, `>32767: (raw-65535)*0.002-30`).
     - `OLT Rx`: raw thousandths-of-dBm converted by `/1000` with compatibility fallback when already in dBm.
-    - invalid/sentinel raw values are mapped to out-of-range fallback (`-80`) in template preprocessing to keep items supported; Varuna backend range guards then discard them from API/runtime payloads.
+    - invalid/sentinel raw values are mapped to out-of-range fallback (`-80`) in template preprocessing to keep items supported; Varuna backend strict range guard (`-40 < dBm < 0`) discards them from API/runtime payloads.
   - Fiberhome can omit `reason_item_key_pattern` (empty string) because status values can directly encode offline reason (`link_loss` / `dying_gasp`) and Zabbix status parsing maps those to `status=offline` with canonical reason.
 
 Default seed migrations:
@@ -424,7 +425,11 @@ Power refresh contract:
   - non-upstream refresh keeps previous cached values when no fresh sample arrives;
   - `refresh_upstream=true` does not fall back to cached stale values (manual scoped refresh must not look artificially fresh).
 - Power refresh shares the same upstream execution cap (`ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS`) and supports forced bypass via `force_upstream=True` in maintenance runtime for explicit manual refresh flows.
+- For `refresh_upstream=true`, power refresh now uses the same short upstream wait window as status refresh (`ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS`, `ZABBIX_REFRESH_UPSTREAM_WAIT_STEP_SECONDS`, `ZABBIX_REFRESH_CLOCK_GRACE_SECONDS`) and retries Zabbix reads before returning.
+  This reduces false “online without power” gaps caused by immediate read-after-execute timing races.
 - Power history persistence accepts older item clocks (up to 180 minutes) to account for template-driven cadence and avoid dropping valid readings.
+- Alarm-history Zabbix power timeline merges ONU RX and OLT RX samples inside a short clock window (`5..60s`, derived from OLT power interval) instead of exact-second equality.
+  This prevents split/alternating rows when Zabbix stores both metrics a few seconds apart in the same collection cycle.
 - Fiberhome Zabbix template payloads are intentionally compacted (`by_onu` short codes and flat `power_data` values) to keep master JSON under Zabbix text item limits (65,535 bytes) on high-density OLTs.
 - Status and power cache writes use Redis pipelines (`set_many_onu_status`/`set_many_onu_power`) to batch all per-OLT entries into a single pipeline execution, reducing Redis round-trips.
 - Status cache TTL is interval-aware per OLT (`max(STATUS_CACHE_TTL, polling_interval_seconds * 2, 300)`), preventing status snapshots from expiring before the next scheduled polling cycle.

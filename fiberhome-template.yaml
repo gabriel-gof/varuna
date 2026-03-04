@@ -117,6 +117,10 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_status
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
             - uuid: 937d6e22cf824d66bfb83832f3816e67
               name: 'ONU {#ONU_PATH} {#SERIAL}: ONU Rx power'
               type: SNMP_AGENT
@@ -139,7 +143,7 @@ zabbix_export:
                       if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
                           return '';
                       }
-                      if (n < -50 || n > 10) {
+                      if (n <= -40 || n >= 0) {
                           return '';
                       }
                       return Math.round(n * 100) / 100;
@@ -149,6 +153,10 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_rx_power
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
             - uuid: 4e2768f1bf6842d1a12fdd84088f2e28
               name: 'ONU {#ONU_PATH} {#SERIAL}: OLT Rx power'
               type: SNMP_AGENT
@@ -171,7 +179,7 @@ zabbix_export:
                       if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
                           return '';
                       }
-                      if (n < -50 || n > 10) {
+                      if (n <= -40 || n >= 0) {
                           return '';
                       }
                       return Math.round(n * 100) / 100;
@@ -181,3 +189,7 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: olt_rx_power
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'

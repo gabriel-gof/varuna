@@ -1,5 +1,5 @@
 services:
-  db:
+  varuna-db:
     image: postgres:15-alpine
     env_file:
       - docker/dev.env
@@ -117,7 +117,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     depends_on:
-      db:
+      varuna-db:
         condition: service_healthy
       redis:
         condition: service_started

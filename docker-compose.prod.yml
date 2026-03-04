@@ -1,5 +1,5 @@
 services:
-  db:
+  varuna-db:
     image: postgres:15-alpine
     env_file:
       - ${VARUNA_ENV_FILE:-docker/prod.env}
@@ -31,14 +31,14 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     depends_on:
-      db:
+      varuna-db:
         condition: service_healthy
       redis:
         condition: service_started
     env_file:
       - ${VARUNA_ENV_FILE:-docker/prod.env}
     environment:
-      POSTGRES_HOST: ${VARUNA_POSTGRES_HOST:-db}
+      POSTGRES_HOST: ${VARUNA_POSTGRES_HOST:-varuna-db}
       DEBUG: "False"
       BACKEND_BEHIND_FRONTEND_PROXY: "1"
     ports:
