@@ -139,7 +139,7 @@ export function LoginPage({ onLogin }) {
             mounted ? 'opacity-100' : 'opacity-0'
           }`}
         >
-          Varuna v1.0
+          Varuna v{__APP_VERSION__}
         </p>
       </div>
     </div>

@@ -8,6 +8,8 @@
 
 ## Runtime Services
 - `frontend`: React + Vite (dev) or Nginx static app (prod).
+  - frontend UI version labels are injected via `__APP_VERSION__`, sourced from root `VERSION` (dev/prod parity).
+  - in dev compose, root `VERSION` is mounted to frontend container at `/app/VERSION`.
 - `backend`: Django + DRF API, discovery/polling orchestration, built-in scheduler (`run_scheduler`).
   - Production compose runs backend with Gunicorn on internal port `80`.
   - Scheduler startup is controlled by `ENABLE_SCHEDULER=1` at backend container boot.

@@ -28,6 +28,11 @@ Development service URLs:
 - Backend health endpoint: `http://localhost:8000/api/healthz/`
 - Zabbix Web: `http://localhost:8080`
 
+Version label contract:
+- Product version source of truth is root `VERSION`.
+- Frontend resolves `__APP_VERSION__` from `APP_VERSION` env or `VERSION` file (`/app/VERSION` in dev compose, mounted from repo root).
+- After changing root `VERSION` in dev compose, recreate/restart `frontend` so Vite reloads config and applies the new version label.
+
 Development default app login (from `docker/dev.env` bootstrap):
 - user: `admin`
 - password: `admin`

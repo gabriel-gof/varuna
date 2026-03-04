@@ -37,6 +37,21 @@ This file defines how we build and evolve Varuna. It is a permanent operating gu
 - Add new runtime state in Varuna only when strictly necessary for UI semantics, cache acceleration, or lifecycle guarantees that Zabbix alone cannot provide.
 - Do not reimplement SNMP collection logic in Varuna when an equivalent Zabbix path exists.
 
+## Topology Color Contract (Mandatory)
+- Green means normal operation for the current hierarchy level.
+- PON rules:
+  - If at least one ONU is offline, the PON is yellow.
+  - If all ONUs in the PON are offline, the PON is red.
+  - If no ONU is offline, the PON is green.
+- Slot rules:
+  - If at least one PON is red, the slot is yellow.
+  - If all PONs in the slot are red, the slot is red.
+  - If no PON is red, the slot is green.
+- OLT rules:
+  - If at least one slot is red, the OLT is yellow.
+  - If all slots in the OLT are red, the OLT is red.
+  - If no slot is red, the OLT is green.
+
 ## Non-Negotiable Rule: Documentation Freshness
 Every code change must update documentation in the same work session.
 
@@ -128,6 +143,8 @@ A task is complete only when all applicable items are done:
 ## Versioning and Rollout Policy
 - We use Semantic Versioning for delivery tracking: `MAJOR.MINOR.PATCH`.
 - Version source of truth is a root `VERSION` file (single line, e.g. `1.4.2`).
+- Frontend-visible version labels (footer/login/about and similar UI points) must be sourced from root `VERSION` via build-time `__APP_VERSION__`; never hardcode version strings in UI.
+- `frontend/package.json` is not a release source-of-truth for Varuna product versioning.
 - Every code change must include a version impact decision in the same session:
   - `PATCH`: bug fixes, internal hardening, non-breaking behavior corrections.
   - `MINOR`: backward-compatible features, new optional settings, non-breaking API additions.

@@ -78,11 +78,11 @@ const isStatusStale = (olt, nowMs = Date.now()) => {
 }
 
 const getPonHealthState = (pon) => {
-  const { total, online, knownOffline, unknown } = getPonSignalCounts(pon)
+  const { total, knownOffline } = getPonSignalCounts(pon)
 
   if (total <= 0) return 'green'
-  if (online === 0 && knownOffline > 0) return 'red'
-  if (knownOffline > 0 || unknown > 0) return 'yellow'
+  if (knownOffline >= total) return 'red'
+  if (knownOffline > 0) return 'yellow'
   return 'green'
 }
 
@@ -91,12 +91,12 @@ const getSlotHealthState = (slot) => {
   if (!activePons.length) return 'green'
 
   const ponStates = activePons.map((pon) => getPonHealthState(pon))
+  const hasRed = ponStates.some((state) => state === 'red')
   const allRed = ponStates.every((state) => state === 'red')
-  const allGreen = ponStates.every((state) => state === 'green')
 
   if (allRed) return 'red'
-  if (allGreen) return 'green'
-  return 'yellow'
+  if (hasRed) return 'yellow'
+  return 'green'
 }
 
 export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
@@ -117,11 +117,12 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   if (activeSlots.length > 0) {
     const slotStates = activeSlots.map((slot) => getSlotHealthState(slot))
+    const hasRed = slotStates.some((state) => state === 'red')
     const allRed = slotStates.every((state) => state === 'red')
-    const allGreen = slotStates.every((state) => state === 'green')
+
     if (allRed) return { state: 'red', reason: 'all_slots_red' }
-    if (allGreen) return { state: 'green', reason: 'all_slots_green' }
-    return { state: 'yellow', reason: 'mixed_slots' }
+    if (hasRed) return { state: 'yellow', reason: 'at_least_one_slot_red' }
+    return { state: 'green', reason: 'no_slot_red' }
   }
 
   // Count-only payloads (/api/olts/ without include_topology) can be briefly stale on reload.
@@ -142,7 +143,7 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   if (online <= 0 && offline > 0) {
     return { state: 'red', reason: 'all_offline' }
   }
-  if (online > 0 && offline > 0) return { state: 'yellow', reason: 'mixed_but_online' }
+  if (online > 0 && offline > 0) return { state: 'green', reason: 'mixed_but_online' }
 
   return { state: 'green', reason: 'healthy' }
 }

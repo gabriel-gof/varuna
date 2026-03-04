@@ -1,6 +1,7 @@
 # Stage 1: Development
 FROM node:20-alpine AS development
 WORKDIR /app
+COPY VERSION ./VERSION
 COPY frontend/package*.json ./
 RUN npm install
 COPY frontend/ .
@@ -10,6 +11,7 @@ CMD ["npx", "vite", "--host", "0.0.0.0", "--port", "3000"]
 # Stage 2: Build
 FROM node:20-alpine AS build
 WORKDIR /app
+COPY VERSION ./VERSION
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ .

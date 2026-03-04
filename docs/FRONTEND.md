@@ -87,19 +87,19 @@ The UI remains topology-first. No dashboard page is required for current product
   - if `now - last_poll_at > max(polling_interval_seconds * 3 + 90s, 390s)`.
   - this keeps gray-state timing aligned with backend stale-status protection (`poll_onu_status`).
 - OLT color semantics follow slot health:
-  - `red` when all active slots are confirmed offline (`link loss` / `dying gasp` only),
-  - `green` when all active slots are healthy (no offline/unknown ONUs),
-  - `yellow` when slot states are mixed (for example, at least one partially offline/unknown slot while another slot remains healthy),
+  - `red` when all active slots are `red`,
+  - `yellow` when at least one active slot is `red` but not all slots are `red`,
+  - `green` when no active slot is `red`,
   - `neutral` only for transitional/no-topology fallback states,
   - `gray` when SNMP is unreachable or status is stale.
 - Slot color semantics follow PON health:
-  - `red` when all active PONs are fully confirmed offline (`link loss` / `dying gasp` only),
-  - `green` when all active PONs are healthy,
-  - `yellow` when PON states are mixed (online plus offline/unknown or mixed red/green PON set).
+  - `red` when all active PONs are `red`,
+  - `yellow` when at least one active PON is `red` but not all PONs are `red`,
+  - `green` when no active PON is `red`.
 - PON color semantics follow ONU health:
   - `red` when all ONUs are confirmed offline (`link loss` / `dying gasp`),
-  - `yellow` when there is any non-online ONU but the PON is not fully red (mixed online/offline/unknown, or all unknown),
-  - `green` only when all ONUs are online.
+  - `yellow` when at least one ONU is confirmed offline but not all ONUs are confirmed offline,
+  - `green` when no ONU is confirmed offline (including unknown-only cases).
 - OLT and Slot sublabels show a rose-colored alert count (always visible, no toggle needed):
   - OLT: `{slotCount} PLACAS / {redSlots}` — number of slots where all PONs are fully offline (red health).
   - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).
@@ -258,7 +258,8 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## App Footer
 - A slim footer is rendered below `<main>` showing the Varuna version (left) and the most recent ONU status collection timestamp (right).
-- Version is injected at build time via `__APP_VERSION__` (defined in `vite.config.js` from `package.json`).
+- Version is injected at build time via `__APP_VERSION__`, sourced from the repository root `VERSION` file in `frontend/vite.config.js`.
+- Any UI version label (footer, login, future about screens) must use `__APP_VERSION__`; hardcoded version strings are not allowed.
 - The timestamp is the latest `last_poll_at` across all OLTs, formatted with `formatReadingAt` for locale awareness.
 - The right side is empty when no poll has occurred yet.
 - Footer respects dark mode and does not collapse in the flex layout (`shrink-0`).

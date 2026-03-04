@@ -18,7 +18,8 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 
 ## Versioning
 - Release version is tracked in the root `VERSION` file.
-- Frontend footer version label is built from `frontend/package.json` (`__APP_VERSION__`).
+- Frontend version labels (for example login/footer) must be injected from root `VERSION` via `__APP_VERSION__` in `frontend/vite.config.js`.
+- Do not use `frontend/package.json` as product/release version source.
 
 Manual maintenance actions (discovery, polling, power refresh) are queued as persistent backend jobs with progress tracking (`MaintenanceJob`), so long-running operations are observable and resilient to transient API process restarts.
 Backend scheduler (`run_scheduler`) is started at container boot when `ENABLE_SCHEDULER=1` (enabled by default in current dev/prod env templates), keeping discovery/polling/power collection backend-driven.

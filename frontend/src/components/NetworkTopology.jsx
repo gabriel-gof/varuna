@@ -135,14 +135,12 @@ const getPonHealthState = (pon, selectedReasons) => {
   }
 
   const total = asCount(stats.total)
-  const online = asCount(stats.online)
   const totalOffline = asCount(stats.offline)
   const unknownCount = asCount(stats.unknown)
   const knownOffline = Math.max(totalOffline - unknownCount, 0)
   const offlineCount = getSelectedOfflineCount(stats, selectedReasons)
-  const hasNonOnline = totalOffline > 0
-  const isRed = total > 0 && online === 0 && knownOffline > 0
-  const isYellow = total > 0 && !isRed && hasNonOnline
+  const isRed = total > 0 && knownOffline >= total
+  const isYellow = total > 0 && !isRed && knownOffline > 0
 
   return {
     state: isRed ? 'red' : isYellow ? 'yellow' : 'green',
@@ -156,12 +154,12 @@ const getSlotHealthState = (slot, selectedReasons) => {
   if (!activePons.length) return 'green'
 
   const ponStates = activePons.map((pon) => getPonHealthState(pon, selectedReasons).state)
+  const hasRed = ponStates.some((state) => state === 'red')
   const allRed = ponStates.every((state) => state === 'red')
-  const allGreen = ponStates.every((state) => state === 'green')
 
   if (allRed) return 'red'
-  if (allGreen) return 'green'
-  return 'yellow'
+  if (hasRed) return 'yellow'
+  return 'green'
 }
 
 const aggregateStats = (entity, level) => {
@@ -191,12 +189,12 @@ const getOltHealthState = (olt, selectedReasons) => {
   if (!activeSlots.length) return 'green'
 
   const slotStates = activeSlots.map((slot) => getSlotHealthState(slot, selectedReasons))
+  const hasRed = slotStates.some((state) => state === 'red')
   const allRed = slotStates.every((state) => state === 'red')
-  const allGreen = slotStates.every((state) => state === 'green')
 
   if (allRed) return 'red'
-  if (allGreen) return 'green'
-  return 'yellow'
+  if (hasRed) return 'yellow'
+  return 'green'
 }
 
 

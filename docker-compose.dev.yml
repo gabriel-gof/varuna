@@ -162,6 +162,7 @@ services:
       - ./frontend/src:/app/src
       - ./frontend/index.html:/app/index.html
       - ./frontend/vite.config.js:/app/vite.config.js
+      - ./VERSION:/app/VERSION:ro
     restart: unless-stopped
     command: npx vite --host 0.0.0.0 --port 4000
 

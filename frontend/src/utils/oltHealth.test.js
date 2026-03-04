@@ -69,7 +69,7 @@ test('deriveOltHealthState uses discovery timestamp when polling timestamp is ab
   assert.equal(state.reason, 'status_stale')
 })
 
-test('deriveOltHealthState marks all-unknown ONUs as yellow', () => {
+test('deriveOltHealthState keeps OLT green when ONUs are only unknown', () => {
   const state = deriveOltHealthState(
     {
       snmp_reachable: true,
@@ -93,10 +93,11 @@ test('deriveOltHealthState marks all-unknown ONUs as yellow', () => {
     },
     NOW_MS,
   )
-  assert.equal(state.state, 'yellow')
+  assert.equal(state.state, 'green')
+  assert.equal(state.reason, 'no_slot_red')
 })
 
-test('deriveOltHealthState marks mixed online/offline OLT as yellow', () => {
+test('deriveOltHealthState keeps OLT green when at least one ONU is online', () => {
   const state = deriveOltHealthState(
     {
       snmp_reachable: true,
@@ -121,7 +122,7 @@ test('deriveOltHealthState marks mixed online/offline OLT as yellow', () => {
     },
     NOW_MS,
   )
-  assert.equal(state.state, 'yellow')
+  assert.equal(state.state, 'green')
 })
 
 test('deriveOltHealthState keeps red when all ONUs are confirmed offline reasons', () => {
@@ -149,4 +150,44 @@ test('deriveOltHealthState keeps red when all ONUs are confirmed offline reasons
     NOW_MS,
   )
   assert.equal(state.state, 'red')
+})
+
+test('deriveOltHealthState marks OLT yellow when at least one slot is fully offline (red)', () => {
+  const state = deriveOltHealthState(
+    {
+      snmp_reachable: true,
+      snmp_failure_count: 0,
+      last_poll_at: isoAgoSeconds(60),
+      polling_interval_seconds: 300,
+      slots: [
+        {
+          is_active: true,
+          pons: [
+            {
+              is_active: true,
+              onus: [
+                { status: 'offline', disconnect_reason: 'link_loss' },
+                { status: 'offline', disconnect_reason: 'dying_gasp' },
+              ],
+            },
+          ],
+        },
+        {
+          is_active: true,
+          pons: [
+            {
+              is_active: true,
+              onus: [
+                { status: 'online', disconnect_reason: '' },
+                { status: 'offline', disconnect_reason: 'link_loss' },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    NOW_MS,
+  )
+  assert.equal(state.state, 'yellow')
+  assert.equal(state.reason, 'at_least_one_slot_red')
 })

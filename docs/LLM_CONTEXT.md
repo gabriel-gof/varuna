@@ -25,6 +25,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Manual settings maintenance actions use a persistent `MaintenanceJob` queue (PostgreSQL), not volatile in-memory flags.
 - Background discovery/polling jobs have runtime timeouts (`MAINTENANCE_*_TIMEOUT_SECONDS`) and stale running jobs are auto-failed to prevent permanent queue lock when collector/integration settings are wrong.
 - Collection is Zabbix-only: discovery/status/power are read via Zabbix API item keys.
+- Product version source-of-truth is root `VERSION`; frontend version labels are injected from this file through `__APP_VERSION__` (no hardcoded UI version text).
 - Varuna owns Zabbix host runtime lifecycle for OLTs: create/update syncs host group/tags/interface macros, missing hosts are auto-created, and OLT delete attempts `host.delete`.
 - Host group for managed OLT hosts is instance-configurable (`ZABBIX_HOST_GROUP_NAME`) so each Varuna instance can keep its own client namespace on a shared Zabbix server.
 - Zabbix host tags are lowercase; Huawei/Fiberhome `UNIFICADO` model is normalized to tag `model=unified` for English consistency.
