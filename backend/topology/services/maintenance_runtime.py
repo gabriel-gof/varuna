@@ -3,6 +3,7 @@ from datetime import timedelta
 from io import StringIO
 from typing import Callable, Dict, Optional
 
+from django.conf import settings
 from django.core.management import call_command
 from django.utils import timezone
 
@@ -23,6 +24,20 @@ def _emit_progress(callback: Optional[Callable[[int, str], None]], percent: int,
 def has_usable_status_snapshot(olt: OLT) -> bool:
     if not olt.last_poll_at:
         return False
+    if olt.snmp_reachable is False:
+        return False
+
+    stale_margin_seconds = int(
+        getattr(settings, "ZABBIX_STATUS_STALE_MARGIN_SECONDS", 90) or 90
+    )
+    stale_status_max_age_seconds = max(
+        int(getattr(olt, "polling_interval_seconds", 0) or 0) + stale_margin_seconds,
+        stale_margin_seconds + 300,
+    )
+    status_age_seconds = max(0, int((timezone.now() - olt.last_poll_at).total_seconds()))
+    if status_age_seconds > stale_status_max_age_seconds:
+        return False
+
     return ONU.objects.filter(
         olt=olt,
         is_active=True,
@@ -45,8 +60,10 @@ def ensure_status_snapshot_for_power(
         return
 
     status_templates = ((olt.vendor_profile.oid_templates or {}).get('status', {}))
-    status_oid = status_templates.get('onu_status_oid')
-    if not olt.vendor_profile.supports_onu_status or not status_oid:
+    zabbix_templates = ((olt.vendor_profile.oid_templates or {}).get('zabbix', {}))
+    zabbix_status_pattern = zabbix_templates.get('status_item_key_pattern')
+    has_status_collector = bool(zabbix_status_pattern)
+    if not olt.vendor_profile.supports_onu_status or not has_status_collector:
         logger.warning(
             "Power refresh OLT %s: status snapshot missing and polling capability is unavailable. Proceeding with stored ONU statuses.",
             olt.id,
@@ -60,8 +77,17 @@ def ensure_status_snapshot_for_power(
         olt.id,
     )
     output = StringIO()
-    call_command('poll_onu_status', olt_id=olt.id, force=True, stdout=output)
-    olt.refresh_from_db(fields=['last_poll_at'])
+    call_command(
+        'poll_onu_status',
+        olt_id=olt.id,
+        force=True,
+        refresh_upstream=True,
+        force_upstream=True,
+        stdout=output,
+    )
+    olt.refresh_from_db(
+        fields=['last_poll_at', 'snmp_reachable', 'snmp_failure_count', 'last_snmp_error']
+    )
     known_status_count = ONU.objects.filter(
         olt=olt,
         is_active=True,
@@ -89,6 +115,8 @@ def collect_power_for_olt(
     *,
     force_refresh: bool = True,
     include_results: bool = True,
+    refresh_upstream: bool = False,
+    force_upstream: bool = False,
     history_source: str = ONUPowerSample.SOURCE_MANUAL,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> Dict:
@@ -102,12 +130,22 @@ def collect_power_for_olt(
         .order_by('slot_id', 'pon_id', 'onu_id')
     )
     refresh_started_at = timezone.now()
-    result_map = power_service.refresh_for_onus(onus, force_refresh=force_refresh)
+    result_map = power_service.refresh_for_onus(
+        onus,
+        force_refresh=force_refresh,
+        refresh_upstream=refresh_upstream,
+        force_upstream=force_upstream,
+    )
+    # Zabbix item clocks are driven by template intervals and can legitimately
+    # lag behind the request execution timestamp.
+    history_min_read_at = None
+    history_max_age_minutes = 180
     stored_count = persist_power_samples(
         onus,
         result_map,
         source=history_source,
-        min_read_at=refresh_started_at - timedelta(minutes=1),
+        min_read_at=history_min_read_at,
+        max_age_minutes=history_max_age_minutes,
     )
     results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
 

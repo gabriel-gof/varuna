@@ -42,7 +42,7 @@ class Command(BaseCommand):
         )
         alarm_days = _positive_int_or_default(
             options.get('alarm_days'),
-            getattr(settings, 'ALARM_HISTORY_RETENTION_DAYS', 90),
+            getattr(settings, 'ALARM_HISTORY_RETENTION_DAYS', 30),
         )
         dry_run = bool(options.get('dry_run', False))
 

@@ -15,10 +15,10 @@ const STORAGE_KEY_OLT = (id) => `varuna:power_thresholds:${id}`
 
 /** Sensible GPON defaults (dBm) */
 export const DEFAULT_THRESHOLDS = {
-  onu_rx_good: -25,
-  onu_rx_bad: -28,
-  olt_rx_good: -25,
-  olt_rx_bad: -28,
+  onu_rx_good: -27,
+  onu_rx_bad: -30,
+  olt_rx_good: -27,
+  olt_rx_bad: -30,
 }
 
 /* ─── Read / write ─── */

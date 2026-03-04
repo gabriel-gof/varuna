@@ -1,9 +1,48 @@
+import { classifyOnu } from './stats.js'
+
 const asCount = (value) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
 const isActiveEntity = (entity) => Boolean(entity) && entity.is_active !== false
+
+const getPonSignalCounts = (pon) => {
+  const onus = asList(pon?.onus).filter(Boolean)
+  if (onus.length > 0) {
+    let online = 0
+    let knownOffline = 0
+    let unknown = 0
+    for (const onu of onus) {
+      const state = classifyOnu(onu).status
+      if (state === 'online') {
+        online += 1
+      } else if (state === 'unknown') {
+        unknown += 1
+      } else {
+        knownOffline += 1
+      }
+    }
+    const total = onus.length
+    return {
+      total,
+      online,
+      knownOffline,
+      unknown,
+      offline: knownOffline + unknown,
+    }
+  }
+
+  const online = asCount(pon?.online_count)
+  const offline = asCount(pon?.offline_count)
+  return {
+    total: online + offline,
+    online,
+    knownOffline: offline,
+    unknown: 0,
+    offline,
+  }
+}
 
 const toPositiveSeconds = (value, fallbackSeconds = 300) => {
   const parsed = Number(value)
@@ -22,10 +61,12 @@ const getPollingIntervalSeconds = (olt) => toPositiveSeconds(olt?.polling_interv
 
 const isStatusStale = (olt, nowMs = Date.now()) => {
   const lastPollMs = parseTimestampMs(olt?.last_poll_at)
-  const staleAfterMs = getPollingIntervalSeconds(olt) * 1000
-  const graceMs = Math.max(90_000, Math.round(staleAfterMs * 0.5))
-  const minimumToleranceMs = 10 * 60 * 1000
-  const staleWindowMs = Math.max(staleAfterMs + graceMs, minimumToleranceMs)
+  const pollingIntervalMs = getPollingIntervalSeconds(olt) * 1000
+  const staleMarginMs = 90_000
+  const staleWindowMs = Math.max(
+    pollingIntervalMs + staleMarginMs,
+    staleMarginMs + 300_000
+  )
 
   if (!lastPollMs) {
     const lastDiscoveryMs = parseTimestampMs(olt?.last_discovery_at)
@@ -37,13 +78,12 @@ const isStatusStale = (olt, nowMs = Date.now()) => {
 }
 
 const getPonHealthState = (pon) => {
-  const online = asCount(pon?.online_count)
-  const offline = asCount(pon?.offline_count)
-  const total = online + offline || asList(pon?.onus).length
+  const { total, online, knownOffline, unknown } = getPonSignalCounts(pon)
 
   if (total <= 0) return 'green'
-  if (online === 0 && offline > 0) return 'red'
-  if (offline > 0) return 'yellow'
+  if (online > 0) return 'green'
+  if (knownOffline > 0) return 'red'
+  if (unknown > 0) return 'neutral'
   return 'green'
 }
 
@@ -52,13 +92,16 @@ const getSlotHealthState = (slot) => {
   if (!activePons.length) return 'green'
 
   const ponStates = activePons.map((pon) => getPonHealthState(pon))
+  const greenPons = ponStates.reduce((count, state) => (
+    state === 'green' ? count + 1 : count
+  ), 0)
   const redPons = ponStates.reduce((count, state) => (
     state === 'red' ? count + 1 : count
   ), 0)
 
+  if (greenPons > 0) return 'green'
   if (redPons === ponStates.length) return 'red'
-  if (redPons > 0) return 'yellow'
-  return 'green'
+  return 'neutral'
 }
 
 export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
@@ -67,8 +110,7 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
     return { state: 'neutral', reason: 'checking' }
   }
 
-  const failureCount = Number(olt?.snmp_failure_count || 0)
-  if (olt?.snmp_reachable === false && failureCount >= 2) {
+  if (olt?.snmp_reachable === false) {
     return { state: 'gray', reason: 'snmp_unreachable' }
   }
 
@@ -80,20 +122,17 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   if (activeSlots.length > 0) {
     const slotStates = activeSlots.map((slot) => getSlotHealthState(slot))
+    const greenSlots = slotStates.reduce((count, state) => (
+      state === 'green' ? count + 1 : count
+    ), 0)
     const redSlots = slotStates.reduce((count, state) => (
       state === 'red' ? count + 1 : count
     ), 0)
-    const totalSlots = slotStates.length
-    if (redSlots === 0) {
-      return { state: 'green', reason: 'no_slots_offline' }
-    }
+    if (greenSlots > 0) return { state: 'green', reason: 'at_least_one_slot_green' }
     if (redSlots === slotStates.length) {
       return { state: 'red', reason: 'all_slots_red' }
     }
-    if (redSlots > 0 && redSlots < totalSlots) {
-      return { state: 'yellow', reason: 'some_slots_red' }
-    }
-    return { state: 'green', reason: 'slots_healthy' }
+    return { state: 'neutral', reason: 'unknown_only_slots' }
   }
 
   // Count-only payloads (/api/olts/ without include_topology) can be briefly stale on reload.
@@ -114,9 +153,7 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   if (online <= 0 && offline > 0) {
     return { state: 'red', reason: 'all_offline' }
   }
-  if (online > 0 && offline > 0) {
-    return { state: 'yellow', reason: 'partial_offline' }
-  }
+  if (online > 0 && offline > 0) return { state: 'green', reason: 'mixed_but_online' }
 
   return { state: 'green', reason: 'healthy' }
 }

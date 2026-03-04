@@ -137,12 +137,14 @@ const getPonHealthState = (pon, selectedReasons) => {
   const total = asCount(stats.total)
   const online = asCount(stats.online)
   const totalOffline = asCount(stats.offline)
+  const unknownCount = asCount(stats.unknown)
+  const knownOffline = Math.max(totalOffline - unknownCount, 0)
   const offlineCount = getSelectedOfflineCount(stats, selectedReasons)
-  const isRed = total > 0 && online === 0 && totalOffline > 0
-  const isYellow = !isRed && totalOffline > 0
+  const isRed = total > 0 && online === 0 && knownOffline > 0
+  const isNeutral = total > 0 && online === 0 && knownOffline === 0 && unknownCount > 0
 
   return {
-    state: isRed ? 'red' : isYellow ? 'yellow' : 'green',
+    state: isRed ? 'red' : isNeutral ? 'neutral' : 'green',
     stats,
     selectedOfflineCount: offlineCount
   }
@@ -153,13 +155,16 @@ const getSlotHealthState = (slot, selectedReasons) => {
   if (!activePons.length) return 'green'
 
   const ponStates = activePons.map((pon) => getPonHealthState(pon, selectedReasons).state)
+  const greenPonCount = ponStates.reduce((count, state) => (
+    state === 'green' ? count + 1 : count
+  ), 0)
   const redPonCount = ponStates.reduce((count, state) => (
     state === 'red' ? count + 1 : count
   ), 0)
 
+  if (greenPonCount > 0) return 'green'
   if (redPonCount === ponStates.length) return 'red'
-  if (redPonCount > 0) return 'yellow'
-  return 'green'
+  return 'neutral'
 }
 
 const aggregateStats = (entity, level) => {
@@ -189,14 +194,16 @@ const getOltHealthState = (olt, selectedReasons) => {
   if (!activeSlots.length) return 'green'
 
   const slotStates = activeSlots.map((slot) => getSlotHealthState(slot, selectedReasons))
+  const greenSlotCount = slotStates.reduce((count, state) => (
+    state === 'green' ? count + 1 : count
+  ), 0)
   const redSlotCount = slotStates.reduce((count, state) => (
     state === 'red' ? count + 1 : count
   ), 0)
-  const totalSlotCount = slotStates.length
 
+  if (greenSlotCount > 0) return 'green'
   if (redSlotCount === slotStates.length) return 'red'
-  if (redSlotCount > 0 && redSlotCount < totalSlotCount) return 'yellow'
-  return 'green'
+  return 'neutral'
 }
 
 

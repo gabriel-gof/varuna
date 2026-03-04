@@ -6,6 +6,7 @@ from typing import Dict, Iterable, Optional
 from django.utils import timezone
 
 from topology.models import ONU, ONUPowerSample
+from topology.services.power_values import normalize_power_value
 
 
 def _to_aware_datetime(value) -> Optional[datetime]:
@@ -50,8 +51,8 @@ def persist_power_samples(
     rows = []
     for onu in onus:
         payload = result_map.get(int(onu.id)) or {}
-        onu_rx = payload.get('onu_rx_power')
-        olt_rx = payload.get('olt_rx_power')
+        onu_rx = normalize_power_value(payload.get('onu_rx_power'))
+        olt_rx = normalize_power_value(payload.get('olt_rx_power'))
         if onu_rx is None and olt_rx is None:
             continue
 

@@ -88,7 +88,7 @@ class MaintenanceJobService:
 
         timeout_msg = (
             "Maintenance task exceeded runtime timeout and was marked as failed. "
-            "Verify OLT SNMP settings and retry."
+            "Verify OLT collector settings in Zabbix and retry."
         )
         stale_qs.update(
             status=MaintenanceJob.STATUS_FAILED,
@@ -387,7 +387,7 @@ class MaintenanceJobService:
         self._progress_update(job.id, 12, 'Running ONU discovery.')
         output = self._run_command_with_timeout(
             'discover_onus',
-            args=['--olt-id', str(job.olt_id), '--force'],
+            args=['--olt-id', str(job.olt_id), '--force', '--refresh-upstream'],
             timeout_seconds=self._resolve_timeout_seconds(MaintenanceJob.KIND_DISCOVERY),
         )
         self._progress_update(job.id, 92, 'Finalizing discovery.')
@@ -397,7 +397,7 @@ class MaintenanceJobService:
         self._progress_update(job.id, 12, 'Running ONU status polling.')
         output = self._run_command_with_timeout(
             'poll_onu_status',
-            args=['--olt-id', str(job.olt_id), '--force'],
+            args=['--olt-id', str(job.olt_id), '--force', '--refresh-upstream', '--force-upstream'],
             timeout_seconds=self._resolve_timeout_seconds(MaintenanceJob.KIND_POLLING),
         )
         self._progress_update(job.id, 92, 'Finalizing polling.')
@@ -410,6 +410,8 @@ class MaintenanceJobService:
             olt,
             force_refresh=True,
             include_results=False,
+            refresh_upstream=True,
+            force_upstream=True,
             progress_callback=lambda percent, detail: self._progress_update(job.id, percent, detail),
         )
         self._progress_update(job.id, 92, 'Finalizing power collection.')

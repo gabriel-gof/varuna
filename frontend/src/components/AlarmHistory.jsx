@@ -1,22 +1,29 @@
-import React, { useRef, useState, useEffect } from 'react'
+import React, { useRef, useState, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, X, AlertTriangle } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 
 import api from '../services/api'
+import { getPowerColor, powerColorClass, getOltThresholds } from '../utils/powerThresholds'
 
 const normalizeSearch = (value) => String(value || '').toLowerCase().trim()
+
+const toDateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+const formatDateLabel = (key) => {
+  const [, m, d] = key.split('-')
+  return `${d}/${m}`
+}
 
 const formatTimestamp = (value) => {
   if (!value) return '—'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '—'
-  return date.toLocaleString(undefined, {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  const d = String(date.getDate()).padStart(2, '0')
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const y = String(date.getFullYear()).slice(2)
+  const h = String(date.getHours()).padStart(2, '0')
+  const min = String(date.getMinutes()).padStart(2, '0')
+  return `${d}/${m}/${y} ${h}:${min}`
 }
 
 const formatDuration = (startValue, endValue) => {
@@ -49,27 +56,60 @@ const normalizePowerPoint = (point) => {
   if (!Number.isFinite(timestamp)) return null
   const onuRx = Number(point?.onu_rx_power)
   const oltRx = Number(point?.olt_rx_power)
-  const value = Number.isFinite(onuRx) ? onuRx : (Number.isFinite(oltRx) ? oltRx : null)
-  if (!Number.isFinite(value)) return null
+  if (!Number.isFinite(onuRx) && !Number.isFinite(oltRx)) return null
   return {
     timestamp,
-    value,
+    onuRx: Number.isFinite(onuRx) ? onuRx : null,
+    oltRx: Number.isFinite(oltRx) ? oltRx : null,
   }
 }
 
+const buildLastNDays = (n) => {
+  const days = []
+  const now = new Date()
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now)
+    d.setDate(d.getDate() - i)
+    days.push(toDateKey(d))
+  }
+  return days
+}
+
+
 export const AlarmHistory = () => {
   const { t } = useTranslation()
-  const [searchTerm, setSearchTerm] = useState('')
+
+  const [activeTab, setActiveTab] = useState('status')
+  const [searchTerm, setSearchTerm] = useState(() => {
+    try { return localStorage.getItem('varuna.history.searchTerm') || '' } catch { return '' }
+  })
   const [searchFocused, setSearchFocused] = useState(false)
-  const [selectedClient, setSelectedClient] = useState(null)
+  const [selectedClient, setSelectedClient] = useState(() => {
+    try {
+      const saved = localStorage.getItem('varuna.history.selectedClient')
+      return saved ? JSON.parse(saved) : null
+    } catch { return null }
+  })
   const [suggestions, setSuggestions] = useState([])
   const [suggestionsLoading, setSuggestionsLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [alarms, setAlarms] = useState([])
   const [powerHistory, setPowerHistory] = useState([])
-  const [alarmStats, setAlarmStats] = useState({ dyingGasp: 0, linkLoss: 0, total: 0 })
   const searchContainerRef = useRef(null)
+
+  const historyDays = selectedClient?.history_days || 7
+
+  useEffect(() => {
+    try { localStorage.setItem('varuna.history.searchTerm', searchTerm) } catch {}
+  }, [searchTerm])
+
+  useEffect(() => {
+    try {
+      if (selectedClient) localStorage.setItem('varuna.history.selectedClient', JSON.stringify(selectedClient))
+      else localStorage.removeItem('varuna.history.selectedClient')
+    } catch {}
+  }, [selectedClient])
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -77,7 +117,6 @@ export const AlarmHistory = () => {
         setSearchFocused(false)
       }
     }
-
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
@@ -96,10 +135,7 @@ export const AlarmHistory = () => {
       setSuggestionsLoading(true)
       try {
         const response = await api.get('/onu/alarm-clients/', {
-          params: {
-            search: term,
-            limit: 7,
-          }
+          params: { search: term, limit: 7 }
         })
         setSuggestions(Array.isArray(response?.data?.results) ? response.data.results : [])
       } catch {
@@ -116,7 +152,6 @@ export const AlarmHistory = () => {
     if (!selectedClient?.id) {
       setAlarms([])
       setPowerHistory([])
-      setAlarmStats({ dyingGasp: 0, linkLoss: 0, total: 0 })
       setDetailError('')
       setDetailLoading(false)
       return
@@ -129,10 +164,10 @@ export const AlarmHistory = () => {
       try {
         const response = await api.get(`/onu/${selectedClient.id}/alarm-history/`, {
           params: {
-            alarm_days: 30,
-            power_days: 7,
-            alarm_limit: 300,
-            max_power_points: 240,
+            alarm_days: historyDays,
+            power_days: historyDays,
+            alarm_limit: 1000,
+            max_power_points: 744,
           },
         })
         if (cancelled) return
@@ -141,19 +176,12 @@ export const AlarmHistory = () => {
         const nextAlarms = (payload.alarms || []).map(normalizeAlarm)
         const nextPower = (payload.power_history || []).map(normalizePowerPoint).filter(Boolean)
 
-        const statsPayload = payload.stats || {}
         setAlarms(nextAlarms)
         setPowerHistory(nextPower)
-        setAlarmStats({
-          dyingGasp: Number(statsPayload.dying_gasp || 0),
-          linkLoss: Number(statsPayload.link_loss || 0),
-          total: Number(statsPayload.total || 0),
-        })
       } catch {
         if (cancelled) return
         setAlarms([])
         setPowerHistory([])
-        setAlarmStats({ dyingGasp: 0, linkLoss: 0, total: 0 })
         setDetailError(t('Failed to load OLT data'))
       } finally {
         if (!cancelled) setDetailLoading(false)
@@ -161,9 +189,7 @@ export const AlarmHistory = () => {
     }
 
     loadDetail()
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [selectedClient, t])
 
   const handleSelectSuggestion = (client) => {
@@ -204,9 +230,15 @@ export const AlarmHistory = () => {
   }
 
   const eventTypeStyle = (type) => {
-    if (type === 'dying_gasp') return 'bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400'
-    if (type === 'link_loss') return 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400'
-    return 'bg-slate-100 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400'
+    if (type === 'dying_gasp') return 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/30'
+    if (type === 'link_loss') return 'bg-rose-50 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
+    return 'bg-purple-50 text-purple-600 ring-1 ring-inset ring-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:ring-purple-400/30'
+  }
+
+  const eventTypeDot = (type) => {
+    if (type === 'dying_gasp') return 'bg-blue-500'
+    if (type === 'link_loss') return 'bg-rose-500'
+    return 'bg-purple-500'
   }
 
   const eventTypeLabel = (type) => {
@@ -215,162 +247,220 @@ export const AlarmHistory = () => {
     return t('Unknown')
   }
 
-  return (
-    <div className="min-h-full bg-slate-100 dark:bg-slate-950">
-      <div className="px-3 lg:px-8 py-6">
-        <div ref={searchContainerRef} className="relative mb-6">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 dark:text-slate-500" />
-          <input
-            type="text"
-            placeholder={t('Search client...')}
-            value={searchTerm}
-            onFocus={() => setSearchFocused(true)}
-            onChange={(event) => {
-              setSearchTerm(event.target.value)
-              if (!event.target.value) setSelectedClient(null)
-              else if (selectedClient) setSelectedClient(null)
-            }}
-            className="h-11 w-full bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-xl pl-11 pr-10 text-[12px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
-          />
-          {searchTerm && (
-            <button
-              type="button"
-              onClick={() => {
-                setSearchTerm('')
-                setSelectedClient(null)
-                setSuggestions([])
-              }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+  const lastNDays = useMemo(() => buildLastNDays(historyDays), [historyDays])
 
-          {searchFocused && normalizeSearch(searchTerm) && !selectedClient && (
-            <div className="absolute left-0 top-[calc(100%+4px)] z-30 w-full p-2 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl max-h-[280px] overflow-y-auto">
-              {suggestionsLoading && (
-                <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('Loading live data')}</p>
-              )}
-              {!suggestionsLoading && suggestions.length === 0 && (
-                <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('No clients found')}</p>
-              )}
-              {!suggestionsLoading && suggestions.map((suggestion) => (
+  // All 30 days, zeros for days with no events
+  const dailyDisconnections = useMemo(() => {
+    const buckets = {}
+    for (const alarm of alarms) {
+      if (!alarm.start) continue
+      const key = toDateKey(new Date(alarm.start))
+      if (!buckets[key]) buckets[key] = { date: key, link_loss: 0, dying_gasp: 0, unknown: 0 }
+      const reason = alarm.type === 'link_loss' ? 'link_loss' : alarm.type === 'dying_gasp' ? 'dying_gasp' : 'unknown'
+      buckets[key][reason]++
+    }
+    return lastNDays.map(date => buckets[date] || { date, link_loss: 0, dying_gasp: 0, unknown: 0 })
+  }, [alarms, lastNDays])
+
+  const dailyPower = useMemo(() => {
+    const buckets = {}
+    for (const pt of powerHistory) {
+      const key = toDateKey(new Date(pt.timestamp))
+      if (!buckets[key]) buckets[key] = { onuRxSum: 0, onuRxCount: 0, oltRxSum: 0, oltRxCount: 0 }
+      if (pt.onuRx != null) { buckets[key].onuRxSum += pt.onuRx; buckets[key].onuRxCount++ }
+      if (pt.oltRx != null) { buckets[key].oltRxSum += pt.oltRx; buckets[key].oltRxCount++ }
+    }
+    return lastNDays.map((date) => {
+      const b = buckets[date]
+      if (!b) return { date, onuRx: null, oltRx: null }
+      return {
+        date,
+        onuRx: b.onuRxCount > 0 ? Math.round((b.onuRxSum / b.onuRxCount) * 100) / 100 : null,
+        oltRx: b.oltRxCount > 0 ? Math.round((b.oltRxSum / b.oltRxCount) * 100) / 100 : null,
+      }
+    })
+  }, [powerHistory, lastNDays])
+
+  // Individual samples sorted newest first for the table
+  const sortedPowerHistory = useMemo(() =>
+    [...powerHistory].sort((a, b) => b.timestamp - a.timestamp),
+    [powerHistory]
+  )
+
+  const totalDisconnections = useMemo(() =>
+    dailyDisconnections.reduce((sum, d) => sum + d.link_loss + d.dying_gasp + d.unknown, 0),
+    [dailyDisconnections]
+  )
+
+  return (
+    <div className="h-full flex flex-col bg-slate-100 dark:bg-slate-950">
+      <div className="flex-1 flex flex-col min-h-0 px-3 lg:px-8 pt-5 pb-4">
+
+        {/* Toolbar */}
+        <div className="mb-4 w-full lg:max-w-[1400px] lg:mx-auto">
+          <div className="flex items-center gap-1.5 lg:gap-2">
+            <div ref={searchContainerRef} className="relative min-w-0 max-w-[200px] lg:max-w-[268px]">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-300 dark:text-slate-500" />
+              <input
+                type="text"
+                placeholder={t('Search client...')}
+                value={searchTerm}
+                onFocus={() => setSearchFocused(true)}
+                onChange={(event) => {
+                  setSearchTerm(event.target.value)
+                  if (!event.target.value) setSelectedClient(null)
+                  else if (selectedClient) setSelectedClient(null)
+                }}
+                className="h-9 w-full bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 rounded-lg pl-9 pr-8 text-[11px] text-compact font-semibold text-slate-600 dark:text-slate-200 shadow-sm transition-all placeholder:text-slate-400/70 dark:placeholder:text-slate-500 focus:border-emerald-500/30 focus:ring-2 focus:ring-emerald-500/10 focus:outline-none"
+              />
+              {searchTerm && (
                 <button
-                  key={suggestion.id}
                   type="button"
-                  onClick={() => handleSelectSuggestion(suggestion)}
-                  className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  onClick={() => { setSearchTerm(''); setSelectedClient(null); setSuggestions([]) }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                 >
-                  <p className="text-[11px] font-black tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
-                    {renderHighlightedText(suggestion.client_name || `ONU ${suggestion.onu_number}`, searchTerm)}
-                  </p>
-                  <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis">
-                    {renderHighlightedText(suggestion.serial || '—', searchTerm)}
-                    <span className="ml-2 text-slate-400 dark:text-slate-500">{suggestion.olt_name} &middot; {t('Slot')} {suggestion.slot_id} &middot; PON {suggestion.pon_id}</span>
-                  </p>
+                  <X className="w-3.5 h-3.5" />
                 </button>
-              ))}
+              )}
+
+              {searchFocused && normalizeSearch(searchTerm) && !selectedClient && (
+                <div className="absolute left-0 top-[calc(100%+4px)] z-30 w-[320px] p-2 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-xl max-h-[280px] overflow-y-auto">
+                  {suggestionsLoading && (
+                    <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('Loading live data')}</p>
+                  )}
+                  {!suggestionsLoading && suggestions.length === 0 && (
+                    <p className="px-2 py-2 text-[11px] font-semibold text-slate-400">{t('No clients found')}</p>
+                  )}
+                  {!suggestionsLoading && suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion.id}
+                      type="button"
+                      onClick={() => handleSelectSuggestion(suggestion)}
+                      className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                    >
+                      <p className="text-[11px] font-black tracking-tight text-slate-800 dark:text-slate-100 whitespace-nowrap overflow-hidden text-ellipsis">
+                        {renderHighlightedText(suggestion.client_name || `ONU ${suggestion.onu_number}`, searchTerm)}
+                      </p>
+                      <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap overflow-hidden text-ellipsis">
+                        {renderHighlightedText(suggestion.serial || '—', searchTerm)}
+                        <span className="ml-2 text-slate-400 dark:text-slate-500">{suggestion.olt_name} &middot; {t('Slot')} {suggestion.slot_id} &middot; PON {suggestion.pon_id}</span>
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+
+            {/* Mobile: tab switcher — far right, only when client selected */}
+            {selectedClient && <div className="flex lg:hidden ml-auto">
+              <div className="inline-flex h-7 items-center gap-0.5 p-0.5 rounded-md border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/90 dark:bg-slate-900/70">
+                {[
+                  { id: 'status', label: t('Status') },
+                  { id: 'power', label: t('Potência') },
+                ].map((tab) => {
+                  const isActive = activeTab === tab.id
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`h-6 w-[76px] rounded text-[10px] font-black uppercase tracking-[0.06em] transition-all active:scale-[0.97] ${
+                        isActive
+                          ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
+                          : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/60'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>}
+
+            {selectedClient && <span className="hidden lg:inline ml-auto text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">{t('Last {{days}} days', { days: historyDays })}</span>}
+          </div>
         </div>
 
-        {!selectedClient && (
-          <div className="flex flex-col items-center justify-center py-24">
-            <AlertTriangle className="w-10 h-10 text-slate-300 dark:text-slate-600 mb-3" />
-            <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('Select a client to view alarm history')}</p>
+        {detailError && (
+          <div className="mb-4 lg:max-w-[1400px] lg:mx-auto rounded-lg border border-rose-200 bg-rose-50/70 px-3 py-2 text-[11px] font-semibold text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
+            {detailError}
           </div>
         )}
 
+        {/* Empty state — shown on both breakpoints when no client selected */}
+        {!selectedClient && (
+          <div className="flex flex-1 items-center justify-center pb-[28vh]">
+            <div className="flex flex-col items-center gap-3">
+              <Search className="w-8 h-8 text-slate-300 dark:text-slate-600" />
+              <p className="text-sm font-semibold text-slate-400 dark:text-slate-500">{t('Select a client to view alarm history')}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Desktop: side-by-side grid */}
         {selectedClient && (
-          <>
-            {detailError && (
-              <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50/70 px-3 py-2 text-[11px] font-semibold text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
-                {detailError}
-              </div>
-            )}
+          <div className="hidden lg:grid grid-cols-2 gap-3 flex-1 min-h-0 overflow-hidden max-w-[1400px] mx-auto w-full">
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-              <div className="rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm px-4 py-3">
-                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">{t('Dying Gasp events')}</p>
-                <p className="text-2xl font-black tabular-nums text-blue-600 dark:text-blue-400">{alarmStats.dyingGasp}</p>
+            {/* Left: Disconnection History */}
+            <div className="flex flex-col min-h-0 rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+              <div className="shrink-0 px-4 pt-3 pb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('Disconnection History')}</p>
+                  {totalDisconnections > 0 && (
+                    <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500">{t('Total')}: {totalDisconnections}</span>
+                  )}
+                </div>
+                {detailLoading && alarms.length === 0 ? (
+                  <p className="text-[11px] font-semibold text-slate-400 py-4">{t('Loading live data')}</p>
+                ) : (
+                  <DisconnectionChart data={dailyDisconnections} t={t} />
+                )}
               </div>
-              <div className="rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm px-4 py-3">
-                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">{t('Link Loss events')}</p>
-                <p className="text-2xl font-black tabular-nums text-rose-600 dark:text-rose-400">{alarmStats.linkLoss}</p>
-              </div>
-              <div className="rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm px-4 py-3">
-                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-1">{t('Total events')}</p>
-                <p className="text-2xl font-black tabular-nums text-slate-700 dark:text-slate-200">{alarmStats.total}</p>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm p-4 mb-6">
-              <p className="text-[12px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-3">{t('Power history (7 days)')}</p>
-              {detailLoading && powerHistory.length === 0 ? (
-                <p className="text-[11px] font-semibold text-slate-400">{t('Loading live data')}</p>
-              ) : (
-                <PowerHistoryChart points={powerHistory} t={t} />
-              )}
-            </div>
-
-            <div className="hidden lg:flex flex-col w-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-              <div className="shrink-0 overflow-hidden bg-slate-50 dark:bg-slate-800/90 border-b-2 border-slate-200 dark:border-slate-700">
+              <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-y border-slate-200/80 dark:border-slate-700/50">
                 <table className="w-full table-fixed text-left border-collapse">
                   <colgroup>
-                    <col style={{ width: '18%' }} />
-                    <col style={{ width: '22%' }} />
-                    <col style={{ width: '22%' }} />
-                    <col style={{ width: '18%' }} />
-                    <col style={{ width: '20%' }} />
+                    <col style={{ width: '110px' }} />
+                    <col />
+                    <col />
+                    <col style={{ width: '72px' }} />
                   </colgroup>
                   <thead>
                     <tr>
-                      <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Event Type')}</th>
-                      <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Start')}</th>
-                      <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('End')}</th>
-                      <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">{t('Duration')}</th>
-                      <th className="px-2.5 py-2 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">{t('Status')}</th>
+                      <th className="px-3 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Event Type')}</th>
+                      <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center whitespace-nowrap">{t('Start')}</th>
+                      <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center whitespace-nowrap">{t('End')}</th>
+                      <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center whitespace-nowrap">{t('Duration')}</th>
                     </tr>
                   </thead>
                 </table>
               </div>
-
-              <div className="overflow-y-auto min-h-0 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
                 <table className="w-full table-fixed text-left border-collapse">
                   <colgroup>
-                    <col style={{ width: '18%' }} />
-                    <col style={{ width: '22%' }} />
-                    <col style={{ width: '22%' }} />
-                    <col style={{ width: '18%' }} />
-                    <col style={{ width: '20%' }} />
+                    <col style={{ width: '110px' }} />
+                    <col />
+                    <col />
+                    <col style={{ width: '72px' }} />
                   </colgroup>
-                  <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
+                  <tbody>
                     {!detailLoading && alarms.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="px-4 py-12 text-center">
-                          <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('No alarm data available')}</p>
+                        <td colSpan={4} className="px-4 py-10 text-center">
+                          <p className="text-[11px] font-semibold text-slate-400">{t('No alarm data available')}</p>
                         </td>
                       </tr>
                     )}
-                    {alarms.map((alarm) => (
-                      <tr key={alarm.id} className="h-14 odd:bg-white even:bg-slate-50/65 dark:odd:bg-slate-900 dark:even:bg-slate-800/50">
-                        <td className="px-2.5 py-0 align-middle">
-                          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${eventTypeStyle(alarm.type)}`}>
+                    {alarms.map((alarm, idx) => (
+                      <tr key={alarm.id} className={`h-9 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'} hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors`}>
+                        <td className="px-3 py-0 align-middle">
+                          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase whitespace-nowrap ${eventTypeStyle(alarm.type)}`}>
+                            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${eventTypeDot(alarm.type)}`} />
                             {eventTypeLabel(alarm.type)}
                           </span>
                         </td>
-                        <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums">{formatTimestamp(alarm.start)}</td>
-                        <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums">{formatTimestamp(alarm.end)}</td>
-                        <td className="px-2.5 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{formatDuration(alarm.start, alarm.end)}</td>
-                        <td className="px-2.5 py-0 align-middle text-center">
-                          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${
-                            alarm.status === 'active'
-                              ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                              : 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                          }`}>
-                            {alarm.status === 'active' ? t('Active') : t('Resolved')}
-                          </span>
-                        </td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start)}</td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end)}</td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -378,141 +468,532 @@ export const AlarmHistory = () => {
               </div>
             </div>
 
-            <div className="flex lg:hidden flex-col w-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
-              <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
-                {!detailLoading && alarms.length === 0 && (
-                  <div className="py-12 text-center">
-                    <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">{t('No alarm data available')}</p>
+            {/* Right: Power History */}
+            <div className="flex flex-col min-h-0 rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+              <div className="shrink-0 px-4 pt-3 pb-3">
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">{t('Power History')}</p>
+                {detailLoading && powerHistory.length === 0 ? (
+                  <p className="text-[11px] font-semibold text-slate-400 py-4">{t('Loading live data')}</p>
+                ) : (
+                  <PowerChart data={dailyPower} t={t} oltId={selectedClient.olt_id} />
+                )}
+              </div>
+              <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-y border-slate-200/80 dark:border-slate-700/50">
+                <table className="w-full table-fixed text-left border-collapse">
+                  <colgroup>
+                    <col />
+                    <col style={{ width: '100px' }} />
+                    <col style={{ width: '100px' }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th className="px-3 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider whitespace-nowrap">{t('Reading')}</th>
+                      <th className="px-2.5 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right whitespace-nowrap">ONU Rx</th>
+                      <th className="px-3 py-2 text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right whitespace-nowrap">OLT Rx</th>
+                    </tr>
+                  </thead>
+                </table>
+              </div>
+              <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
+                <table className="w-full table-fixed text-left border-collapse">
+                  <colgroup>
+                    <col />
+                    <col style={{ width: '100px' }} />
+                    <col style={{ width: '100px' }} />
+                  </colgroup>
+                  <tbody>
+                    {sortedPowerHistory.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="px-4 py-10 text-center">
+                          <p className="text-[11px] font-semibold text-slate-400">{t('Power data not available')}</p>
+                        </td>
+                      </tr>
+                    ) : sortedPowerHistory.map((pt, idx) => (
+                      <tr key={pt.timestamp} className={`h-9 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'} hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors`}>
+                        <td className="px-3 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums whitespace-nowrap">{formatTimestamp(new Date(pt.timestamp).toISOString())}</td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold tabular-nums text-right">{pt.onuRx != null ? <span className={powerColorClass(getPowerColor(pt.onuRx, 'onu_rx', selectedClient.olt_id))}>{pt.onuRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
+                        <td className="px-3 py-0 align-middle text-[10px] font-semibold tabular-nums text-right">{pt.oltRx != null ? <span className={powerColorClass(getPowerColor(pt.oltRx, 'olt_rx', selectedClient.olt_id))}>{pt.oltRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Mobile: tab-switched single card */}
+        {selectedClient && (
+          <div className="flex lg:hidden flex-col flex-1 min-h-0 w-full">
+            {activeTab === 'status' && (
+              <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                {/* Title */}
+                <div className="shrink-0 px-3 pt-3 pb-2 flex items-center justify-between">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('Disconnection History')}</p>
+                  {totalDisconnections > 0 && (
+                    <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500">{t('Total')}: {totalDisconnections}</span>
+                  )}
+                </div>
+
+                {/* Chart — all N days, no scroll */}
+                {alarms.length > 0 && (
+                  <div className="shrink-0 border-y border-slate-200/80 dark:border-slate-700/50 px-2 pt-1">
+                    <DisconnectionChart data={dailyDisconnections} t={t} mobile />
                   </div>
                 )}
 
-                {alarms.map((alarm) => (
-                  <div key={alarm.id} className="rounded-md border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 px-3 py-2 flex items-center gap-2">
-                    <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase self-start ${eventTypeStyle(alarm.type)}`}>
-                        {eventTypeLabel(alarm.type)}
-                      </span>
-                      <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums">
-                        {formatTimestamp(alarm.start)} → {formatTimestamp(alarm.end)}
-                      </span>
-                    </div>
-                    <div className="shrink-0 flex flex-col items-end gap-0.5">
-                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${
-                        alarm.status === 'active'
-                          ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                          : 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                      }`}>
-                        {alarm.status === 'active' ? t('Active') : t('Resolved')}
-                      </span>
-                      <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">
-                        {formatDuration(alarm.start, alarm.end)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                {/* Column headers — pinned */}
+                <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-700/50">
+                  <table className="w-full table-fixed text-left border-collapse">
+                    <colgroup><col style={{ width: '108px' }} /><col /><col /><col style={{ width: '72px' }} /></colgroup>
+                    <thead>
+                      <tr>
+                        <th className="px-2 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Event')}</th>
+                        <th className="px-2 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">{t('Start')}</th>
+                        <th className="px-2 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">{t('End')}</th>
+                        <th className="px-2 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">{t('Duration')}</th>
+                      </tr>
+                    </thead>
+                  </table>
+                </div>
+
+                {/* Rows — scrollable */}
+                <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
+                  <table className="w-full table-fixed text-left border-collapse">
+                    <colgroup><col style={{ width: '108px' }} /><col /><col /><col style={{ width: '72px' }} /></colgroup>
+                    <tbody>
+                      {detailLoading && alarms.length === 0 ? (
+                        <tr><td colSpan={4} className="px-3 py-10 text-center text-[11px] font-semibold text-slate-400">{t('Loading live data')}</td></tr>
+                      ) : alarms.length === 0 ? (
+                        <tr><td colSpan={4} className="px-3 py-10 text-center text-[11px] font-semibold text-slate-400">{t('No alarm data available')}</td></tr>
+                      ) : alarms.map((alarm, idx) => (
+                        <tr key={alarm.id} className={`h-8 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'}`}>
+                          <td className="px-2 py-0 align-middle">
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase whitespace-nowrap ${eventTypeStyle(alarm.type)}`}>
+                              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${eventTypeDot(alarm.type)}`} />
+                              {eventTypeLabel(alarm.type)}
+                            </span>
+                          </td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start)}</td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end)}</td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Footer */}
+                <div className="shrink-0 border-t border-slate-200/80 dark:border-slate-700/50 px-3 py-1.5 flex justify-center">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">{t('Last {{days}} days', { days: historyDays })}</span>
+                </div>
               </div>
-            </div>
-          </>
+            )}
+
+            {activeTab === 'power' && (
+              <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+                {/* Title */}
+                <div className="shrink-0 px-3 pt-3 pb-2">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{t('Power History')}</p>
+                </div>
+
+                {/* Chart — all N days, no scroll */}
+                <div className="shrink-0 border-y border-slate-200/80 dark:border-slate-700/50 px-2 pt-1">
+                  <PowerChart data={dailyPower} t={t} oltId={selectedClient.olt_id} mobile />
+                </div>
+
+                {/* Column headers — pinned */}
+                <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-700/50">
+                  <table className="w-full table-fixed text-left border-collapse">
+                    <colgroup><col style={{ width: '110px' }} /><col /><col /></colgroup>
+                    <thead>
+                      <tr>
+                        <th className="px-3 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Reading')}</th>
+                        <th className="px-2 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">ONU Rx</th>
+                        <th className="px-2 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">OLT Rx</th>
+                      </tr>
+                    </thead>
+                  </table>
+                </div>
+
+                {/* Rows — scrollable */}
+                <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
+                  <table className="w-full table-fixed text-left border-collapse">
+                    <colgroup><col style={{ width: '110px' }} /><col /><col /></colgroup>
+                    <tbody>
+                      {detailLoading && powerHistory.length === 0 ? (
+                        <tr><td colSpan={3} className="px-3 py-10 text-center text-[11px] font-semibold text-slate-400">{t('Loading live data')}</td></tr>
+                      ) : sortedPowerHistory.length === 0 ? (
+                        <tr><td colSpan={3} className="px-3 py-10 text-center text-[11px] font-semibold text-slate-400">{t('Power data not available')}</td></tr>
+                      ) : sortedPowerHistory.map((pt, idx) => (
+                        <tr key={pt.timestamp} className={`h-8 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'}`}>
+                          <td className="px-3 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums whitespace-nowrap">{formatTimestamp(new Date(pt.timestamp).toISOString())}</td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold tabular-nums text-center">
+                            {pt.onuRx != null ? <span className={powerColorClass(getPowerColor(pt.onuRx, 'onu_rx', selectedClient.olt_id))}>{pt.onuRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                          </td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold tabular-nums text-center">
+                            {pt.oltRx != null ? <span className={powerColorClass(getPowerColor(pt.oltRx, 'olt_rx', selectedClient.olt_id))}>{pt.oltRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Footer */}
+                <div className="shrink-0 border-t border-slate-200/80 dark:border-slate-700/50 px-3 py-1.5 flex justify-center">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">{t('Last {{days}} days', { days: historyDays })}</span>
+                </div>
+              </div>
+            )}
+          </div>
         )}
+
       </div>
     </div>
   )
 }
 
-const PowerHistoryChart = ({ points, t }) => {
-  if (!points.length) return null
+const DisconnectionChart = ({ data, t, mobile = false }) => {
+  const [hoveredIdx, setHoveredIdx] = useState(null)
 
-  const width = 600
+  const width = 500
   const height = 200
-  const padL = 50
-  const padR = 16
-  const padT = 16
-  const padB = 32
+  const padL = 40
+  const padR = 12
+  const padT = 8
+  const padB = 36
   const chartW = width - padL - padR
   const chartH = height - padT - padB
 
-  const values = points.map((point) => point.value)
-  const minVal = Math.floor(Math.min(...values) - 1)
-  const maxVal = Math.ceil(Math.max(...values) + 1)
-  const timeMin = points[0].timestamp
-  const timeMax = points[points.length - 1].timestamp
-  const timeRange = timeMax - timeMin || 1
-  const valRange = maxVal - minVal || 1
+  const reasons = ['link_loss', 'dying_gasp', 'unknown']
+  const colors = { link_loss: '#f43f5e', dying_gasp: '#3b82f6', unknown: '#8b5cf6' }
+  const labels = { link_loss: t('Link Loss'), dying_gasp: t('Dying Gasp'), unknown: t('Unknown') }
 
-  const toX = (timestamp) => padL + ((timestamp - timeMin) / timeRange) * chartW
-  const toY = (value) => padT + chartH - ((value - minVal) / valRange) * chartH
+  const hasData = data.length > 0
 
-  const polylinePoints = points.map((point) => `${toX(point.timestamp)},${toY(point.value)}`).join(' ')
+  const rawMax = hasData ? Math.max(1, ...data.map((d) => Math.max(d.link_loss, d.dying_gasp, d.unknown))) : 1
+  const yStep = 2
+  const yMax = Math.max(6, Math.ceil(rawMax / yStep) * yStep)
+  const ySteps = []
+  for (let v = 0; v <= yMax; v += yStep) ySteps.push(v)
 
-  const goodY = toY(Math.min(maxVal, -25))
-  const warnY = toY(Math.max(minVal, -28))
-  const critY = toY(minVal)
+  const groupWidth = hasData ? chartW / data.length : chartW
+  const barGap = Math.max(1, groupWidth * 0.1)
+  const barArea = groupWidth - barGap
+  const barW = Math.min(barArea / 3, 14)
 
-  const yLabels = []
-  const step = Math.max(1, Math.ceil(valRange / 4))
-  for (let value = minVal; value <= maxVal; value += step) {
-    yLabels.push(value)
-  }
+  const toY = (v) => padT + chartH - (v / yMax) * chartH
+  const xForIdx = (i) => padL + groupWidth * i + groupWidth / 2
 
-  const xLabels = []
-  const dayMs = 86400000
-  const startDay = new Date(timeMin)
-  startDay.setHours(0, 0, 0, 0)
-  for (let timestamp = startDay.getTime(); timestamp <= timeMax; timestamp += dayMs * 2) {
-    if (timestamp >= timeMin) {
-      const day = new Date(timestamp)
-      xLabels.push({ timestamp, label: `${day.getDate()}/${day.getMonth() + 1}` })
-    }
+  const totals = { link_loss: 0, dying_gasp: 0, unknown: 0 }
+  data.forEach((d) => { totals.link_loss += d.link_loss; totals.dying_gasp += d.dying_gasp; totals.unknown += d.unknown })
+
+  const hovered = hoveredIdx !== null ? data[hoveredIdx] : null
+  const hoveredCssLeft = hoveredIdx !== null ? (xForIdx(hoveredIdx) / width) * 100 : 0
+
+  return (
+    <div className="relative">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full h-auto"
+        preserveAspectRatio="xMidYMid meet"
+        onMouseLeave={() => setHoveredIdx(null)}
+      >
+        {/* Grid lines */}
+        {ySteps.map((v) => (
+          <line key={v} x1={padL} x2={width - padR} y1={toY(v)} y2={toY(v)} stroke="currentColor" strokeWidth="0.5" className="text-slate-200 dark:text-slate-700/50" />
+        ))}
+        {/* Y-axis labels */}
+        {ySteps.map((v) => (
+          <text key={v} x={padL - 4} y={toY(v) + 4} textAnchor="end" className="fill-slate-500 dark:fill-slate-400" style={{ fontSize: mobile ? '11px' : '8px', fontWeight: mobile ? 700 : 600 }}>
+            {v}
+          </text>
+        ))}
+
+        {/* Hover highlight column */}
+        {hoveredIdx !== null && (
+          <rect
+            x={padL + groupWidth * hoveredIdx}
+            y={padT}
+            width={groupWidth}
+            height={chartH}
+            fill="currentColor"
+            className="text-slate-400/8 dark:text-slate-300/8"
+            pointerEvents="none"
+          />
+        )}
+
+        {/* Bars */}
+        {data.map((d, i) => {
+          const activeReasons = reasons.filter((r) => d[r] > 0)
+          if (!activeReasons.length) return null
+          const cx = xForIdx(i)
+          const totalBarWidth = activeReasons.length * barW + (activeReasons.length - 1) * 1
+          const startX = cx - totalBarWidth / 2
+          return (
+            <g key={`bar-${d.date}`} pointerEvents="none">
+              {activeReasons.map((r, ri) => {
+                const bx = startX + ri * (barW + 1)
+                const bh = Math.max(1, (d[r] / yMax) * chartH)
+                return (
+                  <rect key={r} x={bx} y={toY(d[r])} width={barW} height={bh} rx="1.5" fill={colors[r]} opacity={hoveredIdx === i ? 1 : 0.9} />
+                )
+              })}
+            </g>
+          )
+        })}
+
+        {/* Invisible hover areas — full height, all days */}
+        {data.map((d, i) => (
+          <rect
+            key={`ha-${d.date}`}
+            x={padL + groupWidth * i}
+            y={padT}
+            width={groupWidth}
+            height={chartH}
+            fill="transparent"
+            style={{ cursor: 'crosshair' }}
+            onMouseEnter={() => setHoveredIdx(i)}
+          />
+        ))}
+
+        {/* X-axis: dd/mm labels — thin out when dense */}
+        {data.map((d, i) => {
+          const step = data.length > 20 ? 4 : data.length > 10 ? 2 : 1
+          if (i % step !== 0) return null
+          return (
+            <text key={`day-${d.date}`} x={xForIdx(i)} y={height - 14} textAnchor="middle" className="fill-slate-500 dark:fill-slate-400" style={{ fontSize: mobile ? '10px' : '8px', fontWeight: mobile ? 700 : 600 }}>
+              {formatDateLabel(d.date)}
+            </text>
+          )
+        })}
+      </svg>
+
+      {/* Hover tooltip */}
+      {hovered !== null && (
+        <div
+          className={`absolute top-0 z-20 pointer-events-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/60 rounded-lg shadow-xl px-2.5 py-2 min-w-[96px] ${hoveredCssLeft > 60 ? '-translate-x-full' : ''}`}
+          style={{ left: `${hoveredCssLeft}%` }}
+        >
+          <p className="text-[10px] font-black text-slate-700 dark:text-slate-200 mb-1 tabular-nums">{formatDateLabel(hovered.date)}</p>
+          {hovered.link_loss > 0 && (
+            <p className="text-[10px] font-semibold text-rose-600 dark:text-rose-400">{t('Link Loss')}: {hovered.link_loss}</p>
+          )}
+          {hovered.dying_gasp > 0 && (
+            <p className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">{t('Dying Gasp')}: {hovered.dying_gasp}</p>
+          )}
+          {hovered.unknown > 0 && (
+            <p className="text-[10px] font-semibold text-violet-600 dark:text-violet-400">{t('Unknown')}: {hovered.unknown}</p>
+          )}
+          {hovered.link_loss === 0 && hovered.dying_gasp === 0 && hovered.unknown === 0 && (
+            <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">—</p>
+          )}
+        </div>
+      )}
+
+      {/* Legend */}
+      <div className="flex items-center justify-center gap-3 mt-1.5 mb-2">
+        {reasons.map((r) => (
+          <div key={r} className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: colors[r], opacity: totals[r] > 0 ? 1 : 0.35 }} />
+            <span className={`text-[10px] font-semibold ${totals[r] > 0 ? 'text-slate-500 dark:text-slate-400' : 'text-slate-400 dark:text-slate-500'}`}>{labels[r]}</span>
+            <span className={`text-[10px] font-black tabular-nums ${totals[r] > 0 ? 'text-slate-600 dark:text-slate-300' : 'text-slate-400 dark:text-slate-500'}`}>{totals[r]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const PowerChart = ({ data, t, oltId, mobile = false }) => {
+  const [hoveredIdx, setHoveredIdx] = useState(null)
+
+  const hasOnuRx = data.some((d) => d.onuRx != null)
+  const hasOltRx = data.some((d) => d.oltRx != null)
+
+  const thresholds = getOltThresholds(oltId)
+
+  const width = 500
+  const height = 200
+  const padL = 44
+  const padR = 12
+  const padT = 8
+  const padB = 36
+  const chartW = width - padL - padR
+  const chartH = height - padT - padB
+
+  const totalDays = data.length
+
+  const allValues = data.flatMap((d) => [d.onuRx, d.oltRx]).filter((v) => v != null)
+  // Include threshold breakpoints so quality band zones are always visible
+  const threshBreak = [thresholds.onu_rx_good, thresholds.onu_rx_bad].filter(v => Number.isFinite(v))
+  const rawMin = allValues.length ? Math.min(...allValues, ...threshBreak) : -30
+  const rawMax = allValues.length ? Math.max(...allValues) : -15
+  const yMin = Math.floor(rawMin / 5) * 5
+  const yMax = Math.ceil(rawMax / 5) * 5 || yMin + 5
+  const yRange = yMax - yMin || 1
+
+  const ySteps = []
+  for (let v = yMin; v <= yMax; v += 5) ySteps.push(v)
+
+  const innerPadX = 12
+  const toX = (i) => padL + innerPadX + (i / (totalDays - 1 || 1)) * (chartW - innerPadX * 2)
+  const toY = (v) => padT + chartH - ((v - yMin) / yRange) * chartH
+
+  const onuColor = '#38bdf8'  // sky-400 — ONU Rx (light blue)
+  const oltColor = '#1d4ed8'  // blue-700 — OLT Rx (dark blue)
+
+  const hovered = hoveredIdx !== null ? data[hoveredIdx] : null
+  const hoveredCssLeft = hoveredIdx !== null ? (toX(hoveredIdx) / width) * 100 : 0
+
+  const handleMouseMove = (e) => {
+    const svg = e.currentTarget
+    const rect = svg.getBoundingClientRect()
+    const relX = (e.clientX - rect.left) / rect.width
+    const vbX = relX * width
+    const rawIdx = (vbX - padL - innerPadX) / ((chartW - innerPadX * 2) / (totalDays - 1 || 1))
+    const idx = Math.max(0, Math.min(totalDays - 1, Math.round(rawIdx)))
+    setHoveredIdx(idx)
   }
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto" preserveAspectRatio="xMidYMid meet">
-      {goodY > padT && (
-        <rect x={padL} y={padT} width={chartW} height={Math.max(0, goodY - padT)} fill="currentColor" className="text-emerald-50 dark:text-emerald-500/5" />
+    <div className="relative">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full h-auto"
+        preserveAspectRatio="xMidYMid meet"
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoveredIdx(null)}
+        style={{ cursor: 'crosshair' }}
+      >
+        {/* Grid lines */}
+        {ySteps.map((v) => (
+          <line key={v} x1={padL} x2={width - padR} y1={toY(v)} y2={toY(v)} stroke="currentColor" strokeWidth="0.5" className="text-slate-200 dark:text-slate-700/50" />
+        ))}
+        {/* Y-axis labels */}
+        {ySteps.map((v) => (
+          <text key={v} x={padL - 4} y={toY(v) + 4} textAnchor="end" className="fill-slate-500 dark:fill-slate-400" style={{ fontSize: mobile ? '11px' : '8px', fontWeight: mobile ? 700 : 600 }}>
+            {v}
+          </text>
+        ))}
+
+        {/* Quality zones — horizontal bands + threshold lines */}
+        {Number.isFinite(thresholds.onu_rx_good) && Number.isFinite(thresholds.onu_rx_bad) && (() => {
+          const top = padT
+          const bot = padT + chartH
+          const yGood = Math.max(top, Math.min(bot, toY(thresholds.onu_rx_good)))
+          const yBad  = Math.max(top, Math.min(bot, toY(thresholds.onu_rx_bad)))
+          const dark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+          const zone = dark
+            ? { good: 'rgba(52,211,153,0.28)', warn: 'rgba(251,191,36,0.22)', crit: 'rgba(251,113,133,0.22)' }
+            : { good: 'rgba(16,185,129,0.12)', warn: 'rgba(245,158,11,0.11)', crit: 'rgba(244,63,94,0.11)' }
+          return (
+            <g pointerEvents="none">
+              {yGood > top && <rect x={padL} y={top} width={chartW} height={yGood - top} fill={zone.good} />}
+              {yBad > yGood && <rect x={padL} y={yGood} width={chartW} height={yBad - yGood} fill={zone.warn} />}
+              {yBad < bot && <rect x={padL} y={yBad} width={chartW} height={bot - yBad} fill={zone.crit} />}
+            </g>
+          )
+        })()}
+
+        {/* Vertical cursor */}
+        {hoveredIdx !== null && (
+          <line
+            x1={toX(hoveredIdx)} x2={toX(hoveredIdx)}
+            y1={padT} y2={padT + chartH}
+            stroke="currentColor" strokeWidth="1" strokeDasharray="3,2"
+            className="text-slate-400/60 dark:text-slate-500/60"
+            pointerEvents="none"
+          />
+        )}
+
+        {/* ONU Rx — health-colored segments */}
+        {/* ONU Rx line + dots */}
+        {hasOnuRx && (() => {
+          const lines = []; let prev = null
+          for (let i = 0; i < data.length; i++) {
+            if (data[i].onuRx == null) { prev = null; continue }
+            if (prev !== null) lines.push(
+              <line key={`onu-ln-${i}`} x1={toX(prev.i)} y1={toY(prev.v)} x2={toX(i)} y2={toY(data[i].onuRx)}
+                stroke={onuColor} strokeWidth="1.5" strokeLinecap="round" />
+            )
+            prev = { i, v: data[i].onuRx }
+          }
+          return lines
+        })()}
+        {hasOnuRx && data.map((d, i) => {
+          if (d.onuRx == null) return null
+          return <circle key={`onu-d-${i}`} cx={toX(i)} cy={toY(d.onuRx)} r={hoveredIdx === i ? 3 : 2} fill={onuColor} />
+        })}
+
+        {/* OLT Rx line + dots */}
+        {hasOltRx && (() => {
+          const lines = []; let prev = null
+          for (let i = 0; i < data.length; i++) {
+            if (data[i].oltRx == null) { prev = null; continue }
+            if (prev !== null) lines.push(
+              <line key={`olt-ln-${i}`} x1={toX(prev.i)} y1={toY(prev.v)} x2={toX(i)} y2={toY(data[i].oltRx)}
+                stroke={oltColor} strokeWidth="1.5" strokeLinecap="round" />
+            )
+            prev = { i, v: data[i].oltRx }
+          }
+          return lines
+        })()}
+        {hasOltRx && data.map((d, i) => {
+          if (d.oltRx == null) return null
+          return <circle key={`olt-d-${i}`} cx={toX(i)} cy={toY(d.oltRx)} r={hoveredIdx === i ? 3 : 2} fill={oltColor} />
+        })}
+
+        {/* X-axis: dd/mm labels — thin out when dense */}
+        {data.map((d, i) => {
+          const step = data.length > 20 ? 4 : data.length > 10 ? 2 : 1
+          if (i % step !== 0) return null
+          return (
+            <text key={`day-${d.date}`} x={toX(i)} y={height - 14} textAnchor="middle" className="fill-slate-500 dark:fill-slate-400" style={{ fontSize: mobile ? '10px' : '8px', fontWeight: mobile ? 700 : 600 }}>
+              {formatDateLabel(d.date)}
+            </text>
+          )
+        })}
+      </svg>
+
+      {/* Hover tooltip */}
+      {hovered !== null && (
+        <div
+          className={`absolute top-0 z-20 pointer-events-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/60 rounded-lg shadow-xl px-2.5 py-2 min-w-[110px] ${hoveredCssLeft > 60 ? '-translate-x-full' : ''}`}
+          style={{ left: `${hoveredCssLeft}%` }}
+        >
+          <p className="text-[10px] font-black text-slate-700 dark:text-slate-200 mb-1 tabular-nums">{formatDateLabel(hovered.date)}</p>
+          {hovered.onuRx != null ? (
+            <p className="text-[10px] font-semibold"><span className="text-slate-400 dark:text-slate-500">ONU Rx </span><span className="tabular-nums" style={{ color: onuColor }}>{hovered.onuRx.toFixed(2)}</span></p>
+          ) : (
+            <p className="text-[10px] font-semibold text-slate-300 dark:text-slate-600">ONU Rx —</p>
+          )}
+          {hovered.oltRx != null ? (
+            <p className="text-[10px] font-semibold"><span className="text-slate-400 dark:text-slate-500">OLT Rx </span><span className="tabular-nums" style={{ color: oltColor }}>{hovered.oltRx.toFixed(2)}</span></p>
+          ) : (
+            <p className="text-[10px] font-semibold text-slate-300 dark:text-slate-600">OLT Rx —</p>
+          )}
+        </div>
       )}
-      {warnY > goodY && (
-        <rect x={padL} y={goodY} width={chartW} height={Math.max(0, warnY - goodY)} fill="currentColor" className="text-amber-50 dark:text-amber-500/5" />
-      )}
-      {critY > warnY && (
-        <rect x={padL} y={warnY} width={chartW} height={Math.max(0, critY - warnY)} fill="currentColor" className="text-rose-50 dark:text-rose-500/5" />
-      )}
 
-      {yLabels.map((value) => (
-        <line key={value} x1={padL} x2={width - padR} y1={toY(value)} y2={toY(value)} stroke="currentColor" strokeWidth="0.5" className="text-slate-200 dark:text-slate-700/50" />
-      ))}
-
-      <line x1={padL} x2={width - padR} y1={toY(-25)} y2={toY(-25)} stroke="currentColor" strokeWidth="1" strokeDasharray="4 2" className="text-emerald-400 dark:text-emerald-600" />
-      <line x1={padL} x2={width - padR} y1={toY(-28)} y2={toY(-28)} stroke="currentColor" strokeWidth="1" strokeDasharray="4 2" className="text-rose-400 dark:text-rose-600" />
-
-      <polyline
-        points={polylinePoints}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-        className="text-emerald-500 dark:text-emerald-400"
-      />
-
-      {points.map((point, index) => (
-        <circle key={index} cx={toX(point.timestamp)} cy={toY(point.value)} r="2.5" fill="currentColor" className="text-emerald-500 dark:text-emerald-400" />
-      ))}
-
-      {yLabels.map((value) => (
-        <text key={value} x={padL - 6} y={toY(value) + 3} textAnchor="end" className="fill-slate-400 dark:fill-slate-500" style={{ fontSize: '9px', fontWeight: 600 }}>
-          {value}
-        </text>
-      ))}
-
-      {xLabels.map(({ timestamp, label }) => (
-        <text key={timestamp} x={toX(timestamp)} y={height - 6} textAnchor="middle" className="fill-slate-400 dark:fill-slate-500" style={{ fontSize: '9px', fontWeight: 600 }}>
-          {label}
-        </text>
-      ))}
-
-      <text x={4} y={padT + 4} textAnchor="start" className="fill-slate-400 dark:fill-slate-500" style={{ fontSize: '9px', fontWeight: 700 }}>
-        {t('dBm')}
-      </text>
-    </svg>
+      {/* Legend */}
+      <div className="flex items-center justify-center gap-3 mt-1.5 mb-2">
+        <div className="flex items-center gap-1.5">
+          <svg width="16" height="8" viewBox="0 0 16 8" fill="none" className="shrink-0">
+            <line x1="1" y1="4" x2="15" y2="4" stroke={onuColor} strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="8" cy="4" r="1.5" fill={onuColor} />
+          </svg>
+          <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">ONU Rx</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <svg width="16" height="8" viewBox="0 0 16 8" fill="none" className="shrink-0">
+            <line x1="1" y1="4" x2="15" y2="4" stroke={oltColor} strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="8" cy="4" r="1.5" fill={oltColor} />
+          </svg>
+          <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">OLT Rx</span>
+        </div>
+      </div>
+    </div>
   )
 }

@@ -77,6 +77,11 @@ class OLT(models.Model):
         help_text='Com que frequência atualizar leituras de potência das ONUs',
         verbose_name='Intervalo de Potência (segundos)'
     )
+    history_days = models.PositiveIntegerField(
+        default=7,
+        help_text='Janela de histórico de alarmes exibida para ONUs desta OLT (em dias)',
+        verbose_name='Janela de Histórico (dias)'
+    )
     last_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Último Polling')
     next_poll_at = models.DateTimeField(null=True, blank=True, verbose_name='Próximo Polling')
     last_power_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Coleta de Potência')

@@ -15,7 +15,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - `frontend/src/components/NetworkTopology.jsx`: topology tree and alarm/search/filter interactions.
 - `frontend/src/components/SettingsPanel.jsx`: OLT CRUD/configuration UX.
 - `frontend/src/components/PowerReport.jsx`: network-wide power levels report with sortable/filterable table.
-- `frontend/src/components/AlarmHistory.jsx`: client alarm history with backend-powered search, event timeline, SVG trend chart, and alerts table.
+- `frontend/src/components/AlarmHistory.jsx`: client alarm/power history with backend-powered search, monthly disconnection bar chart, optical power line chart, month/year picker, and alerts table.
 - `frontend/src/services/api.js`: Axios API client with auth token interceptor.
 - `frontend/src/utils/stats.js`: ONU status classification helpers.
 
@@ -39,7 +39,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - PON description is read-only text in the sidebar (no inline edit control).
   - OLT creation/editing/deletion is blocked.
 - Admin/operator (`can_modify_settings=true`) can edit PON description inline from the sidebar (desktop and mobile header variants).
-- Permission error responses from the backend (`'Insufficient permissions for this action.'`) are translated through `BACKEND_MESSAGE_MAP` and displayed as contextual errors.
+- Permission error responses from the backend (`'Insufficient permissions for this action.'`) are translated through the shared frontend error translator (`frontend/src/utils/apiErrorMessages.js`) and displayed as contextual errors.
 
 ## Threshold Control Logic
 - The **Threshold Control** uses a single input for the "Normal Limit" (Good -> Warning boundary).
@@ -57,7 +57,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Refresh periodically.
 - Production frontend Nginx preserves incoming `X-Forwarded-Proto` when proxying `/api` and `/admin` to backend so Django security middleware can correctly detect HTTPS behind host-level TLS termination.
 - In production compose, frontend also serves `/static` directly from shared volume mount `/var/www/static` (populated by backend `collectstatic`).
-- OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable when `snmp_reachable === false` and `snmp_failure_count >= 2`.
+- OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable immediately when `snmp_reachable === false`.
 - Both topology list (`/api/olts/?include_topology=true`) and topology detail (`/api/olts/{id}/topology/`) payloads expose the same SNMP health fields so gray-state logic remains consistent on fallback loads.
 - Render unreachable or stale OLT nodes in gray.
 - When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and status-colored placeholder hyphens are all forced to gray to signal that displayed data may be outdated.
@@ -84,22 +84,21 @@ The UI remains topology-first. No dashboard page is required for current product
 - OLT health color is shared between topology and settings views.
 - During bootstrap with lightweight OLT payloads (`/api/olts/` without topology tree), frontend avoids warning colors (`yellow`/`red`) from aggregate counts only; it keeps reachable OLTs green until full topology data arrives. This prevents transient false alarm flashes on hard refresh.
 - Stale status data is considered unreliable and forced to gray:
-  - if `now - last_poll_at > polling_interval_seconds` plus an additional grace window.
-  - A minimum tolerance of 10 minutes is enforced so short polling intervals do not cause premature gray state.
-  - transient SNMP failures that are below the unreachable threshold still converge to gray when this stale window is exceeded.
+  - if `now - last_poll_at > max(polling_interval_seconds + 90s, 390s)`.
+  - this keeps gray-state timing aligned with backend stale-status protection (`poll_onu_status`).
 - OLT color semantics follow slot health:
-  - `red` when all active slots are offline (`red`),
-  - `yellow` when at least one slot is offline (`red`) and at least one other slot is not offline,
-  - `green` when all active slots are healthy,
+  - `red` when all active slots are confirmed offline (`link loss` / `dying gasp` only),
+  - `green` when at least one active slot has online ONUs,
+  - `neutral` when no active slot is confirmed offline and all available states are `unknown`,
   - `gray` when SNMP is unreachable or status is stale.
 - Slot color semantics follow PON health:
-  - `red` when all active PONs are fully offline (`red`),
-  - `yellow` when at least one active PON is fully offline (`red`) and at least one PON is not fully offline,
-  - `green` when all active PONs are healthy.
+  - `red` when all active PONs are fully confirmed offline (`link loss` / `dying gasp` only),
+  - `green` when at least one active PON has online ONUs,
+  - `neutral` when no active PON is confirmed offline and all available states are `unknown`.
 - PON color semantics follow ONU health:
-  - `red` when all ONUs are offline,
-  - `yellow` when there is a mix of online and offline ONUs,
-  - `green` when all ONUs are online.
+  - `red` when all ONUs are confirmed offline (`link loss` / `dying gasp`),
+  - `green` when there is at least one online ONU (even with mixed offline/unknown ONUs),
+  - `neutral` when all ONUs are `unknown`.
 - OLT and Slot sublabels show a rose-colored alert count (always visible, no toggle needed):
   - OLT: `{slotCount} PLACAS / {redSlots}` — number of slots where all PONs are fully offline (red health).
   - Slot: `{ponCount} PONS / {redPons}` — number of PONs where all ONUs are offline (red health).
@@ -111,16 +110,19 @@ The UI remains topology-first. No dashboard page is required for current product
   - `discovery_interval_minutes`
   - `polling_interval_seconds`
   - `power_interval_seconds`
+  - `history_days`
 - Discovery, polling, and power collection are scheduled by the backend `run_scheduler` management command. The frontend no longer submits automatic maintenance requests.
 - The power panel renders cached power values from topology payload immediately when opening/switching PONs.
 - PON sidebar refresh is tab-aware and live-refresh capable:
   - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped status polling and return fresh rows.
   - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped power collection and return fresh rows.
+  - `refresh=true` paths request immediate Zabbix item execution before reading values, so manual PON refresh is near-real-time.
+  - when collector connectivity is unavailable for targeted OLTs, scoped refresh endpoints return `503` with `detail`; frontend surfaces this as a contextual sidebar error instead of silently treating stale data as a successful refresh.
   - Both paths patch only the selected PON ONU rows in-memory (no forced full-topology reload on success).
   - OLT-wide maintenance actions (`run_polling` / `refresh_power`) remain available from settings for larger batch operations.
 - Status table disconnection column is interval-aware:
-  - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using the interval upper bound (`disconnect_window_end`) when backend returns trusted `disconnect_window_start` + `disconnect_window_end`;
-  - displays `—` when the exact disconnection window is unknown.
+  - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using `disconnect_window_end` with fallback to `disconnect_window_start`;
+  - when transition proof is unavailable, backend now returns a detection-point window (`disconnect_window_start == disconnect_window_end == offline_since`), so the table still shows when Varuna confirmed the offline state.
   - when `—` is shown, its color follows the ONU status palette (green/online, red/link loss-offline, blue/dying gasp, purple/unknown); gray-tree rows keep neutral gray.
 - Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
 - PON sidebar refresh has a 5-second cooldown after each collection completes. During cooldown the button is disabled and shows a depleting SVG ring animation around the icon (CSS `cooldown-ring` keyframe in `index.css`). Cooldown resets when the selected PON changes.
@@ -149,20 +151,25 @@ The UI remains topology-first. No dashboard page is required for current product
   1. **Device row**: Name, Vendor, Model.
   2. **Connection row**: IP, SNMP Community, Port.
 - Vendor and Model selects use a custom Radix `DropdownMenu` (`FieldSelect` component) matching the sort dropdown pattern from the topology view — portaled content, check indicator for selected item, emerald accent, keyboard navigation. Native `<select>` elements are not used.
-- Intervals tab uses a responsive grid (`grid-cols-2` on mobile, `grid-cols-3` on `lg+`) with compound input+button fields for ONU discovery, Status collection, and Power collection.
+- In PT-BR UI, model labels for vendor profiles with `vendor=FIBERHOME` or `vendor=HUAWEI` are normalized to `UNIFICADO` in Settings cards/forms while keeping the underlying `vendor_profile` ID and backend `model_name` unchanged.
+- Intervals tab uses a responsive grid (`grid-cols-2` on mobile, `grid-cols-4` on `lg+`) with:
+  - compound input+button fields for ONU discovery, Status collection, and Power collection,
+  - a centered `History retention` field displayed as `Nd` token (for example, `7D`) and parsed/clamped to `7..30` days for per-OLT Zabbix history retention.
 - Delete button is integrated inside the card header (visible when expanded), not floated outside the card boundary.
 - Thresholds tab configures power color-coding:
   - **ONU RX Power**: Normal (dBm) and Critical (dBm) breakpoints.
   - **OLT RX Power**: Normal (dBm) and Critical (dBm) breakpoints (shown only when selected vendor profile supports OLT RX).
   - Color mapping: `green` (>= normal), `yellow` (between normal and critical), `red` (< critical).
-  - Default thresholds: Normal = -25 dBm, Critical = -28 dBm.
+  - Default thresholds: Normal = -27 dBm, Critical = -30 dBm.
   - Stored in `localStorage` with global defaults and per-OLT overrides.
   - Saved to `localStorage` on explicit Save button click (not auto-saved); `Reset to defaults` clears per-OLT overrides.
   - Color legend (dots + range text) updates live as thresholds change.
+  - Threshold state is always initialized for every expanded OLT card (including cards restored from localStorage after refresh), so the Thresholds tab never renders empty due to missing per-card state.
 - Action bar at card bottom keeps last-discovery timestamp (left) and Save/Cancel controls (right, shown only when form is dirty).
 - Interval inputs accept **Zabbix-style durations**: bare numbers (seconds), or suffixed values (`30s`, `5m`, `1h`, `4h`, `1d`).
   - `parseDuration()` converts input string → seconds; `formatDuration()` converts seconds → human-readable string.
   - Form state stores human-readable strings; save handlers convert back to `discovery_interval_minutes` / `polling_interval_seconds` / `power_interval_seconds` for the API.
+- `history_days` is sent as an integer in OLT create/update payloads and is clamped client-side to `7..30` before API submission.
 - Dirty detection is per-card: each card compares its own `editForm` values against current OLT data with special duration-aware comparison, and also compares its `thresholdForm` against its original snapshot to detect threshold changes. The Save button activates for any change — device fields, intervals, or thresholds. Saving or discarding one card does not affect other expanded cards.
 - Cancel/Discard resets a single card's device/interval form and threshold form to their original values without affecting other expanded cards.
 - Vendor dropdown re-selection (same vendor) is guarded to prevent Radix `onSelect` from resetting `vendor_profile` and falsely marking the form dirty.
@@ -173,12 +180,12 @@ The UI remains topology-first. No dashboard page is required for current product
   - Request payload includes `{ background: true }`.
   - UI shows immediate inline acknowledgment only (queued/already-running), without job progress polling or progress bar animation.
   - Run and Save controls remain available; duplicate submissions are handled by backend `already_running` responses and surfaced as inline messages.
-  - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend translates known backend messages via `translateBackendMessage()`, preferring its own translated strings for queued action responses.
+  - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend translates known backend messages via `translateBackendMessage()` from `frontend/src/utils/apiErrorMessages.js`, preferring its own translated strings for queued action responses.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
 
 ## Settings API Contract Expectations
 - OLT removal from Settings maps to backend soft-deactivation (not hard delete), so removed OLTs disappear from active UI while history is preserved server-side.
-- Save actions can return explicit `400` validation errors for invalid runtime configuration (unsupported SNMP version, invalid intervals/ports, missing required fields).
+- Save actions can return explicit `400` validation errors for invalid runtime configuration (invalid intervals/ports, missing required fields).
 - Manual action buttons (`Run` for discovery/polling/power) can return explicit `400` errors when the vendor profile lacks required capabilities or OID templates.
 - Manual action buttons (`run_discovery`, `run_polling`, `refresh_power`) are acknowledged immediately by backend `202` responses when queued in background mode.
 - Frontend translates known backend errors through the i18n system; unknown messages pass through as-is for operator visibility.
@@ -260,12 +267,15 @@ The UI remains topology-first. No dashboard page is required for current product
 - Translation is handled by `react-i18next` configured in `frontend/src/i18n.js`.
 - Supported languages: English (`en`) and Brazilian Portuguese (`pt`, default).
 - All user-visible strings use `t('key')` lookups; no hardcoded display text in components.
-- Generic "all" filter labels (`All OLTs`, `All slots`, `All PONs`, `Select all`, `All`) translate to `Tudo` in pt-BR. Gendered forms like `Todas leituras` are kept where the feminine noun requires agreement.
-- Backend API messages (errors, validation, queued-action details) stay in English as stable API keys. The frontend maps known backend messages to i18n keys via `translateBackendMessage()` in `App.jsx`.
+- Generic "all" filter labels use concise PT-BR form: `All OLTs` / `All slots` / `All PONs` all translate to `Tudo`. Other generic labels: `Select all` -> `Selecionar tudo`, `All` -> `Todos`.
+- Backend API messages (errors, validation, queued-action details) stay in English as stable API keys. The frontend maps known backend messages to i18n keys via `translateBackendMessage()` in `frontend/src/utils/apiErrorMessages.js`.
   - `BACKEND_MESSAGE_MAP`: exact-match lookup for known backend strings.
   - `BACKEND_PREFIX_PATTERNS`: prefix-match for parametric messages (e.g. interval-exceeds-maximum with dynamic values).
+  - `BACKEND_REGEX_PATTERNS`: regex-match for dynamic transport/runtime errors (for example, `Timeout while connecting to "10.10.50.2:161".`) and stale-age messages with interpolated seconds.
+  - PT-BR wording for timeout is standardized as `Tempo limite esgotado ao tentar conectar a "{{target}}".`.
+  - OLT-prefixed errors are translated per segment (`OLT-NAME: <detail>`) so the OLT identifier remains intact while detail text follows selected language (`pt`/`en`).
   - Unknown backend messages pass through untranslated for operator visibility.
-- `getApiErrorMessage()` accepts a `t` function and runs all extracted backend messages through `translateBackendMessage()` before returning.
+- `getApiErrorMessage()` accepts a `t` function and runs all extracted backend messages through `translateBackendMessage()` before returning; this is used by topology/settings actions and login failures.
 - Queued settings actions (`runQueuedSettingsAction`) prefer frontend-translated messages over raw backend `detail` strings.
 - Settings action messages are OLT-scoped: `settingsActionMessage` is `{ oltId, message }` (or `null`). Each OLT card only shows the message when `oltId` matches; the create card only shows messages with `oltId == null`.
 
@@ -280,7 +290,8 @@ The UI remains topology-first. No dashboard page is required for current product
   - neutral gray for gray-tree (stale/unreachable) context.
 
 ## Adaptive Name Column
-- The Name column in the PON sidebar (both status and power tabs, desktop and mobile) is automatically hidden when no ONU in the selected PON has a real name (i.e. `client_name` and `name` are both empty).
+- The Name column in the PON sidebar is always rendered in both `Status` and `Potência` views (desktop and mobile), even for mixed-vendor OLT selections.
+- When an ONU has no name (`client_name`, `login`, `client_login`, and `name` empty), the Name cell renders the placeholder `—` instead of synthetic labels (for example `ONU 12`).
 - This applies to vendors like Fiberhome where SNMP does not expose ONU names. Column space is redistributed to Serial, Status/Power, and Desconexão/Leitura columns.
 
 ## Mobile UX
@@ -305,31 +316,53 @@ The UI remains topology-first. No dashboard page is required for current product
 - Accessible via "Power Report" nav tab (`activeNav === 'power-report'`); available to all roles.
 - Component: `frontend/src/components/PowerReport.jsx`.
 - Loads flattened ONU rows from `GET /api/onu/power-report/` (latest persisted power sample per active ONU).
+- Mount behavior mirrors topology warm-start: when the component has an in-memory snapshot from a previous visit, it renders rows immediately on tab switch and performs the API refresh in background (no blocking first-paint spinner).
 - Signal classification uses `getPowerColor` from `powerThresholds.js` — an ONU is "critical" if any reading is red, "warning" if any is yellow, "good" if all are green.
 - Default report mode is "problems first": signal filter starts with `Critical + Warning + No reading` and sort starts at `Worst ONU RX`.
 - Toolbar is flat on the page surface (no wrapping card), organized in two rows:
-  - Row 1: OLT dropdown (76px / 136px desktop) + Slot dropdown (80px / 72px desktop) + PON dropdown (80px / 72px desktop) grouped left, Sort dropdown (76px / 120px desktop) pushed far right via `ml-auto`. Slot/PON are wider than OLT/Sort on mobile since they are the primary filter controls. Slot/PON unselected labels show `—` (em dash) instead of translated "All" — the icon already communicates the filter type. When a slot/PON is selected, its number replaces the dash.
+  - Row 1: OLT dropdown (116px desktop) + Slot dropdown (80px / 72px desktop) + PON dropdown (80px / 72px desktop) grouped left, Sort dropdown pushed far right via `ml-auto`. All three location dropdowns show "Tudo" (PT) / "All" (EN) when nothing is selected. When a value is selected, the OLT shows its name; Slot/PON show their number.
   - Row 2: signal toggle pills (Good/Warning/Critical/No reading) centered, with inline count badges and a total ONU count after a divider.
-- Signal pills act as both filter toggles and summary indicators: each pill shows its label and count, colored when active, faded when inactive. This eliminates the need for separate stat cards.
+- Signal pills act as both filter toggles and summary indicators. Desktop pill format: `● SHORT_LABEL COUNT` (e.g. `● GOOD 2963`) using a short all-caps label (`GOOD`/`WARN`/`CRIT`/`N/A` in EN; `NORMAL`/`ALERTA`/`CRITICO`/`N/A` in PT). Mobile pills retain the full label. Each pill is colored when active, faded when inactive. This eliminates the need for separate stat cards.
 - Sort options: `ONU RX ↓`, `OLT RX ↓`, `ONU RX ↑`, `OLT RX ↑`.
 - Desktop: split header/body table with 9 `colgroup` columns (OLT, Slot, PON, ONU, Name, Serial, ONU RX, OLT RX, Reading). Compact row height (h-11) with hover highlight. Infinite scroll via `IntersectionObserver` on a sentinel row — more rows load automatically as the user scrolls near the bottom.
 - Mobile (<1024px): card layout with OLT/Slot/PON path, client info, power values (ONU RX + OLT RX). Same infinite scroll behavior.
 - Row rendering is windowed (initial 300 rows + incremental "Load more") to avoid mounting/unmounting extremely large DOM tables during tab switches.
-- Power values of `-0.00` or near-zero (`±0.005`) and sentinel values of `-40` dBm or lower (`≤ -39.995`) are treated as no-reading and display a dash placeholder instead of misleading values. This applies to both the Power Report table and the topology power cards (`App.jsx`). The `-40` sentinel is a common SNMP artifact indicating no real measurement.
+- Frontend no longer strips sentinel power values (`0`, `-40`) client-side. Sentinel discard is enforced upstream (Zabbix template preprocessing + backend normalization guard), so UI only consumes collector/backend-validated readings.
 - All power values are color-coded using existing `powerColorClass` utility.
 - Dropdowns use Radix DropdownMenu matching the PON panel sort pattern.
 - Background refresh interval remains 30s in-tab.
 
 ## Alarm History Tab
-- Accessible via "Alarm History" nav tab (`activeNav === 'alarm-history'`); available to all roles.
+- Accessible via "History" nav tab (`activeNav === 'alarm-history'`); available to all roles. Label: "History" (en) / "Histórico" (pt).
 - Component: `frontend/src/components/AlarmHistory.jsx`.
 - Client search input uses `GET /api/onu/alarm-clients/` for fast backend suggestions.
-- Empty state shown when no client is selected.
-- Selected client view:
-  - Summary stat cards: Dying Gasp count (blue), Link Loss count (rose), Total events (slate).
-  - Power history chart: pure SVG `<polyline>` line chart with threshold zone backgrounds (green/yellow/red bands), dashed threshold lines at -25/-28 dBm, axis labels, and data point dots.
-  - Alerts table: desktop split header/body table; mobile card layout. Columns: Event Type (colored badge), Start, End, Duration, Status (Active/Resolved badge).
-- ONU detail data loads from `GET /api/onu/{id}/alarm-history/` (real `ONULog` events + persisted power trend).
+- Empty state shown when no client is selected; vertically centered with `pb-[28vh]` optical lift so the prompt sits well above geometric center. The "Last N days" toolbar label is hidden until a client is selected.
+- History window is per-OLT configurable via `OLT.history_days` (default 7, range 7–30). Frontend reads `selectedClient.history_days` (returned by `alarm-clients`) and falls back to 7. Label in toolbar: "Last {{days}} days" (localized).
+- Toolbar: compact search input (`max-w-[200px] lg:max-w-[268px]`) on the left, "Last N days" label on the right. No desktop tab switcher (desktop is always side-by-side).
+- Mobile toolbar contains a centered STATUS/POTÊNCIA tab switcher (`flex lg:hidden`) in the middle of the toolbar row.
+- Selected client and search term persist in `localStorage` across page reloads.
+- The `<section>` in App.jsx uses `overflow-hidden` (not `overflow-y-auto`) when `alarm-history` is active. This gives AlarmHistory's `h-full` root a proper viewport-bounded height so the internal grid panels can scroll independently. All other tabs retain `overflow-y-auto` for page-level scroll.
+- The inner flex container (`flex-1 flex flex-col`) carries `min-h-0` — required at every flex level so that child `flex-1 min-h-0` elements can be properly bounded and scroll. Without it the container grows unbounded and scroll never triggers.
+- **Desktop layout (≥1024px)**: Side-by-side `grid-cols-2 gap-3` grid within `max-w-[1400px]` container.
+  - Left card: "Disconnection History" — chart on top (pinned), split header/body table (Event Type, Start, End, Duration) with scrollable body (`flex-1 overflow-y-auto`).
+  - Right card: "Power History" — chart on top (pinned), split header/body table (Reading, ONU Rx, OLT Rx) with scrollable body.
+  - Grid container has `overflow-hidden` so card heights are properly constrained for independent scroll.
+- **Mobile layout (<1024px)**: Single tab-switched card; `activeTab` (`'status'` | `'power'`) controlled by toolbar tab switcher. Card structure: title (pinned) → chart (pinned, full N days, no horizontal scroll) → column headers (pinned) → rows (scrollable) → footer "Last N days" (pinned). Same table structure as desktop (4 cols for status, 3 cols for power).
+- **Mobile Status rows**: Table rows — Event pill | Start | End | Duration (9px font, `h-8`).
+- **Mobile Power rows**: Table rows — Reading timestamp | ONU Rx | OLT Rx (9px font, `h-8`, threshold-aware color on values).
+- **Disconnection History card**: Bar chart (rose=Link Loss, blue=Dying Gasp, purple=Unknown) with Y-axis step of 2, minimum top of 6. All N days always rendered on x-axis. Bar opacity 0.9 (1.0 on hover). Table shows all alarms newest first; Event badge, Start, End, Duration columns. "Total: N" count uses `t('Total')` (translated).
+- **Event type pills**: Match Topology tab style — `ring-1 ring-inset` border, color dot (`w-1.5 h-1.5 rounded-full`) before label. Dying Gasp = blue-50/blue-700/ring-blue-200. Link Loss = rose-50/rose-600/ring-rose-200. Unknown = purple-50/purple-600/ring-purple-200. Mobile column header uses `t('Event')` (shorter) instead of `t('Event Type')`.
+- **Power History card**: Dual-line chart — ONU Rx `#38bdf8` (light blue), OLT Rx `#1d4ed8` (dark blue). Fixed colors, not health-color-per-segment. Horizontal background zones behind data: green (good), amber (warning), red (critical) based on `onu_rx_good`/`onu_rx_bad` thresholds; drawn at full chart width, opacity 0.12/0.11/0.11. When no power data exists, the chart still renders its grid/axes/legend with no data points (coherent with the disconnection chart's zero-state). Table shows individual power samples sorted newest first. Desktop power table is a clean 3-column layout (`auto | 100px | 100px`); no spacer columns. Value columns are `text-right`.
+- **Chart x-axis**: Single row, `dd/mm` format (e.g. `24/02`), 8px bold. No month transition row. `padB = 34`. Label density is adaptive: all labels shown for ≤10 days, every 2nd for 11–20 days, every 4th for >20 days — prevents overlap at 30-day range.
+- **Chart legend**: Bar chart (Disconnection) always shows all three reason legend items (Link Loss, Dying Gasp, Unknown) even when counts are zero — faded at `opacity-35` when zero to keep vertical alignment with the Power chart. Line chart (Power) always shows both ONU Rx and OLT Rx legend items. Both use `text-[10px]` labels with `mb-2` bottom margin.
+- **Power threshold coloring**: Table values colored via `getPowerColor`/`powerColorClass`. Chart uses fixed light-blue/dark-blue lines (no health coloring on lines). Threshold breakpoints included in `rawMin` so quality zones always visible.
+- **Chart hover tooltips**: Both charts have hover interaction. Disconnection chart: invisible full-height rect per day triggers `onMouseEnter`; tooltip shows date + per-reason counts. Power chart: `onMouseMove` on SVG computes nearest day index; dashed vertical cursor line drawn in SVG; tooltip shows date + ONU/OLT readings. Tooltip position is percentage-based; flips left when `hoveredCssLeft > 60%`.
+- Mobile charts fill full container width via `w-full h-auto` SVG scaling — no horizontal scroll needed for 7 days.
+- ONU detail data loads from `GET /api/onu/{id}/alarm-history/` with `alarm_days=historyDays`, `power_days=historyDays`, `alarm_limit=1000`, `max_power_points=744`. `historyDays` = `selectedClient.history_days || 7`.
+- `alarm-history` response now includes `source` (`zabbix` or `varuna`) so UI/debug tooling can tell whether the timeline came directly from Zabbix history or local fallback rows.
+- Power normalization keeps separate `onuRx`/`oltRx` fields and trusts backend/Zabbix filtering.
+- Data computed via `useMemo`: `dailyDisconnections` maps all N `lastNDays` (zeros for empty days); `dailyPower` averages `onuRx`/`oltRx` per day (for chart); `sortedPowerHistory` is individual samples sorted newest first (for table).
+- Timestamps formatted as `dd/mm/yy HH:mm` (24-hour, no AM/PM) in both disconnection and power tables.
 
 ## Frontend Invariants
 - Do not change visual identity without explicit product request.

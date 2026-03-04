@@ -23,7 +23,7 @@ This file defines how we build and evolve Varuna. It is a permanent operating gu
 - Vendor differences belong in `VendorProfile.oid_templates`, not hardcoded branches.
 
 4. Fail safely.
-- SNMP outages must not corrupt ONU state.
+- Collector outages must not corrupt ONU state.
 - Unreachable OLTs must be explicit and visible (gray/unreachable state).
 
 5. Keep history, but control stale data.
@@ -31,6 +31,11 @@ This file defines how we build and evolve Varuna. It is a permanent operating gu
 
 6. Performance is a feature.
 - Bulk operations, cached hot reads, and efficient query patterns are required.
+
+7. Zabbix first.
+- Always prefer Zabbix as the source for discovery, status, power, timestamps, and retention.
+- Add new runtime state in Varuna only when strictly necessary for UI semantics, cache acceleration, or lifecycle guarantees that Zabbix alone cannot provide.
+- Do not reimplement SNMP collection logic in Varuna when an equivalent Zabbix path exists.
 
 ## Non-Negotiable Rule: Documentation Freshness
 Every code change must update documentation in the same work session.
@@ -57,6 +62,26 @@ Notes:
 
 ## Discovery and Polling Standards
 
+### Zabbix Template-First Data Hygiene (Mandatory)
+- Vendor data cleanup must happen in Zabbix templates first (LLD preprocessing + item preprocessing), not in frontend rendering.
+- Required Zabbix-side handling for OLT/ONU data:
+  - serial normalization (for example comma-suffixed values, bracket/punctuation artifacts),
+  - status code mapping (`online` / `link_loss` / `dying_gasp` / `unknown`),
+  - power sentinel discard (`0` and `-40` or equivalent invalid ranges),
+  - vendor index decomposition needed for `{#SLOT}`, `{#PON}`, `{#ONU_ID}`.
+- Frontend rule: only format for display (`—`, localization, typography). Never add vendor-specific parsing/repair logic in UI.
+- Backend rule: fallback normalization is allowed only as defensive guard for legacy/missing Zabbix payloads; source of truth remains template output.
+
+### Zabbix Change Workflow (Mandatory)
+1. Edit the template YAML in repo root (`fiberhome-template.yaml`, `huawei-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`, `snmp-avail-template.yaml`).
+2. Import/update the template in Zabbix (same version used by runtime).
+3. Run `Execute now` on discovery for the target host and confirm latest LLD rows/macros are correct (`{#SERIAL}`, `{#ONU_NAME}`, `{#ONU_PATH}`).
+4. Run status/power item checks and confirm preprocessing outputs expected canonical values.
+5. Re-run Varuna discovery/polling and verify topology + power tabs with real data.
+6. Add/adjust backend tests for fallback parsing only (not as substitute for template preprocessing).
+7. Update docs in the same session (`docs/BACKEND.md`, `docs/OPERATIONS.md`, `docs/LLM_CONTEXT.md` when applicable).
+- If LLD item prototypes changed and existing host items keep stale behavior, rebuild affected hosts (delete host in Zabbix, resync from Varuna, rediscover) to force clean item recreation.
+
 ### Discovery
 - Discovery upserts topology and ONU inventory from vendor templates.
 - Missing resources follow retention policy (Zabbix-inspired):
@@ -65,10 +90,10 @@ Notes:
 - `deactivate_missing=true` controls whether missing resources are lifecycle-managed.
 
 ### Polling
-- Polling updates runtime ONU status from SNMP using chunked GET operations.
+- Polling updates runtime ONU status from Zabbix item data.
 - Status mapping must use canonical states: `online`, `offline`, `unknown`.
 - Offline transitions create/maintain `ONULog`; online transitions close active logs.
-- Full SNMP polling failure marks OLT unreachable and avoids mass false state mutation.
+- Full collector polling failure marks OLT unreachable and avoids mass false state mutation.
 
 ### Unreachable OLT Contract
 - Persist runtime health on OLT:
@@ -90,7 +115,7 @@ A task is complete only when all applicable items are done:
 ## Extending to New OLT Vendors
 1. Add/adjust `VendorProfile.oid_templates` (indexing, discovery, status, power).
 2. Validate index parsing and status mapping with tests.
-3. Validate discovery and polling commands against representative SNMP responses.
+3. Validate discovery and polling commands against representative Zabbix item/discovery outputs.
 4. Update docs with vendor-specific notes and constraints.
 
 ## Operational Safety
@@ -98,7 +123,7 @@ A task is complete only when all applicable items are done:
 - If container names/services changed, recreate stack:
   - `docker compose -f docker-compose.dev.yml down`
   - `docker compose -f docker-compose.dev.yml up -d --build --force-recreate`
-- Never silently ignore repeated SNMP errors; keep them visible in logs and OLT health fields.
+- Never silently ignore repeated collector errors; keep them visible in logs and OLT health fields.
 
 ## Versioning and Rollout Policy
 - We use Semantic Versioning for delivery tracking: `MAJOR.MINOR.PATCH`.

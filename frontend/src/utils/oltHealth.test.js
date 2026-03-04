@@ -21,7 +21,7 @@ test('deriveOltHealthState marks OLT gray after repeated SNMP failures', () => {
   assert.equal(state.reason, 'snmp_unreachable')
 })
 
-test('deriveOltHealthState keeps transient SNMP failures non-gray until stale', () => {
+test('deriveOltHealthState marks OLT gray on first explicit SNMP unreachable state', () => {
   const state = deriveOltHealthState(
     {
       snmp_reachable: false,
@@ -33,7 +33,8 @@ test('deriveOltHealthState keeps transient SNMP failures non-gray until stale', 
     },
     NOW_MS,
   )
-  assert.notEqual(state.state, 'gray')
+  assert.equal(state.state, 'gray')
+  assert.equal(state.reason, 'snmp_unreachable')
 })
 
 test('deriveOltHealthState marks OLT gray when status polling is stale', () => {
@@ -66,4 +67,86 @@ test('deriveOltHealthState uses discovery timestamp when polling timestamp is ab
   )
   assert.equal(state.state, 'gray')
   assert.equal(state.reason, 'status_stale')
+})
+
+test('deriveOltHealthState does not mark all-unknown ONUs as red', () => {
+  const state = deriveOltHealthState(
+    {
+      snmp_reachable: true,
+      snmp_failure_count: 0,
+      last_poll_at: isoAgoSeconds(60),
+      polling_interval_seconds: 300,
+      slots: [
+        {
+          is_active: true,
+          pons: [
+            {
+              is_active: true,
+              onus: [
+                { status: 'unknown', disconnect_reason: '' },
+                { status: 'unknown', disconnect_reason: 'unknown' },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    NOW_MS,
+  )
+  assert.equal(state.state, 'neutral')
+})
+
+test('deriveOltHealthState keeps OLT green when at least one ONU is online', () => {
+  const state = deriveOltHealthState(
+    {
+      snmp_reachable: true,
+      snmp_failure_count: 0,
+      last_poll_at: isoAgoSeconds(60),
+      polling_interval_seconds: 300,
+      slots: [
+        {
+          is_active: true,
+          pons: [
+            {
+              is_active: true,
+              onus: [
+                { status: 'online', disconnect_reason: '' },
+                { status: 'offline', disconnect_reason: 'link_loss' },
+                { status: 'unknown', disconnect_reason: 'unknown' },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    NOW_MS,
+  )
+  assert.equal(state.state, 'green')
+})
+
+test('deriveOltHealthState keeps red when all ONUs are confirmed offline reasons', () => {
+  const state = deriveOltHealthState(
+    {
+      snmp_reachable: true,
+      snmp_failure_count: 0,
+      last_poll_at: isoAgoSeconds(60),
+      polling_interval_seconds: 300,
+      slots: [
+        {
+          is_active: true,
+          pons: [
+            {
+              is_active: true,
+              onus: [
+                { status: 'offline', disconnect_reason: 'link_loss' },
+                { status: 'offline', disconnect_reason: 'dying_gasp' },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    NOW_MS,
+  )
+  assert.equal(state.state, 'red')
 })

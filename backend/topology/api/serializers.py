@@ -5,6 +5,7 @@ from rest_framework import serializers
 
 from topology.models import OLTPON, OLT, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
 from topology.services.cache_service import cache_service
+from topology.services.power_values import normalize_power_value
 
 
 def _cached_or_fallback(instance, cached_attr: str, fallback_fn):
@@ -148,13 +149,21 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         if active_log:
             disconnect_reason = active_log.disconnect_reason
             offline_since = self._as_iso(active_log.offline_since)
-            disconnect_window_start = self._as_iso(active_log.disconnect_window_start)
-            disconnect_window_end = self._as_iso(active_log.disconnect_window_end)
+            window_anchor = (
+                active_log.disconnect_window_end
+                or active_log.disconnect_window_start
+                or active_log.offline_since
+            )
+            disconnect_window_start = self._as_iso(active_log.disconnect_window_start or window_anchor)
+            disconnect_window_end = self._as_iso(active_log.disconnect_window_end or window_anchor)
         elif obj.status == ONU.STATUS_OFFLINE:
             disconnect_reason = ONULog.REASON_UNKNOWN
 
-        onu_rx_power = power.get('onu_rx_power')
-        olt_rx_power = power.get('olt_rx_power') if supports_olt_rx_power else None
+        onu_rx_power = normalize_power_value(power.get('onu_rx_power'))
+        olt_rx_power = (
+            normalize_power_value(power.get('olt_rx_power'))
+            if supports_olt_rx_power else None
+        )
         power_read_at = None
         if onu_rx_power is not None or olt_rx_power is not None:
             power_read_at = self._as_iso(power.get('power_read_at'))
@@ -455,6 +464,7 @@ class OLTSerializer(serializers.ModelSerializer):
             'polling_enabled',
             'polling_interval_seconds',
             'power_interval_seconds',
+            'history_days',
             'last_poll_at',
             'next_poll_at',
             'last_power_at',
@@ -576,6 +586,11 @@ class OLTSerializer(serializers.ModelSerializer):
         if version != 'v2c':
             raise serializers.ValidationError('Only SNMP v2c is currently supported.')
         return version
+
+    def validate_history_days(self, value):
+        if not (7 <= value <= 30):
+            raise serializers.ValidationError('history_days must be between 7 and 30.')
+        return value
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

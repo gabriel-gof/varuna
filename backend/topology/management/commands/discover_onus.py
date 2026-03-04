@@ -1,10 +1,10 @@
 import logging
 import re
 import time
-from contextlib import nullcontext
 from datetime import timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
@@ -12,114 +12,118 @@ from django.utils import timezone
 from topology.models import OLT, OLTSlot, OLTPON, ONU, ONULog
 from topology.services.cache_service import cache_service
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
-from topology.services.snmp_service import snmp_service
 from topology.services.topology_counter_service import topology_counter_service
-from topology.services.vendor_profile import map_status_code, parse_onu_index
+from topology.services.vendor_profile import parse_onu_index
+from topology.services.zabbix_service import zabbix_service
 
 
 logger = logging.getLogger(__name__)
 
-SYS_DESCR_OID = '1.3.6.1.2.1.1.1.0'
-UNREACHABLE_PREFLIGHT_TIMEOUT_DEFAULT_SECONDS = 2.0
-
-
-def _extract_index(oid: str, base_oid: str) -> Optional[str]:
-    if not oid or not base_oid:
-        return None
-    prefix = f"{base_oid}."
-    if oid.startswith(prefix):
-        return oid[len(prefix):]
-    return None
-
-
-def _rows_to_index_map(rows: list, base_oid: str) -> Dict[str, str]:
-    values: Dict[str, str] = {}
-    for row in rows:
-        oid = row.get("oid")
-        value = row.get("value")
-        index = _extract_index(oid, base_oid)
-        if index is None:
-            continue
-        values[index] = "" if value is None else str(value).strip()
-    return values
-
-
 _SERIAL_SENTINEL_VALUES = frozenset({"N/A", "NA", "NONE", "NULL", "--", "-"})
+_SERIAL_LIKE_RE = re.compile(r"^[A-Z]{4}[A-Z0-9-]{4,28}$")
 
 
 def _decode_hex_serial(hex_str: str) -> Optional[str]:
-    """Decode hex-encoded serial (e.g. '0X434D535A3B0699E9' → 'CMSZ3B0699E9').
-
-    Huawei returns ONU serials as raw hex where the first 4 bytes are the
-    ASCII vendor ID and the remaining bytes are the serial number.
-    """
-    body = hex_str[2:]  # strip '0X'
+    body = hex_str[2:]
     if len(body) < 10 or len(body) % 2 != 0:
         return None
-    if not all(c in '0123456789ABCDEF' for c in body):
+    if not all(c in "0123456789ABCDEF" for c in body):
         return None
     try:
         vendor_bytes = bytes.fromhex(body[:8])
         if all(0x20 <= b <= 0x7E for b in vendor_bytes):
-            return vendor_bytes.decode('ascii') + body[8:].upper()
+            return vendor_bytes.decode("ascii") + body[8:].upper()
     except (ValueError, UnicodeDecodeError):
-        pass
+        return None
     return None
 
 
 def _recover_mangled_serial(serial: str) -> Optional[str]:
-    """Recover serials mangled by UTF-8 decode of raw binary bytes.
-
-    Huawei OLTs return 8-byte serials (4 ASCII vendor + 4 binary). When the
-    binary bytes happen to be valid UTF-8, _parse_value decodes them as text
-    (e.g. 0x26 → '&'). This heuristic detects such mangled strings and
-    re-encodes them back to hex for proper decoding.
-    """
-    if len(serial) < 7 or len(serial) > 8:
+    if len(serial) < 5 or len(serial) > 8:
         return None
     vendor = serial[:4]
     suffix = serial[4:]
     if not vendor.isalpha():
         return None
-    # Suffix must contain at least one character that looks like a binary
-    # artifact (not alphanumeric and not a common serial separator like - or _).
-    if all(c.isalnum() or c in '-_' for c in suffix):
+    if all((c.isascii() and c.isalnum()) or c in "-_" for c in suffix):
         return None
-    raw_bytes = serial.encode('latin-1')
+    try:
+        raw_bytes = serial.encode("latin-1")
+    except UnicodeEncodeError:
+        try:
+            raw_bytes = serial.encode("utf-8")
+        except UnicodeEncodeError:
+            return None
+    if len(raw_bytes) > 8:
+        return None
     if len(raw_bytes) < 8:
-        raw_bytes = raw_bytes + b'\x00' * (8 - len(raw_bytes))
-    hex_str = '0X' + raw_bytes.hex().upper()
+        raw_bytes = raw_bytes + b"\x00" * (8 - len(raw_bytes))
+    hex_str = "0X" + raw_bytes.hex().upper()
     return _decode_hex_serial(hex_str)
 
 
-def _normalize_serial(raw: str) -> str:
-    if not raw:
+def _normalize_serial_candidate(raw: str, *, strict: bool) -> str:
+    normalized = str(raw or "").strip().upper().strip("[](){}").strip(",;:")
+    if not normalized:
         return ""
-    if "," in raw:
-        raw = raw.split(",", 1)[1]
-    normalized = raw.strip().upper()
     if normalized in _SERIAL_SENTINEL_VALUES:
         return ""
-    if normalized.startswith('0X'):
+    if "," in normalized:
+        parts = [part.strip() for part in normalized.split(",") if part.strip()]
+        if strict:
+            for part in parts:
+                parsed = _normalize_serial_candidate(part, strict=True)
+                if parsed:
+                    return parsed
+            return ""
+        if parts:
+            normalized = parts[0]
+            if normalized in _SERIAL_SENTINEL_VALUES:
+                return ""
+    if "=" in normalized:
+        _, rhs = normalized.rsplit("=", 1)
+        rhs = rhs.strip()
+        if rhs:
+            rhs_normalized = _normalize_serial_candidate(rhs, strict=strict)
+            if rhs_normalized:
+                return rhs_normalized
+    if normalized.startswith("0X"):
         decoded = _decode_hex_serial(normalized)
+        if decoded:
+            return decoded
+    compact_hex = normalized.replace(" ", "")
+    if re.fullmatch(r"[0-9A-F]{10,64}", compact_hex) and len(compact_hex) % 2 == 0:
+        decoded = _decode_hex_serial(f"0X{compact_hex}")
         if decoded:
             return decoded
     recovered = _recover_mangled_serial(normalized)
     if recovered:
         return recovered
+    if strict and not _SERIAL_LIKE_RE.fullmatch(normalized):
+        return ""
+    if _SERIAL_LIKE_RE.fullmatch(normalized):
+        return normalized.replace("-", "")
     return normalized
 
 
-def _parse_non_negative_int(value, default: int = 0) -> int:
-    try:
-        parsed = int(str(value).strip())
-    except (TypeError, ValueError, AttributeError):
-        return default
-    return max(parsed, 0)
+def _normalize_serial(raw: str) -> str:
+    if not raw:
+        return ""
+    raw_value = str(raw).strip()
+    if not raw_value:
+        return ""
+    if "," in raw_value:
+        parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+        for part in parts:
+            parsed = _normalize_serial_candidate(part, strict=True)
+            if parsed:
+                return parsed
+        return _normalize_serial_candidate(raw_value, strict=False)
+    return _normalize_serial_candidate(raw_value, strict=False)
 
 
 def _parse_optional_non_negative_int(value) -> Optional[int]:
-    if value in (None, ''):
+    if value in (None, ""):
         return None
     try:
         parsed = int(str(value).strip())
@@ -146,12 +150,17 @@ def _pon_key(identity: Dict[str, Any]) -> str:
 
 
 class Command(BaseCommand):
-    help = "Discover ONUs on OLTs using SNMP OID templates."
+    help = "Discover ONUs on OLTs using Zabbix item templates."
 
     def add_arguments(self, parser):
         parser.add_argument("--olt-id", type=int, help="Run discovery for a specific OLT id")
         parser.add_argument("--dry-run", action="store_true", help="Run without writing to the database")
         parser.add_argument("--force", action="store_true", help="Ignore discovery_enabled for the selected OLT(s)")
+        parser.add_argument(
+            "--refresh-upstream",
+            action="store_true",
+            help="Ask Zabbix to execute ONU discovery item/rule before reading rows.",
+        )
         parser.add_argument(
             "--max-olts",
             type=int,
@@ -172,8 +181,24 @@ class Command(BaseCommand):
         if olt.last_discovery_at:
             interval_minutes = max(int(olt.discovery_interval_minutes or 0), 1)
             return olt.last_discovery_at + timedelta(minutes=interval_minutes)
-        # Never-discovered OLTs should be considered oldest-due.
         return now - timedelta(days=36500)
+
+    @staticmethod
+    def _resolve_zabbix_discovery_key(olt: OLT) -> str:
+        templates = (olt.vendor_profile.oid_templates or {}) if isinstance(olt.vendor_profile.oid_templates, dict) else {}
+        zabbix_cfg = templates.get("zabbix", {}) if isinstance(templates.get("zabbix", {}), dict) else {}
+        return str(zabbix_cfg.get("discovery_item_key") or "onuDiscovery").strip()
+
+    @staticmethod
+    def _discovery_macro(row: Dict[str, Any], name: str) -> str:
+        if not isinstance(row, dict):
+            return ""
+        candidates = [name, name.upper(), name.lower()]
+        for candidate in candidates:
+            value = row.get(candidate)
+            if value not in (None, ""):
+                return str(value).strip()
+        return ""
 
     def handle(self, *args, **options):
         force = bool(options.get("force", False))
@@ -201,7 +226,8 @@ class Command(BaseCommand):
 
         if not force and not olt_id:
             due_olts = [
-                olt for olt in olts
+                olt
+                for olt in olts
                 if self._is_due(olt, now)
                 and not (olt.snmp_reachable is False and (olt.snmp_failure_count or 0) >= 2)
             ]
@@ -221,603 +247,291 @@ class Command(BaseCommand):
             due_olts = due_olts[: int(max_olts)]
 
         for olt in due_olts:
-            self._discover_for_olt(olt, dry_run=options.get("dry_run", False))
+            self._discover_for_olt(
+                olt,
+                dry_run=options.get("dry_run", False),
+                refresh_upstream=bool(options.get("refresh_upstream", False)),
+            )
 
-    def _discover_for_olt(self, olt: OLT, dry_run: bool = False) -> None:
+    def _discover_for_olt(self, olt: OLT, dry_run: bool = False, refresh_upstream: bool = False) -> None:
+        self._discover_for_olt_zabbix(olt, dry_run=dry_run, refresh_upstream=refresh_upstream)
+
+    def _discover_for_olt_zabbix(
+        self,
+        olt: OLT,
+        dry_run: bool = False,
+        refresh_upstream: bool = False,
+    ) -> None:
         oid_templates = olt.vendor_profile.oid_templates or {}
-        discovery_cfg = oid_templates.get("discovery", {})
-        status_cfg = oid_templates.get("status", {})
         indexing_cfg = oid_templates.get("indexing", {})
+        discovery_key = self._resolve_zabbix_discovery_key(olt)
 
-        configured_disable_lost_after_minutes = _parse_non_negative_int(
-            discovery_cfg.get('disable_lost_after_minutes', discovery_cfg.get('keep_lost_minutes', 0)),
-            default=0,
-        )
-        # Product policy: missing ONUs must leave active topology immediately after a discovery pass.
-        disable_lost_after_minutes = 0
-        if configured_disable_lost_after_minutes > 0:
-            logger.info(
-                "OLT %s discovery config disable_lost_after_minutes=%s is ignored; global policy is immediate deactivation.",
-                olt.id,
-                configured_disable_lost_after_minutes,
-            )
-        delete_lost_after_minutes = _parse_optional_non_negative_int(discovery_cfg.get('delete_lost_after_minutes'))
-        if (
-            delete_lost_after_minutes is not None
-            and delete_lost_after_minutes > 0
-            and delete_lost_after_minutes <= disable_lost_after_minutes
-        ):
-            logger.warning(
-                "OLT %s has delete_lost_after_minutes (%s) <= disable_lost_after_minutes (%s); clamping delete window.",
-                olt.id,
-                delete_lost_after_minutes,
-                disable_lost_after_minutes,
-            )
-            delete_lost_after_minutes = disable_lost_after_minutes + 1
+        if refresh_upstream:
+            try:
+                hostid = zabbix_service.get_hostid(olt)
+                if hostid:
+                    executed = zabbix_service.execute_item_now_by_key(hostid, discovery_key)
+                    logger.info(
+                        "Discovery OLT %s: requested immediate Zabbix execution for discovery key %s (executed=%s).",
+                        olt.id,
+                        discovery_key,
+                        executed,
+                    )
+                    if executed:
+                        time.sleep(1.0)
+            except Exception:
+                logger.exception("Discovery OLT %s: failed to request immediate Zabbix discovery execution.", olt.id)
 
-        name_oid = discovery_cfg.get("onu_name_oid")
-        serial_oid = discovery_cfg.get("onu_serial_oid")
-        status_oid = discovery_cfg.get("onu_status_oid") or status_cfg.get("onu_status_oid")
-        status_map = status_cfg.get("status_map", {})
+        wait_seconds = max(0, int(getattr(settings, "ZABBIX_DISCOVERY_REFRESH_WAIT_SECONDS", 15) or 15))
+        wait_step_seconds = max(1, int(getattr(settings, "ZABBIX_DISCOVERY_REFRESH_WAIT_STEP_SECONDS", 2) or 2))
 
-        if not serial_oid:
+        rows: List[Dict[str, Any]] = []
+        fetch_error: Optional[Exception] = None
+        fetch_attempts = 1
+        if refresh_upstream and wait_seconds > 0:
+            fetch_attempts = max(1, int(wait_seconds // wait_step_seconds) + 1)
+
+        for attempt in range(fetch_attempts):
+            try:
+                rows, _ = zabbix_service.fetch_discovery_rows(olt, discovery_key)
+                fetch_error = None
+            except Exception as exc:
+                fetch_error = exc
+                rows = []
+
+            if rows:
+                break
+            if attempt < fetch_attempts - 1:
+                time.sleep(wait_step_seconds)
+
+        if fetch_error is not None and not rows:
             self._mark_discovery_result(olt, success=False, dry_run=dry_run)
-            logger.warning("OLT %s missing discovery OIDs", olt.id)
-            self.stdout.write(f"OLT {olt.id} missing discovery OIDs, skipping.")
+            if not dry_run:
+                mark_olt_unreachable(olt, error=str(fetch_error))
+            self.stdout.write(f"OLT {olt.id}: zabbix discovery request failed ({fetch_error}).")
             return
 
-        slot_cache: Dict[str, OLTSlot] = {}
-        pon_cache: Dict[tuple, OLTPON] = {}
+        if not rows:
+            self._mark_discovery_result(olt, success=False, dry_run=dry_run)
+            if not dry_run:
+                mark_olt_unreachable(olt, error="No Zabbix ONU discovery data returned")
+            self.stdout.write(f"OLT {olt.id}: no Zabbix discovery data returned.")
+            return
 
-        seen_slot_ids: Set[int] = set()
-        seen_pon_ids: Set[int] = set()
-        seen_onu_ids: Set[int] = set()
-        historical_pon_descriptions_by_index: Dict[int, str] = {}
-        historical_pon_descriptions_by_key: Dict[str, str] = {}
-        historical_pon_descriptions_by_slot_pon: Dict[tuple, str] = {}
+        normalized_entries: List[Dict[str, Any]] = []
+        for row in rows:
+            raw_index = self._discovery_macro(row, "{#SNMPINDEX}")
+            slot_raw = self._discovery_macro(row, "{#SLOT}")
+            pon_raw = self._discovery_macro(row, "{#PON}")
+            onu_raw = self._discovery_macro(row, "{#ONU_ID}")
+            pon_numeric_raw = self._discovery_macro(row, "{#PON_ID}")
 
-        existing_pons = (
-            OLTPON.objects.filter(olt=olt)
-            .select_related("slot")
-            .order_by("-is_active", "-last_discovered_at", "-id")
-        )
-        for existing_pon in existing_pons:
-            description = (existing_pon.description or "").strip()
-            if not description:
-                continue
-            if existing_pon.pon_index is not None:
-                try:
-                    historical_pon_descriptions_by_index.setdefault(int(existing_pon.pon_index), description)
-                except (TypeError, ValueError):
-                    pass
-            if existing_pon.pon_key:
-                historical_pon_descriptions_by_key.setdefault(existing_pon.pon_key, description)
-            try:
-                historical_pon_descriptions_by_slot_pon.setdefault(
-                    (int(existing_pon.slot.slot_id), int(existing_pon.pon_id)),
-                    description,
-                )
-            except (TypeError, ValueError, AttributeError):
-                continue
+            parsed_slot = _parse_optional_non_negative_int(slot_raw)
+            parsed_pon = _parse_optional_non_negative_int(pon_raw)
+            parsed_onu = _parse_optional_non_negative_int(onu_raw)
+            parsed_pon_numeric = _parse_optional_non_negative_int(pon_numeric_raw)
 
-        def ensure_slot(identity: Dict[str, Any]) -> OLTSlot:
-            key = _slot_key(identity)
-            slot = slot_cache.get(key)
-            if slot:
-                seen_slot_ids.add(slot.id)
-                return slot
-            slot, _ = OLTSlot.objects.update_or_create(
-                olt=olt,
-                slot_key=key,
-                defaults={
-                    "slot_id": identity["slot_id"],
-                    "rack_id": identity.get("rack_id"),
-                    "shelf_id": identity.get("shelf_id"),
-                    "is_active": True,
-                },
-            )
-            slot_cache[key] = slot
-            seen_slot_ids.add(slot.id)
-            return slot
-
-        def ensure_pon(identity: Dict[str, Any], slot: OLTSlot, pon_name: str = "") -> OLTPON:
-            cache_key = (slot.id, identity["pon_id"])
-            pon = pon_cache.get(cache_key)
-            if pon:
-                seen_pon_ids.add(pon.id)
-                return pon
-            pon_key = _pon_key(identity)
-            pon_numeric = identity.get("pon_numeric")
-            pon, created = OLTPON.objects.update_or_create(
-                slot=slot,
-                pon_id=identity["pon_id"],
-                defaults={
-                    "olt": olt,
-                    "pon_key": pon_key,
-                    "pon_index": pon_numeric,
-                    "rack_id": identity.get("rack_id"),
-                    "shelf_id": identity.get("shelf_id"),
-                    "port_id": identity.get("port_id"),
-                    "name": pon_name,
-                    "is_active": True,
-                },
-            )
-            if created and not pon.description:
-                inherited_description = None
-                try:
-                    if pon_numeric is not None:
-                        inherited_description = historical_pon_descriptions_by_index.get(int(pon_numeric))
-                except (TypeError, ValueError):
-                    inherited_description = None
-
-                if not inherited_description:
-                    inherited_description = historical_pon_descriptions_by_key.get(pon_key)
-
-                if not inherited_description:
-                    try:
-                        inherited_description = historical_pon_descriptions_by_slot_pon.get(
-                            (int(identity["slot_id"]), int(identity["pon_id"]))
-                        )
-                    except (TypeError, ValueError):
-                        inherited_description = None
-
-                if inherited_description:
-                    pon.description = inherited_description
-                    pon.save(update_fields=["description"])
-
-            normalized_description = (pon.description or "").strip()
-            if normalized_description:
-                if pon.pon_index is not None:
-                    try:
-                        historical_pon_descriptions_by_index[int(pon.pon_index)] = normalized_description
-                    except (TypeError, ValueError):
-                        pass
-                if pon.pon_key:
-                    historical_pon_descriptions_by_key[pon.pon_key] = normalized_description
-                try:
-                    historical_pon_descriptions_by_slot_pon[(int(slot.slot_id), int(pon.pon_id))] = normalized_description
-                except (TypeError, ValueError):
-                    pass
-
-            pon_cache[cache_key] = pon
-            seen_pon_ids.add(pon.id)
-            return pon
-
-        interfaces_cfg = oid_templates.get("pon_interfaces", {})
-        iface_rows_total = 0
-        pon_map: Dict[int, Dict[str, Any]] = {}
-
-        pause_between_walks = float(discovery_cfg.get('pause_between_walks_seconds', 0.5))
-        pause_between_walks = max(0.0, min(pause_between_walks, 5.0))
-
-        walk_timeout = float(discovery_cfg.get('walk_timeout_seconds', 30.0))
-        walk_timeout = max(5.0, min(walk_timeout, 120.0))
-
-        if olt.snmp_reachable is False:
-            preflight_timeout = float(
-                discovery_cfg.get(
-                    'unreachable_preflight_timeout_seconds',
-                    min(walk_timeout, UNREACHABLE_PREFLIGHT_TIMEOUT_DEFAULT_SECONDS),
-                )
-            )
-            preflight_timeout = max(1.0, min(preflight_timeout, 15.0))
-            preflight_retries = _parse_non_negative_int(
-                discovery_cfg.get('unreachable_preflight_retries', 0),
-                default=0,
-            )
-            preflight_retries = min(preflight_retries, 2)
-            preflight = snmp_service.get(
-                olt,
-                [SYS_DESCR_OID],
-                timeout=preflight_timeout,
-                retries=preflight_retries,
-            )
-            if not (preflight and SYS_DESCR_OID in preflight):
-                detail = (
-                    "SNMP preflight check failed while OLT is marked unreachable. "
-                    "Verify SNMP endpoint/port/community and retry."
-                )
-                if not dry_run:
-                    mark_olt_unreachable(olt, error=detail)
-                self._mark_discovery_result(olt, success=False, dry_run=dry_run)
-                self.stdout.write(f"OLT {olt.id}: SNMP preflight failed (still unreachable).")
-                logger.warning("OLT %s discovery aborted by unreachable preflight.", olt.id)
-                return
-
-        if interfaces_cfg and not dry_run:
-            iface_name_oid = interfaces_cfg.get("name_oid")
-            if iface_name_oid:
-                iface_status_oid = interfaces_cfg.get("status_oid")
-                name_regex = interfaces_cfg.get("name_regex", r"^gpon_(\d+)/(\d+)/(\d+)$")
-                status_up = str(interfaces_cfg.get("status_up", "1"))
-                regex = re.compile(name_regex)
-
-                name_rows = snmp_service.walk(olt, iface_name_oid)
-                status_rows = snmp_service.walk(olt, iface_status_oid) if iface_status_oid else []
-                iface_rows_total = len(name_rows) + len(status_rows)
-                names = _rows_to_index_map(name_rows, iface_name_oid)
-                statuses = _rows_to_index_map(status_rows, iface_status_oid) if iface_status_oid else {}
-
-                for index, iface_name in names.items():
-                    if not iface_name:
-                        continue
-                    match = regex.match(iface_name)
-                    if not match:
-                        continue
-                    if iface_status_oid and statuses.get(index) != status_up:
-                        continue
-                    try:
-                        rack_id = int(match.group(1))
-                        shelf_id = int(match.group(2))
-                        port_id = int(match.group(3))
-                    except (IndexError, ValueError):
-                        continue
-                    slot_from = indexing_cfg.get("slot_from", "shelf")
-                    pon_from = indexing_cfg.get("pon_from", "port")
-                    location = {"rack": rack_id, "shelf": shelf_id, "port": port_id}
-                    identity = {
-                        "slot_id": location.get(slot_from, shelf_id),
-                        "pon_id": location.get(pon_from, port_id),
-                        "pon_numeric": None,
-                        "rack_id": rack_id,
-                        "shelf_id": shelf_id,
-                        "port_id": port_id,
-                    }
-                    pon_map[int(index)] = {
-                        'slot_id': location.get(slot_from, shelf_id),
-                        'pon_id': location.get(pon_from, port_id),
-                        'rack_id': rack_id,
-                        'shelf_id': shelf_id,
-                        'port_id': port_id,
-                    }
-                    slot = ensure_slot(identity)
-                    ensure_pon(identity, slot, pon_name=iface_name)
-
-        name_rows = snmp_service.walk(olt, name_oid, timeout=walk_timeout) if name_oid else []
-        if pause_between_walks > 0 and name_oid:
-            time.sleep(pause_between_walks)
-        serial_rows = snmp_service.walk(olt, serial_oid, timeout=walk_timeout)
-        if pause_between_walks > 0 and status_oid:
-            time.sleep(pause_between_walks)
-        status_rows = snmp_service.walk(olt, status_oid, timeout=walk_timeout) if status_oid else []
-
-        # OID-column-based slot/pon resolution (e.g. Fiberhome flat integer index)
-        slot_column_oid = discovery_cfg.get("onu_slot_oid")
-        pon_column_oid = discovery_cfg.get("onu_pon_oid")
-        column_map: Optional[Dict[str, Dict]] = None
-        if slot_column_oid or pon_column_oid:
-            slot_col_rows = snmp_service.walk(olt, slot_column_oid, timeout=walk_timeout) if slot_column_oid else []
-            if pause_between_walks > 0 and slot_column_oid:
-                time.sleep(pause_between_walks)
-            pon_col_rows = snmp_service.walk(olt, pon_column_oid, timeout=walk_timeout) if pon_column_oid else []
-            slot_values = _rows_to_index_map(slot_col_rows, slot_column_oid) if slot_column_oid else {}
-            pon_values = _rows_to_index_map(pon_col_rows, pon_column_oid) if pon_column_oid else {}
-            column_map = {}
-            for idx in set(slot_values.keys()) | set(pon_values.keys()):
-                s = slot_values.get(idx)
-                p = pon_values.get(idx)
-                try:
-                    entry: Dict[str, int] = {}
-                    if s is not None and s != '':
-                        entry['slot_id'] = int(s)
-                    if p is not None and p != '':
-                        entry['pon_id'] = int(p)
-                    if 'slot_id' in entry and 'pon_id' in entry:
-                        column_map[idx] = entry
-                except (TypeError, ValueError):
+            if parsed_slot is None or parsed_pon is None or parsed_onu is None:
+                if raw_index:
+                    parsed = parse_onu_index(raw_index, indexing_cfg)
+                    if parsed:
+                        parsed_slot = parsed.get("slot_id")
+                        parsed_pon = parsed.get("pon_id")
+                        parsed_onu = parsed.get("onu_id")
+                        parsed_pon_numeric = parsed.get("pon_numeric")
+                if parsed_slot is None or parsed_pon is None or parsed_onu is None:
                     continue
 
-        snmp_returned = bool(name_rows or serial_rows or status_rows or iface_rows_total or column_map)
-        if not snmp_returned:
-            if not dry_run:
-                mark_olt_unreachable(olt, error='No SNMP discovery data returned')
+            if not raw_index:
+                if parsed_pon_numeric is not None and parsed_onu is not None:
+                    raw_index = f"{parsed_pon_numeric}.{parsed_onu}"
+                elif parsed_pon is not None and parsed_onu is not None:
+                    raw_index = f"{parsed_pon}.{parsed_onu}"
+
+            serial_value = _normalize_serial(
+                self._discovery_macro(row, "{#SERIAL}") or self._discovery_macro(row, "{#ONU_SERIAL}")
+            )
+            name_value = self._discovery_macro(row, "{#ONU_NAME}")
+            normalized_entries.append(
+                {
+                    "slot_id": int(parsed_slot),
+                    "pon_id": int(parsed_pon),
+                    "onu_id": int(parsed_onu),
+                    "snmp_index": raw_index,
+                    "name": name_value,
+                    "serial": serial_value,
+                }
+            )
+
+        if not normalized_entries:
             self._mark_discovery_result(olt, success=False, dry_run=dry_run)
-            self.stdout.write(f"OLT {olt.id}: no SNMP discovery data returned.")
-            logger.warning("OLT %s discovery: no SNMP data returned", olt.id)
+            if not dry_run:
+                mark_olt_unreachable(olt, error="Zabbix discovery returned no parseable ONU entries")
+            self.stdout.write(f"OLT {olt.id}: no parseable ONU entries in Zabbix discovery payload.")
             return
 
-        names = _rows_to_index_map(name_rows, name_oid)
-        serials = _rows_to_index_map(serial_rows, serial_oid)
-        statuses = _rows_to_index_map(status_rows, status_oid) if status_oid else {}
-
-        raw_indices = set(names.keys()) | set(serials.keys())
-        indices = set()
-        ghost_count = 0
-        for idx in raw_indices:
-            name_val = names.get(idx, "").strip()
-            serial_val = serials.get(idx, "").strip()
-            if not name_val and not serial_val:
-                ghost_count += 1
-                continue
-            indices.add(idx)
-        if ghost_count:
-            logger.info(
-                "OLT %s discovery: filtered %d ghost indices (empty name and serial)",
-                olt.id, ghost_count,
-            )
-        created = updated = skipped = 0
-
-        # Partial walk deactivation guard
-        active_count = ONU.objects.filter(olt=olt, is_active=True).count()
-        min_safe_ratio = float(discovery_cfg.get('min_safe_ratio', 0.3))
-        min_safe_ratio = max(0.0, min(min_safe_ratio, 1.0))
-        skip_deactivation = False
-        if active_count > 0 and len(indices) < active_count * min_safe_ratio:
-            logger.critical(
-                "OLT %s discovery returned %s ONUs but %s are active (%.0f%%). "
-                "Skipping deactivation to avoid mass false removal.",
-                olt.id,
-                len(indices),
-                active_count,
-                (len(indices) / active_count) * 100 if active_count else 0,
-            )
-            skip_deactivation = True
-
-        # Parse all discovered ONUs into a list
-        parsed_onus: List[Dict[str, Any]] = []
-        for index in sorted(indices):
-            identity = parse_onu_index(index, indexing_cfg, pon_map=pon_map, column_map=column_map)
-            if not identity:
-                skipped += 1
-                continue
-            name = names.get(index, "").strip()
-            serial = _normalize_serial(serials.get(index, ""))
-            status_code = statuses.get(index)
-            mapped = map_status_code(status_code, status_map)
-            parsed_onus.append({
-                "index": index,
-                "identity": identity,
-                "name": name,
-                "serial": serial,
-                "status": mapped["status"],
-                "reason": mapped.get("reason", ""),
-            })
-
-        parsed_count = len(parsed_onus)
-        if active_count > 0 and parsed_count < active_count * min_safe_ratio:
-            logger.critical(
-                "OLT %s discovery parsed %s ONUs from %s SNMP indices, but %s ONUs are active (%.0f%%). "
-                "Skipping deactivation to avoid mass false removal.",
-                olt.id,
-                parsed_count,
-                len(indices),
-                active_count,
-                (parsed_count / active_count) * 100 if active_count else 0,
-            )
-            skip_deactivation = True
-
-        # Total index-parse failure guard: SNMP returned ONUs but none could be
-        # parsed — likely a vendor profile indexing misconfiguration, not real
-        # absence.  Skip deactivation and mark discovery unhealthy so the
-        # operator is alerted without destroying existing topology.
-        if indices and skipped == len(indices):
-            logger.critical(
-                "OLT %s discovery: all %s SNMP indices failed parse_onu_index — "
-                "possible indexing misconfiguration.  Skipping deactivation.",
-                olt.id,
-                len(indices),
-            )
-            skip_deactivation = True
-
-        write_context = transaction.atomic() if not dry_run else nullcontext()
-        with write_context:
-            if dry_run:
-                for entry in parsed_onus:
-                    identity = entry["identity"]
-                    exists = ONU.objects.filter(
-                        olt=olt,
-                        slot_id=identity["slot_id"],
-                        pon_id=identity["pon_id"],
-                        onu_id=identity["onu_id"],
-                    ).exists()
-                    if exists:
-                        updated += 1
-                    else:
-                        created += 1
-            else:
-                # Ensure slots and PONs for all discovered ONUs (cached, few upserts)
-                for entry in parsed_onus:
-                    identity = entry["identity"]
-                    slot = ensure_slot(identity)
-                    pon = ensure_pon(identity, slot)
-                    entry["_slot"] = slot
-                    entry["_pon"] = pon
-
-                # Fetch all existing ONUs for this OLT in one query
-                existing_onus_qs = ONU.objects.filter(olt=olt).values_list(
-                    "id", "slot_id", "pon_id", "onu_id", "serial",
-                )
-                existing_lookup: Dict[tuple, Dict[str, Any]] = {}
-                for onu_id, s_id, p_id, o_id, existing_serial in existing_onus_qs:
-                    existing_lookup[(s_id, p_id, o_id)] = {
-                        "id": onu_id,
-                        "serial": existing_serial or "",
-                    }
-
-                to_create: List[ONU] = []
-                to_update: List[ONU] = []
-                for entry in parsed_onus:
-                    identity = entry["identity"]
-                    key = (identity["slot_id"], identity["pon_id"], identity["onu_id"])
-                    existing = existing_lookup.get(key)
-
-                    serial = entry["serial"]
-                    if existing:
-                        # Preserve previously discovered serial on partial serial-walk gaps
-                        if not serial:
-                            serial = existing["serial"]
-                        onu = ONU(
-                            id=existing["id"],
-                            olt=olt,
-                            slot_id=identity["slot_id"],
-                            pon_id=identity["pon_id"],
-                            onu_id=identity["onu_id"],
-                            snmp_index=entry["index"],
-                            name=entry["name"],
-                            serial=serial,
-                            status=entry["status"],
-                            slot_ref=entry["_slot"],
-                            pon_ref=entry["_pon"],
-                            is_active=True,
-                        )
-                        to_update.append(onu)
-                        seen_onu_ids.add(existing["id"])
-                        updated += 1
-                    else:
-                        onu = ONU(
-                            olt=olt,
-                            slot_id=identity["slot_id"],
-                            pon_id=identity["pon_id"],
-                            onu_id=identity["onu_id"],
-                            snmp_index=entry["index"],
-                            name=entry["name"],
-                            serial=serial,
-                            status=entry["status"],
-                            slot_ref=entry["_slot"],
-                            pon_ref=entry["_pon"],
-                            is_active=True,
-                        )
-                        to_create.append(onu)
-                        created += 1
-
-                if to_create:
-                    created_onus = ONU.objects.bulk_create(to_create)
-                    for onu in created_onus:
-                        seen_onu_ids.add(onu.id)
-                if to_update:
-                    ONU.objects.bulk_update(
-                        to_update,
-                        ["snmp_index", "name", "serial", "status", "slot_ref", "pon_ref", "is_active"],
-                        batch_size=500,
-                    )
-
-                # Create ONULog entries for offline ONUs discovered without an open log.
-                # This ensures first-discovery on vendors like FiberHome (where status_map
-                # encodes the disconnect reason directly) shows the correct reason in the
-                # topology view without waiting for a polling cycle.
-                offline_reason_map: Dict[int, str] = {}
-                created_onu_map: Dict[tuple, int] = {}
-                if to_create:
-                    for onu in created_onus:
-                        created_onu_map[(onu.slot_id, onu.pon_id, onu.onu_id)] = onu.id
-                for entry in parsed_onus:
-                    if entry["status"] != ONU.STATUS_OFFLINE or not entry.get("reason"):
-                        continue
-                    identity = entry["identity"]
-                    key = (identity["slot_id"], identity["pon_id"], identity["onu_id"])
-                    existing_info = existing_lookup.get(key)
-                    onu_db_id = existing_info["id"] if existing_info else created_onu_map.get(key)
-                    if onu_db_id:
-                        offline_reason_map[onu_db_id] = entry["reason"]
-
-                if offline_reason_map:
-                    already_open = set(
-                        ONULog.objects.filter(
-                            onu_id__in=offline_reason_map.keys(),
-                            offline_until__isnull=True,
-                        ).values_list("onu_id", flat=True)
-                    )
-                    now_ts = timezone.now()
-                    new_logs = [
-                        ONULog(
-                            onu_id=onu_id,
-                            offline_since=now_ts,
-                            disconnect_reason=reason,
-                        )
-                        for onu_id, reason in offline_reason_map.items()
-                        if onu_id not in already_open
-                    ]
-                    if new_logs:
-                        ONULog.objects.bulk_create(new_logs)
-                        logger.info(
-                            "OLT %s discovery: created %d ONULog entries for offline ONUs",
-                            olt.id,
-                            len(new_logs),
-                        )
-
-            deactivate_missing = bool(discovery_cfg.get('deactivate_missing', True))
-            stale_onus = stale_slots = stale_pons = 0
-            waiting_onus = waiting_slots = waiting_pons = 0
-            deleted_onus = 0
-            if not dry_run and deactivate_missing and not skip_deactivation:
-                now = timezone.now()
-                disable_cutoff = now - timedelta(minutes=disable_lost_after_minutes)
-
-                stale_onus_qs = ONU.objects.filter(olt=olt, is_active=True)
-                if seen_onu_ids:
-                    stale_onus_qs = stale_onus_qs.exclude(id__in=seen_onu_ids)
-                if disable_lost_after_minutes > 0:
-                    waiting_onus = stale_onus_qs.filter(last_discovered_at__gt=disable_cutoff).count()
-                    stale_onus_qs = stale_onus_qs.filter(last_discovered_at__lte=disable_cutoff)
-                stale_onus = stale_onus_qs.update(is_active=False, status=ONU.STATUS_UNKNOWN)
-
-                stale_pons_qs = OLTPON.objects.filter(olt=olt, is_active=True)
-                if seen_pon_ids:
-                    stale_pons_qs = stale_pons_qs.exclude(id__in=seen_pon_ids)
-                if disable_lost_after_minutes > 0:
-                    waiting_pons = stale_pons_qs.filter(last_discovered_at__gt=disable_cutoff).count()
-                    stale_pons_qs = stale_pons_qs.filter(last_discovered_at__lte=disable_cutoff)
-                stale_pons = stale_pons_qs.update(is_active=False)
-
-                stale_slots_qs = OLTSlot.objects.filter(olt=olt, is_active=True)
-                if seen_slot_ids:
-                    stale_slots_qs = stale_slots_qs.exclude(id__in=seen_slot_ids)
-                if disable_lost_after_minutes > 0:
-                    waiting_slots = stale_slots_qs.filter(last_discovered_at__gt=disable_cutoff).count()
-                    stale_slots_qs = stale_slots_qs.filter(last_discovered_at__lte=disable_cutoff)
-                stale_slots = stale_slots_qs.update(is_active=False)
-
-                if delete_lost_after_minutes is not None and delete_lost_after_minutes > 0:
-                    delete_cutoff = now - timedelta(minutes=delete_lost_after_minutes)
-                    delete_onus_qs = ONU.objects.filter(
-                        olt=olt,
-                        is_active=False,
-                        last_discovered_at__lte=delete_cutoff,
-                    )
-                    if seen_onu_ids:
-                        delete_onus_qs = delete_onus_qs.exclude(id__in=seen_onu_ids)
-                    deleted_onus = delete_onus_qs.count()
-                    if deleted_onus:
-                        delete_onus_qs.delete()
+        created = 0
+        updated = 0
+        seen_onu_keys: Set[Tuple[int, int, int]] = set()
+        seen_slot_keys: Set[str] = set()
+        seen_pon_keys: Set[Tuple[int, str]] = set()
+        now = timezone.now()
 
         if not dry_run:
+            slot_map: Dict[str, OLTSlot] = {slot.slot_key: slot for slot in OLTSlot.objects.filter(olt=olt)}
+            pon_map: Dict[Tuple[int, str], OLTPON] = {
+                (pon.slot_id, pon.pon_key): pon for pon in OLTPON.objects.filter(olt=olt).select_related("slot")
+            }
+            onu_map: Dict[Tuple[int, int, int], ONU] = {
+                (onu.slot_id, onu.pon_id, onu.onu_id): onu for onu in ONU.objects.filter(olt=olt)
+            }
+
+            onus_to_create: List[ONU] = []
+            onus_to_update: List[ONU] = []
+
+            for entry in normalized_entries:
+                slot_identity = {
+                    "slot_id": entry["slot_id"],
+                    "rack_id": None,
+                    "shelf_id": None,
+                }
+                slot_key = _slot_key(slot_identity)
+                seen_slot_keys.add(slot_key)
+                slot_obj = slot_map.get(slot_key)
+                if slot_obj is None:
+                    slot_obj = OLTSlot.objects.create(
+                        olt=olt,
+                        slot_id=entry["slot_id"],
+                        rack_id=None,
+                        shelf_id=None,
+                        slot_key=slot_key,
+                        is_active=True,
+                    )
+                    slot_map[slot_key] = slot_obj
+                elif not slot_obj.is_active:
+                    slot_obj.is_active = True
+                    slot_obj.save(update_fields=["is_active", "last_discovered_at"])
+
+                pon_identity = {
+                    "slot_id": entry["slot_id"],
+                    "pon_id": entry["pon_id"],
+                    "rack_id": None,
+                    "shelf_id": None,
+                    "port_id": None,
+                }
+                pon_key = _pon_key(pon_identity)
+                pon_lookup = (slot_obj.id, pon_key)
+                seen_pon_keys.add(pon_lookup)
+                pon_obj = pon_map.get(pon_lookup)
+                if pon_obj is None:
+                    pon_obj = OLTPON.objects.create(
+                        olt=olt,
+                        slot=slot_obj,
+                        pon_id=entry["pon_id"],
+                        pon_index=None,
+                        rack_id=None,
+                        shelf_id=None,
+                        port_id=None,
+                        pon_key=pon_key,
+                        is_active=True,
+                    )
+                    pon_map[pon_lookup] = pon_obj
+                elif (not pon_obj.is_active) or pon_obj.slot_id != slot_obj.id:
+                    pon_obj.slot = slot_obj
+                    pon_obj.is_active = True
+                    pon_obj.save(update_fields=["slot", "is_active", "last_discovered_at"])
+
+                onu_key = (entry["slot_id"], entry["pon_id"], entry["onu_id"])
+                seen_onu_keys.add(onu_key)
+                existing = onu_map.get(onu_key)
+                if existing is None:
+                    created += 1
+                    onus_to_create.append(
+                        ONU(
+                            olt=olt,
+                            slot_ref=slot_obj,
+                            pon_ref=pon_obj,
+                            slot_id=entry["slot_id"],
+                            pon_id=entry["pon_id"],
+                            onu_id=entry["onu_id"],
+                            snmp_index=entry["snmp_index"] or f"{entry['pon_id']}.{entry['onu_id']}",
+                            name=entry["name"] or "",
+                            serial=entry["serial"] or "",
+                            status=ONU.STATUS_UNKNOWN,
+                            is_active=True,
+                        )
+                    )
+                else:
+                    dirty = False
+                    if existing.slot_ref_id != slot_obj.id:
+                        existing.slot_ref = slot_obj
+                        dirty = True
+                    if existing.pon_ref_id != pon_obj.id:
+                        existing.pon_ref = pon_obj
+                        dirty = True
+                    if existing.snmp_index != (entry["snmp_index"] or existing.snmp_index):
+                        existing.snmp_index = entry["snmp_index"] or existing.snmp_index
+                        dirty = True
+                    if entry["name"] and existing.name != entry["name"]:
+                        existing.name = entry["name"]
+                        dirty = True
+                    if entry["serial"] and existing.serial != entry["serial"]:
+                        existing.serial = entry["serial"]
+                        dirty = True
+                    if not existing.is_active:
+                        existing.is_active = True
+                        dirty = True
+                    if dirty:
+                        updated += 1
+                        onus_to_update.append(existing)
+
+            with transaction.atomic():
+                if onus_to_create:
+                    ONU.objects.bulk_create(onus_to_create)
+                if onus_to_update:
+                    ONU.objects.bulk_update(
+                        onus_to_update,
+                        ["slot_ref", "pon_ref", "snmp_index", "name", "serial", "is_active"],
+                    )
+
+                stale_onus = [
+                    onu_id
+                    for onu_id, slot_id, pon_id, onu_number in ONU.objects.filter(olt=olt, is_active=True).values_list(
+                        "id",
+                        "slot_id",
+                        "pon_id",
+                        "onu_id",
+                    )
+                    if (slot_id, pon_id, onu_number) not in seen_onu_keys
+                ]
+                if stale_onus:
+                    ONU.objects.filter(id__in=stale_onus).update(is_active=False, status=ONU.STATUS_UNKNOWN)
+                    ONULog.objects.filter(onu_id__in=stale_onus, offline_until__isnull=True).update(offline_until=now)
+
+                stale_pons_qs = OLTPON.objects.filter(olt=olt, is_active=True)
+                if seen_pon_keys:
+                    seen_pon_ids = [pon_map[key].id for key in seen_pon_keys if key in pon_map]
+                    stale_pons_qs = stale_pons_qs.exclude(id__in=seen_pon_ids)
+                stale_pons_qs.update(is_active=False)
+
+                stale_slots_qs = OLTSlot.objects.filter(olt=olt, is_active=True)
+                if seen_slot_keys:
+                    seen_slot_ids = [slot_map[key].id for key in seen_slot_keys if key in slot_map]
+                    stale_slots_qs = stale_slots_qs.exclude(id__in=seen_slot_ids)
+                stale_slots_qs.update(is_active=False)
+
             mark_olt_reachable(olt)
             try:
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:
-                logger.exception("OLT %s discovery: failed to refresh cached topology counters.", olt.id)
+                logger.exception("OLT %s zabbix discovery: failed to refresh cached topology counters.", olt.id)
             cache_service.invalidate_topology_api_cache(olt.id)
 
-        # Discovery is unhealthy when SNMP returned indices but none parsed
-        all_skipped = indices and skipped == len(indices)
-        self._mark_discovery_result(olt, success=not all_skipped, dry_run=dry_run)
+        self._mark_discovery_result(olt, success=True, dry_run=dry_run)
         self.stdout.write(
-            f"OLT {olt.id}: discovered {len(indices)} ONUs "
-            f"(created={created}, updated={updated}, skipped={skipped})."
+            f"OLT {olt.id}: discovered {len(normalized_entries)} ONUs via Zabbix "
+            f"(created={created}, updated={updated})."
         )
-        if not dry_run:
-            logger.info(
-                "OLT %s discovery: total=%s created=%s updated=%s skipped=%s stale_onus=%s stale_pons=%s stale_slots=%s",
-                olt.id,
-                len(indices),
-                created,
-                updated,
-                skipped,
-                stale_onus,
-                stale_pons,
-                stale_slots,
-            )
-            if deactivate_missing:
-                logger.info(
-                    "OLT %s lost-resource policy: disable_after=%sm delete_after=%s; waiting(onu=%s pon=%s slot=%s) deleted_onus=%s",
-                    olt.id,
-                    disable_lost_after_minutes,
-                    f"{delete_lost_after_minutes}m" if delete_lost_after_minutes is not None else "never",
-                    waiting_onus,
-                    waiting_pons,
-                    waiting_slots,
-                    deleted_onus,
-                )
 
     def _mark_discovery_result(self, olt: OLT, success: bool, dry_run: bool) -> None:
         if dry_run:
@@ -827,4 +541,12 @@ class Command(BaseCommand):
         olt.last_discovery_at = now
         olt.next_discovery_at = next_at
         olt.discovery_healthy = success
-        olt.save(update_fields=["last_discovery_at", "next_discovery_at", "discovery_healthy"])
+        update_fields = ["last_discovery_at", "next_discovery_at", "discovery_healthy"]
+
+        # Discovery may add/reactivate ONUs with unknown status. Schedule status polling
+        # immediately so topology health converges quickly after discovery.
+        if success and olt.polling_enabled and (olt.next_poll_at is None or olt.next_poll_at > now):
+            olt.next_poll_at = now
+            update_fields.append("next_poll_at")
+
+        olt.save(update_fields=update_fields)

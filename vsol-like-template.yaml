@@ -1,18 +1,18 @@
 zabbix_export:
   version: '7.0'
   template_groups:
-    - uuid: fca9a32d65354d2492adbfa5a2840a3f
+    - uuid: 63951cbce75f45cebf403ab7fb0eeb23
       name: Templates/OLT
   templates:
-    - uuid: 1748d2d3ddd5431ba7e7492e81f9ed7e
-      template: 'OLT Fiberhome Unified'
-      name: 'OLT Fiberhome Unified'
+    - uuid: d2d6689b7e3847d18e9c242a7aef5ef0
+      template: 'OLT VSOL GPON 8P'
+      name: 'OLT VSOL GPON 8P'
       description: |
         Minimal template for Varuna collection.
         Scope:
         - ONU discovery
         - ONU status (reason encoded in status value)
-        - ONU RX and OLT RX power (direct SNMP per ONU)
+        - ONU RX power (direct SNMP per ONU)
       groups:
         - name: Templates/OLT
       macros:
@@ -25,15 +25,15 @@ zabbix_export:
         - macro: '{$VARUNA.HISTORY_DAYS}'
           value: 7d
       discovery_rules:
-        - uuid: 2d2506d0ac5b4f84af882f55d13e35fe
+        - uuid: 110f443a2e5744c19f28236b0869082c
           name: 'ONU Discovery'
           type: SNMP_AGENT
-          snmp_oid: 'discovery[{#SLOT},1.3.6.1.4.1.5875.800.3.10.1.1.2,{#PON},1.3.6.1.4.1.5875.800.3.10.1.1.3,{#SERIAL},1.3.6.1.4.1.5875.800.3.10.1.1.10]'
+          snmp_oid: 'discovery[{#ONU_NAME},1.3.6.1.4.1.37950.1.1.6.1.1.4.1.24,{#SERIAL},1.3.6.1.4.1.37950.1.1.6.1.1.4.1.5]'
           key: onuDiscovery
           delay: '{$VARUNA.DISCOVERY_INTERVAL}'
           lifetime_type: DELETE_IMMEDIATELY
           lifetime: '0'
-          description: 'Builds ONU LLD rows and derives ONU/OLT RX index helpers from flat Fiberhome SNMP index.'
+          description: 'Builds ONU LLD rows from VSOL-like index format <pon>.<onu>.'
           preprocessing:
             - type: JAVASCRIPT
               parameters:
@@ -42,55 +42,67 @@ zabbix_export:
                   var output = [];
 
                   function normalizeSerial(raw) {
-                      var serial = String(raw || '').trim().toUpperCase();
-                      if (!serial || ['N/A', 'NA', 'NONE', 'NULL', '--', '-'].indexOf(serial) >= 0) {
-                          return 'UNKNOWN';
+                      var serialLike = /^[A-Z]{4}[A-Z0-9-]{4,28}$/;
+                      var sentinel = ['N/A', 'NA', 'NONE', 'NULL', '--', '-'];
+                      var input = String(raw || '').trim().toUpperCase();
+                      if (!input) {
+                          return '';
+                      }
+                      var parts = input.split(',').map(function(part) {
+                          return String(part || '').trim().replace(/^[\[\(\{]+|[\]\)\},;:]+$/g, '');
+                      }).filter(function(part) {
+                          return part.length > 0;
+                      });
+                      for (var i = 0; i < parts.length; i += 1) {
+                          if (serialLike.test(parts[i])) {
+                              return parts[i].replace(/-/g, '');
+                          }
+                      }
+                      var serial = parts.length > 0 ? parts[0] : input.replace(/^[\[\(\{]+|[\]\)\},;:]+$/g, '');
+                      if (!serial || sentinel.indexOf(serial) >= 0) {
+                          return '';
                       }
                       return serial;
                   }
 
                   rows.forEach(function(row) {
                       var indexStr = String(row['{#SNMPINDEX}'] || '').trim();
-                      var slotStr = String(row['{#SLOT}'] || '').trim();
-                      var ponStr = String(row['{#PON}'] || '').trim();
-                      if (!indexStr || !slotStr || !ponStr) {
+                      if (!indexStr) {
                           return;
                       }
 
-                      var indexNum = parseInt(indexStr, 10);
-                      if (!isFinite(indexNum) || indexNum <= 0) {
+                      var parts = indexStr.split('.');
+                      if (parts.length < 2) {
                           return;
                       }
 
-                      var slot = parseInt(slotStr, 10);
-                      var pon = parseInt(ponStr, 10);
-                      var onuId = (indexNum >> 8) & 0xFF;
-
-                      if (!isFinite(slot) || !isFinite(pon) || !isFinite(onuId) || slot <= 0 || pon <= 0 || onuId <= 0) {
+                      var pon = parseInt(parts[0], 10);
+                      var onuId = parseInt(parts[parts.length - 1], 10);
+                      if (!isFinite(pon) || !isFinite(onuId) || pon <= 0 || onuId <= 0) {
                           return;
                       }
 
-                      var ponBase = indexNum & 0xFFFF0000;
+                      var slot = 1;
+                      var onuName = String(row['{#ONU_NAME}'] || '').trim();
                       var serial = normalizeSerial(row['{#SERIAL}']);
-                      var onuPath = String(slot) + '/' + String(pon) + '/' + String(onuId);
 
                       output.push({
                           '{#SNMPINDEX}': indexStr,
                           '{#SLOT}': String(slot),
                           '{#PON}': String(pon),
                           '{#ONU_ID}': String(onuId),
+                          '{#ONU_NAME}': onuName,
                           '{#SERIAL}': serial,
-                          '{#ONU_PATH}': onuPath,
-                          '{#OLT_RX_INDEX}': String(ponBase) + '.' + String(onuId)
+                          '{#ONU_PATH}': String(slot) + '/' + String(pon) + '/' + String(onuId)
                       });
                   });
 
                   return JSON.stringify(output);
           item_prototypes:
-            - uuid: 41ea8fa737be4ee88f1f66ef18fe6f03
-              name: 'ONU {#ONU_PATH} {#SERIAL}: Status'
+            - uuid: b42ad096112e4805862f7ed52b647cf3
+              name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: Status'
               type: SNMP_AGENT
-              snmp_oid: '1.3.6.1.4.1.5875.800.3.10.1.1.11.{#SNMPINDEX}'
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.1.1.5.{#SNMPINDEX}'
               key: 'onuStatusValue[{#SNMPINDEX}]'
               delay: '{$VARUNA.STATUS_INTERVAL}'
               history: '{$VARUNA.HISTORY_DAYS}'
@@ -101,13 +113,13 @@ zabbix_export:
                   parameters:
                     - |
                       var raw = String(value || '').trim();
-                      if (raw === '1') {
+                      if (raw === '3') {
                           return 'online';
                       }
-                      if (raw === '0') {
+                      if (raw === '1' || raw === '2') {
                           return 'link_loss';
                       }
-                      if (raw === '2') {
+                      if (raw === '4' || raw === '5') {
                           return 'dying_gasp';
                       }
                       return 'unknown';
@@ -117,10 +129,10 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_status
-            - uuid: 937d6e22cf824d66bfb83832f3816e67
-              name: 'ONU {#ONU_PATH} {#SERIAL}: ONU Rx power'
+            - uuid: 3b25e5d5046b480ca827b66d0bdb4e84
+              name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: ONU Rx power'
               type: SNMP_AGENT
-              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.3.3.1.6.{#SNMPINDEX}'
+              snmp_oid: '1.3.6.1.4.1.37950.1.1.6.1.1.3.1.7.{#SNMPINDEX}'
               key: 'onuRxPower[{#SNMPINDEX}]'
               delay: '{$VARUNA.POWER_INTERVAL}'
               history: '{$VARUNA.HISTORY_DAYS}'
@@ -131,15 +143,27 @@ zabbix_export:
                 - type: JAVASCRIPT
                   parameters:
                     - |
-                      var n = parseFloat(value);
-                      if (!isFinite(n)) {
+                      var raw = parseFloat(value);
+                      if (!isFinite(raw)) {
                           return '';
                       }
-                      n = n * 0.01;
-                      if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
-                          return '';
-                      }
+
+                      var n = raw;
                       if (n < -50 || n > 10) {
+                          var by10 = raw / 10;
+                          if (by10 >= -50 && by10 <= 10) {
+                              n = by10;
+                          } else {
+                              var by100 = raw / 100;
+                              if (by100 >= -50 && by100 <= 10) {
+                                  n = by100;
+                              } else {
+                                  return '';
+                              }
+                          }
+                      }
+
+                      if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
                           return '';
                       }
                       return Math.round(n * 100) / 100;
@@ -149,35 +173,3 @@ zabbix_export:
                   value: varuna
                 - tag: metric
                   value: onu_rx_power
-            - uuid: 4e2768f1bf6842d1a12fdd84088f2e28
-              name: 'ONU {#ONU_PATH} {#SERIAL}: OLT Rx power'
-              type: SNMP_AGENT
-              snmp_oid: '1.3.6.1.4.1.5875.800.3.9.3.7.1.2.{#OLT_RX_INDEX}'
-              key: 'oltRxPower[{#SNMPINDEX}]'
-              delay: '{$VARUNA.POWER_INTERVAL}'
-              history: '{$VARUNA.HISTORY_DAYS}'
-              value_type: FLOAT
-              trends: '0'
-              units: dBm
-              preprocessing:
-                - type: JAVASCRIPT
-                  parameters:
-                    - |
-                      var n = parseFloat(value);
-                      if (!isFinite(n)) {
-                          return '';
-                      }
-                      n = n * 0.01;
-                      if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
-                          return '';
-                      }
-                      if (n < -50 || n > 10) {
-                          return '';
-                      }
-                      return Math.round(n * 100) / 100;
-                  error_handler: DISCARD_VALUE
-              tags:
-                - tag: collector
-                  value: varuna
-                - tag: metric
-                  value: olt_rx_power

@@ -19,6 +19,99 @@ services:
       - "6379:6379"
     restart: unless-stopped
 
+  zabbix-db:
+    image: postgres:15-alpine
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - wal_compression=on
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
+    environment:
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix
+    volumes:
+      - zabbix_db_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix -d zabbix"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    depends_on:
+      zabbix-db:
+        condition: service_healthy
+    environment:
+      - DB_SERVER_HOST=zabbix-db
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix
+      - ZBX_STARTPOLLERS=120
+      - ZBX_STARTPOLLERSUNREACHABLE=40
+      - ZBX_STARTSNMPPOLLERS=80
+      - ZBX_STARTPREPROCESSORS=32
+      - ZBX_CACHESIZE=1G
+      - ZBX_HISTORYCACHESIZE=256M
+      - ZBX_HISTORYINDEXCACHESIZE=128M
+      - ZBX_VALUECACHESIZE=512M
+      - ZBX_TRENDCACHESIZE=64M
+      - ZBX_HOUSEKEEPINGFREQUENCY=1
+      - ZBX_MAXHOUSEKEEPERDELETE=50000
+      - ZBX_TIMEOUT=10
+    ports:
+      - "10051:10051"
+    restart: unless-stopped
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    depends_on:
+      zabbix-server:
+        condition: service_started
+      zabbix-db:
+        condition: service_healthy
+    environment:
+      - ZBX_SERVER_HOST=zabbix-server
+      - DB_SERVER_HOST=zabbix-db
+      - POSTGRES_DB=zabbix
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix
+      - PHP_TZ=America/Sao_Paulo
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    depends_on:
+      zabbix-server:
+        condition: service_started
+    environment:
+      - ZBX_HOSTNAME=Zabbix server
+      - ZBX_SERVER_HOST=zabbix-server
+      - ZBX_PASSIVE_ALLOW=true
+      - ZBX_ACTIVE_ALLOW=true
+    restart: unless-stopped
+
   backend:
     build: 
       context: .
@@ -27,6 +120,8 @@ services:
       db:
         condition: service_healthy
       redis:
+        condition: service_started
+      zabbix-web:
         condition: service_started
     env_file:
       - docker/dev.env
@@ -73,3 +168,4 @@ services:
 volumes:
   static:
   postgres_data:
+  zabbix_db_data:

@@ -1,0 +1,33 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: f0c9213334224f9998ef0706788a8cc5
+      name: Templates/OLT
+  templates:
+    - uuid: 1af32bec82534d8eba9e5b02e70f6131
+      template: 'Varuna SNMP Availability'
+      name: 'Varuna SNMP Availability'
+      description: |
+        Shared sentinel template for Varuna OLT hosts.
+        Scope:
+        - Fast SNMP availability check (sysName.0)
+      groups:
+        - name: Templates/OLT
+      macros:
+        - macro: '{$VARUNA.AVAILABILITY_INTERVAL}'
+          value: 30s
+      items:
+        - uuid: dc94750a9a4f4f1799708d3f87f5719c
+          name: 'SNMP availability'
+          type: SNMP_AGENT
+          snmp_oid: '1.3.6.1.2.1.1.5.0'
+          key: varunaSnmpAvailability
+          delay: '{$VARUNA.AVAILABILITY_INTERVAL}'
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          tags:
+            - tag: collector
+              value: varuna
+            - tag: metric
+              value: snmp_availability

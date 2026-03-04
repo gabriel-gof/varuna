@@ -10,6 +10,7 @@ const INITIAL_VISIBLE_ROWS = 300
 const LOAD_MORE_ROWS = 300
 const DEFAULT_SIGNAL_FILTER = ['good', 'critical', 'warning']
 const DEFAULT_SORT_MODE = 'worst_onu_rx'
+let powerReportRowsCache = []
 
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
 const parseTimestampMs = (value) => {
@@ -21,8 +22,6 @@ const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return null
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return null
-  if (Object.is(numeric, -0) || (numeric > -0.005 && numeric < 0.005)) return null
-  if (numeric <= -39.995) return null
   return `${numeric.toFixed(2)} dBm`
 }
 
@@ -98,9 +97,9 @@ export const PowerReport = () => {
     try { localStorage.setItem('varuna.powerReport.sortMode', sortMode) } catch {}
   }, [sortMode])
 
-  const [rows, setRows] = useState([])
+  const [rows, setRows] = useState(() => asList(powerReportRowsCache))
   const [visibleRowsLimit, setVisibleRowsLimit] = useState(INITIAL_VISIBLE_ROWS)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => asList(powerReportRowsCache).length === 0)
   const [error, setError] = useState('')
 
   // Cascading OLT → Slot → PON filter state (restored from localStorage)
@@ -115,7 +114,8 @@ export const PowerReport = () => {
   })
 
   const fetchRows = useCallback(async ({ background = false } = {}) => {
-    if (!background) {
+    const shouldBlockRender = !background && asList(powerReportRowsCache).length === 0
+    if (shouldBlockRender) {
       setLoading(true)
       setError('')
     }
@@ -123,19 +123,20 @@ export const PowerReport = () => {
       const response = await api.get('/onu/power-report/')
       const payload = response?.data
       const nextRows = asList(payload?.results ?? payload).map(normalizeRow)
+      powerReportRowsCache = nextRows
       setRows(nextRows)
       setError('')
     } catch {
-      if (!background) {
+      if (shouldBlockRender) {
         setError(t('Failed to load OLT data'))
       }
     } finally {
-      if (!background) setLoading(false)
+      if (shouldBlockRender) setLoading(false)
     }
   }, [t])
 
   useEffect(() => {
-    void fetchRows({ background: false })
+    void fetchRows({ background: asList(powerReportRowsCache).length > 0 })
   }, [fetchRows])
 
   useEffect(() => {
@@ -312,10 +313,10 @@ export const PowerReport = () => {
   }, [locationFiltered])
 
   const signalPills = [
-    { id: 'good', label: t('Good'), dot: 'bg-emerald-500', count: 'text-emerald-600 dark:text-emerald-400' },
-    { id: 'warning', label: t('Warning'), dot: 'bg-amber-500', count: 'text-amber-600 dark:text-amber-400' },
-    { id: 'critical', label: t('Critical'), dot: 'bg-rose-500', count: 'text-rose-600 dark:text-rose-400' },
-    { id: 'unknown', label: t('No reading'), dot: 'bg-violet-500', count: 'text-violet-600 dark:text-violet-400' },
+    { id: 'good', label: t('Good'), shortLabel: t('Good short'), dot: 'bg-emerald-500', count: 'text-emerald-600 dark:text-emerald-400' },
+    { id: 'warning', label: t('Warning'), shortLabel: t('Warning short'), dot: 'bg-amber-500', count: 'text-amber-600 dark:text-amber-400' },
+    { id: 'critical', label: t('Critical'), shortLabel: t('Critical short'), dot: 'bg-rose-500', count: 'text-rose-600 dark:text-rose-400' },
+    { id: 'unknown', label: t('No reading'), shortLabel: t('No reading short'), dot: 'bg-violet-500', count: 'text-violet-600 dark:text-violet-400' },
   ]
 
   const toggleSignal = useCallback((id) => {
@@ -358,8 +359,8 @@ export const PowerReport = () => {
             <FilterDropdown
               value={selectedSlot}
               onChange={changeSlot}
-              options={[{ id: null, label: t('All') }, ...availableSlots.map(s => ({ id: s, label: s }))]}
-              label={selectedSlot !== null ? selectedSlot : t('All')}
+              options={[{ id: null, label: t('All slots') }, ...availableSlots.map(s => ({ id: s, label: s }))]}
+              label={selectedSlot !== null ? selectedSlot : t('All slots')}
               disabled={!hasOlt || availableSlots.length === 0}
               icon={<CircuitBoard className="w-4 h-4" />}
               width="w-[80px] lg:w-[72px]"
@@ -367,8 +368,8 @@ export const PowerReport = () => {
             <FilterDropdown
               value={selectedPon}
               onChange={changePon}
-              options={[{ id: null, label: t('All') }, ...availablePons.map(p => ({ id: p, label: p }))]}
-              label={selectedPon !== null ? selectedPon : t('All')}
+              options={[{ id: null, label: t('All PONs') }, ...availablePons.map(p => ({ id: p, label: p }))]}
+              label={selectedPon !== null ? selectedPon : t('All PONs')}
               disabled={selectedSlot === null || availablePons.length === 0}
               icon={<Cable className="w-4 h-4" />}
               width="w-[80px] lg:w-[72px]"
@@ -393,26 +394,23 @@ export const PowerReport = () => {
                     key={pill.id}
                     type="button"
                     onClick={() => toggleSignal(pill.id)}
-                    className={`inline-flex items-center gap-1 h-7 px-1 rounded transition-all active:scale-[0.97] ${
+                    className={`inline-flex items-center gap-1 h-7 px-1.5 rounded transition-all active:scale-[0.97] ${
                       isOn
                         ? 'hover:bg-slate-200/50 dark:hover:bg-slate-700/40'
                         : 'opacity-35 hover:opacity-55'
                     }`}
                   >
-                    <span className="h-3.5 w-3.5 flex items-center justify-center shrink-0">
-                      {isOn ? (
-                        <Check className="w-3 h-3 text-slate-600 dark:text-slate-400" strokeWidth={3} />
-                      ) : (
-                        <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
-                      )}
-                    </span>
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${pill.dot}`} />
+                    <span className={`text-[10px] font-black uppercase tracking-[0.04em] ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{pill.shortLabel}</span>
                     <span className={`text-[10px] font-black tabular-nums ${isOn ? pill.count : 'text-slate-400 dark:text-slate-500'}`}>{count}</span>
                   </button>
                 )
               })}
               <div className="w-px h-4 bg-slate-200 dark:bg-slate-700/60 mx-0.5" />
-              <span className="text-[10px] font-black tabular-nums text-slate-400 dark:text-slate-500">{locationFiltered.length}</span>
+              <div className="inline-flex items-center gap-1 h-7 px-1.5">
+                <span className="text-[10px] font-black uppercase tracking-[0.04em] text-slate-400 dark:text-slate-500">Total</span>
+                <span className="text-[10px] font-black tabular-nums text-slate-500 dark:text-slate-400">{locationFiltered.length}</span>
+              </div>
             </div>
             <div className="hidden lg:block ml-auto">
               <SortDropdown

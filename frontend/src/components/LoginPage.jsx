@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Eye, EyeOff, AlertCircle, Loader2 } from 'lucide-react'
 import { VarunaIcon } from './VarunaIcon'
+import { getApiErrorMessage } from '../utils/apiErrorMessages'
 
 export function LoginPage({ onLogin }) {
   const { t } = useTranslation()
@@ -25,8 +26,7 @@ export function LoginPage({ onLogin }) {
     try {
       await onLogin(username.trim(), password)
     } catch (err) {
-      const detail = err?.response?.data?.detail
-      setError(detail || t('Login failed'))
+      setError(getApiErrorMessage(err, t('Login failed'), t))
       setLoading(false)
     }
   }

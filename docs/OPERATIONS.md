@@ -26,17 +26,116 @@ Development service URLs:
 - Frontend: `http://localhost:4000`
 - Backend API: `http://localhost:8000/api/`
 - Backend health endpoint: `http://localhost:8000/api/healthz/`
+- Zabbix Web: `http://localhost:8080`
+
+Development default app login (from `docker/dev.env` bootstrap):
+- user: `admin`
+- password: `admin`
 
 Backend collection contract:
-- `ENABLE_SCHEDULER=1` must stay enabled in runtime env so discovery, polling, SNMP checks, power collection, and history pruning run without any frontend session.
-- Collections are shared backend state for all users; frontend reads snapshots and does not need to trigger SNMP collection for normal topology usage.
+- `ENABLE_SCHEDULER=1` must stay enabled in runtime env so discovery, polling, collector checks, power collection, and history pruning run without any frontend session.
+- Collections are shared backend state for all users; frontend reads snapshots and does not need to trigger manual collection for normal topology usage.
 - Recommended topology cache TTL for fast first load is `300s` (`OLT_TOPOLOGY_LIST_CACHE_TTL` and `OLT_TOPOLOGY_DETAIL_CACHE_TTL`).
-- Backend SNMP transport uses `puresnmp`.
+- Zabbix integration requires:
+  - `ZABBIX_API_URL`
+  - either `ZABBIX_API_TOKEN` or (`ZABBIX_USERNAME` + `ZABBIX_PASSWORD`)
+  - optional `ZABBIX_HOST_NAME_BY_OLT_JSON` for OLT->host alias mapping.
+  - optional `ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS` (default `512`) to cap immediate `task.create` executions; explicit manual refresh paths can bypass via `--force-upstream`.
+  - optional `ZABBIX_AVAILABILITY_INTERVAL_SECONDS` (default `30`) used by host macro `{$VARUNA.AVAILABILITY_INTERVAL}` for SNMP sentinel polling cadence.
+  - optional `ZABBIX_AVAILABILITY_STALE_SECONDS` (default `45`) for sentinel freshness threshold in Varuna reachability checks.
+  - optional `ZABBIX_REFRESH_CLOCK_GRACE_SECONDS` (default `15`) for upstream-refresh clock validation window.
+  - optional `ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS` (default `12`) for short wait time while polling fresh upstream status clocks.
+  - optional `ZABBIX_REFRESH_UPSTREAM_WAIT_STEP_SECONDS` (default `2`) for fetch retry step during that wait window.
+  - optional `ZABBIX_DISCOVERY_REFRESH_WAIT_SECONDS` (default `15`) for short wait time while reading ONU discovery rows after an upstream execute request.
+  - optional `ZABBIX_DISCOVERY_REFRESH_WAIT_STEP_SECONDS` (default `2`) for discovery fetch retry step during that wait window.
+  - optional `ZABBIX_DISCONNECT_HISTORY_MAX_ITEMS` (default `512`) to cap per-run history lookups for offline transition validation.
+  - optional `ZABBIX_DISCONNECT_WINDOW_MARGIN_SECONDS` (default `90`) as trust margin for `online -> offline` timestamp window validation.
+  - optional `ZABBIX_STATUS_STALE_MARGIN_SECONDS` (default `90`) as stale-sample safety margin for status freshness checks.
+  - optional `ZABBIX_HOST_GROUP_NAME` (default `OLT`) to place OLT hosts into a client-specific Zabbix host group (recommended Title Case with spaces/slashes, for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`).
+  - optional `ZABBIX_HOST_GROUP_LEGACY_NAMES` (default `OLT,OLTs`) to define old group names that should be removed from managed hosts during sync.
+  - optional `COLLECTOR_CHECK_SECONDS` (default `30`) for scheduler reachability cadence.
+  - optional `COLLECTOR_CHECK_MAX_BACKOFF_SECONDS` (default `1800`, compatibility knob).
+
+## Zabbix Dev Setup
+Current dev compose includes Zabbix `7.0 LTS` services:
+- `zabbix-db` (PostgreSQL)
+- `zabbix-server`
+- `zabbix-web`
+- `zabbix-agent` (agent2 sidecar used for local self-monitoring checks)
+- default server timeout is tuned to `ZBX_TIMEOUT=10` for slow OLT SNMP walks.
+- dev cache sizing is tuned with `ZBX_CACHESIZE=1G` to reduce configuration-cache pressure with large ONU inventories.
+- dev server concurrency/caches are tuned for larger ONU fleets:
+  - `ZBX_STARTPOLLERS=120`
+  - `ZBX_STARTPOLLERSUNREACHABLE=40`
+  - `ZBX_STARTSNMPPOLLERS=80`
+  - `ZBX_STARTPREPROCESSORS=32`
+  - `ZBX_HISTORYCACHESIZE=256M`
+  - `ZBX_HISTORYINDEXCACHESIZE=128M`
+  - `ZBX_VALUECACHESIZE=512M`
+  - `ZBX_TRENDCACHESIZE=64M`
+- dev `zabbix-db` container uses PostgreSQL tuning for write-heavy history workloads (`shared_buffers=1GB`, `effective_cache_size=3GB`, `work_mem=16MB`, `maintenance_work_mem=256MB`, `max_wal_size=4GB`, `checkpoint_completion_target=0.9`).
+
+Default dev login:
+- user: `Admin`
+- password: `zabbix`
+
+Template import workflow:
+- Open `http://localhost:8080` in a browser.
+- Import vendor templates from repo root:
+  - `snmp-avail-template.yaml`
+  - `huawei-template.yaml`
+  - `fiberhome-template.yaml`
+  - `zte-template.yaml`
+  - `vsol-like-template.yaml`
+- Template naming convention (human-facing): Title Case with preserved acronyms and spaces (no underscores/hyphens).
+  - `OLT Huawei Unified`
+  - `OLT Fiberhome Unified`
+  - `OLT ZTE C300`
+  - `OLT VSOL GPON 8P`
+- Varuna controls Zabbix collection cadence through host macros pushed on OLT create/update:
+  - `{$VARUNA.DISCOVERY_INTERVAL}`
+  - `{$VARUNA.STATUS_INTERVAL}`
+  - `{$VARUNA.POWER_INTERVAL}`
+  - `{$VARUNA.AVAILABILITY_INTERVAL}`
+  - `{$VARUNA.HISTORY_DAYS}`
+  - `{$VARUNA.SNMP_IP}`
+  - `{$VARUNA.SNMP_PORT}`
+  - `{$VARUNA.SNMP_COMMUNITY}`
+- Sentinel SNMP availability lives in shared template `Varuna SNMP Availability` (`varunaSnmpAvailability`, `sysName.0`) driven by `{$VARUNA.AVAILABILITY_INTERVAL}` for fast reachability flips.
+- Power preprocessors in both templates discard sentinel optical values (`0 dBm` and `-40 dBm`) before history write, so frontend no longer needs client-side sentinel filtering.
+- ZTE C300 note:
+  - power preprocessors use vendor-specific raw conversion formulas (ONU Rx register conversion + OLT Rx thousandths conversion) instead of generic `/10` or `/100` scaling.
+  - invalid raw sentinel readings (`-80000`, `65535`, empty/non-numeric) are normalized to an out-of-range fallback (`-80`) to avoid `Not supported` item state storms on hosts with many offline ONUs.
+  - Varuna backend power normalization discards out-of-range values, so UI/history stays clean while Zabbix items remain supported.
+- Template default macro values are bootstrap-only (`5m`, `1m`, `5m`, `30s`, `7d`) and are overridden per OLT by Varuna settings.
+- Varuna ONU LLD rules in both Huawei and Fiberhome templates are configured with immediate lost-resource cleanup (`Delete lost resources = Immediately`) so stale ONU item prototypes are removed as soon as discovery no longer returns them.
+- On OLT create/update, Varuna also synchronizes Zabbix host runtime fields:
+  - auto-create missing Zabbix host with vendor template + shared `Varuna SNMP Availability` linkage when possible,
+  - host group membership to `ZABBIX_HOST_GROUP_NAME` (legacy names from `ZABBIX_HOST_GROUP_LEGACY_NAMES` are migrated automatically),
+  - host name + visible name,
+  - host tags (`source=varuna`, `vendor`, `model`) from Varuna vendor profile in lowercase values,
+  - SNMP interface `ip/port/community` references to `{$VARUNA.SNMP_IP}` / `{$VARUNA.SNMP_PORT}` / `{$VARUNA.SNMP_COMMUNITY}`,
+  - fallback creation of sentinel item `varunaSnmpAvailability` on host when missing,
+  - SNMP runtime macro values (`IP/port/community`) from OLT settings.
+- On OLT delete in Varuna, backend attempts `host.delete` in Zabbix for the resolved host.
+- Zabbix host resolution is self-healing across host recreation: stale cached host IDs are validated and re-resolved by host name/IP automatically.
+- Huawei and Fiberhome vendor profiles are standardized to model `UNIFICADO`; host tag `model` is synced as lowercase `unified` (English normalization in Zabbix).
+- Trends are disabled in Varuna templates (`trends=0`) to reduce Zabbix storage overhead.
+- Item history in Varuna templates is driven by `{$VARUNA.HISTORY_DAYS}` (default `7d`) for ONU status and power metrics.
+- Dev self-monitoring note:
+  - `Zabbix server` host agent interface must target `zabbix-agent:10050` (DNS), not `127.0.0.1:10050` inside `zabbix-server`.
 
 Production:
 ```bash
 cd /Users/gabriel/Documents/varuna
 docker compose -p varuna --env-file docker/prod.env -f docker-compose.prod.yml up -d --build
+```
+
+Production (shared Postgres/Zabbix infra mode):
+```bash
+cd /Users/gabriel/Documents/varuna
+docker compose -p varuna --env-file docker/prod.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build
 ```
 
 Production ingress contract:
@@ -49,10 +148,19 @@ Use one production Compose stack per client when serving different OLT fleets.
 
 Core rules:
 - one project name per client (`-p varuna_<client>`),
-- one env file per client (DB name, credentials, secrets, hostnames, and compose overrides),
+- one env file per client (logical DB name, credentials, secrets, hostnames, and compose overrides),
 - one localhost frontend/backend bind per client (`VARUNA_*_BIND_IP=127.0.0.1`),
 - one frontend host port per client (and optional backend host port),
-- one dedicated PostgreSQL/Redis data set per client.
+- one dedicated Varuna logical database per client inside shared `pg-varuna`,
+- one dedicated Redis per client stack (recommended practical isolation).
+
+Recommended practical deployment on one VM:
+- shared infra stack (run once):
+  - `pg-varuna` (single PostgreSQL container for all Varuna logical DBs),
+  - `pg-zabbix` (separate PostgreSQL container only for Zabbix),
+  - `zabbix-server` + `zabbix-web`.
+- per-client application stack:
+  - `frontend` + `backend` + `redis`.
 
 `docker-compose.prod.yml` reads these instance-specific compose variables:
 - `VARUNA_ENV_FILE`
@@ -60,16 +168,39 @@ Core rules:
 - `VARUNA_FRONTEND_HTTP_HOST_PORT`
 - `VARUNA_BACKEND_BIND_IP`
 - `VARUNA_BACKEND_HOST_PORT`
+- `VARUNA_POSTGRES_HOST`
 - `VARUNA_TLS_CERTS_DIR`
 - `VARUNA_DB_LIMIT_*`, `VARUNA_REDIS_LIMIT_*`, `VARUNA_BACKEND_LIMIT_*`, `VARUNA_FRONTEND_LIMIT_*`
 - `VARUNA_GUNICORN_WORKERS`, `VARUNA_GUNICORN_THREADS`, `VARUNA_GUNICORN_TIMEOUT_SECONDS`
+
+Shared-mode compose files:
+- `docker-compose.infra.shared.yml`: starts shared `pg-varuna`, `pg-zabbix`, `zabbix-server`, `zabbix-web`.
+- `docker-compose.prod.shared-pg.yml`: per-client app stack using shared `pg-varuna` over external network `varuna-data`.
+- Shared infra tuning knobs live in `docker/infra.shared.env`:
+  - Zabbix server worker/cache knobs (`ZBX_START*`, `ZBX_*CACHESIZE`, `ZBX_TIMEOUT`, housekeeping knobs),
+  - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied directly by `pg-zabbix` container command.
 
 Production backend mode:
 - `BACKEND_BEHIND_FRONTEND_PROXY=1` is set in compose so backend serves API over internal HTTP (no 80->443 redirect loop when frontend proxies `/api`).
 - backend runtime command is Gunicorn on internal port `80`,
 - frontend serves `/static` from shared volume `/var/www/static`.
 
-Bring up a second instance on the same host:
+Bring up shared infra (once per host):
+```bash
+cd /Users/gabriel/Documents/varuna
+cp docker/infra.shared.env /etc/varuna/infra.shared.env
+# Edit secrets and ports in /etc/varuna/infra.shared.env
+
+docker compose --env-file /etc/varuna/infra.shared.env -f docker-compose.infra.shared.yml up -d
+```
+
+Create per-client logical database in shared `pg-varuna`:
+```bash
+docker compose --env-file /etc/varuna/infra.shared.env -f docker-compose.infra.shared.yml exec -T pg-varuna psql -U postgres -d postgres -c \"CREATE USER varuna_client_b WITH PASSWORD 'CHANGE-THIS-PASSWORD';\"
+docker compose --env-file /etc/varuna/infra.shared.env -f docker-compose.infra.shared.yml exec -T pg-varuna psql -U postgres -d postgres -c \"CREATE DATABASE varuna_client_b OWNER varuna_client_b;\"
+```
+
+Bring up a client app stack:
 ```bash
 cd /Users/gabriel/Documents/varuna
 cp docker/prod.env docker/prod.client-b.env
@@ -79,13 +210,16 @@ Edit `docker/prod.client-b.env`:
 - `VARUNA_ENV_FILE=docker/prod.client-b.env`
 - unique host ports (for example `VARUNA_FRONTEND_HTTP_HOST_PORT=18080`, `VARUNA_BACKEND_HOST_PORT=18081`)
 - unique DB identity (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`)
+- `VARUNA_POSTGRES_HOST=pg-varuna`
 - per-instance hostnames (`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `SERVER_NAME`, `SERVER_ALIASES`)
 - TLS mount base when needed (`VARUNA_TLS_CERTS_DIR`)
+- Zabbix API settings (`ZABBIX_API_URL=http://zabbix-web:8080/api_jsonrpc.php`)
 
 Start instance:
 ```bash
 cd /Users/gabriel/Documents/varuna
-docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml up -d --build
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build
 ```
 
 Example: `gabisat` instance on the same server (secrets outside repo):
@@ -95,30 +229,36 @@ cd /Users/gabriel/Documents/varuna
 # keep binds local:
 # - VARUNA_FRONTEND_BIND_IP=127.0.0.1
 # - VARUNA_BACKEND_BIND_IP=127.0.0.1
+# - VARUNA_POSTGRES_HOST=pg-varuna
 # and set domain:
 # - ALLOWED_HOSTS=varuna.gabisat.com.br
 # - CSRF_TRUSTED_ORIGINS=https://varuna.gabisat.com.br
 # - SERVER_NAME=varuna.gabisat.com.br
 
-docker compose -p varuna_gabisat --env-file /etc/varuna/prod.gabisat.env -f docker-compose.prod.yml up -d --build
+docker compose -p varuna_gabisat --env-file /etc/varuna/prod.gabisat.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build
 ```
 
 Daily operations for one instance:
 ```bash
 # logs
-docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml logs -f
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env \
+  -f docker-compose.prod.shared-pg.yml logs -f
 
 # restart / recreate after env edits
-docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml up -d --build --force-recreate
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build --force-recreate
 
 # stop
-docker compose -p varuna_client_b --env-file docker/prod.client-b.env -f docker-compose.prod.yml down
+docker compose -p varuna_client_b --env-file docker/prod.client-b.env \
+  -f docker-compose.prod.shared-pg.yml down
 ```
 
 Operational recommendations:
-- in production, keep `db`/`redis` unexposed and route only HTTP through a reverse proxy,
+- keep shared `pg-varuna`/`pg-zabbix` host ports bound to localhost or private network only,
+- keep per-client `redis` unexposed and route only HTTP through a reverse proxy,
 - stagger discovery/polling intervals across clients to avoid synchronized SNMP bursts,
-- apply CPU/memory limits per stack so one tenant cannot starve others,
+- apply CPU/memory limits on both shared infra and per-client stacks so one tenant cannot starve others,
 - back up each client database independently.
 
 ### HTTPS-Only Host Ingress (Gabisat)
@@ -222,18 +362,26 @@ Expected response:
 ```
 
 ## Authentication Bootstrap
-Create the initial admin user before first login:
+Development compose can bootstrap app auth user automatically at container startup when enabled:
+- `VARUNA_AUTH_BOOTSTRAP=1`
+- `VARUNA_AUTH_USERNAME=admin`
+- `VARUNA_AUTH_PASSWORD=admin`
+- `VARUNA_AUTH_ROLE=admin`
+- `VARUNA_AUTH_SUPERUSER=1`
+- `VARUNA_AUTH_FORCE_PASSWORD=1`
+
+Manual bootstrap/update:
 
 Docker:
 ```bash
 docker compose -f docker-compose.dev.yml exec backend python manage.py ensure_auth_user \
-  --username admin --password changeme --role admin --superuser
+  --username admin --password admin --role admin --superuser --force-password
 ```
 
 Local:
 ```bash
 backend/venv/bin/python backend/manage.py ensure_auth_user \
-  --username admin --password changeme --role admin --superuser
+  --username admin --password admin --role admin --superuser --force-password
 ```
 
 Use `--force-password` to update an existing user's password. Environment variable fallbacks: `VARUNA_AUTH_USERNAME`, `VARUNA_AUTH_PASSWORD`, `VARUNA_AUTH_ROLE`.
@@ -275,7 +423,7 @@ backend/venv/bin/python backend/manage.py prune_history
 ```
 
 ## Background Collection (Scheduler)
-The `run_scheduler` management command runs as a background process when backend env sets `ENABLE_SCHEDULER=1`. Current dev/prod env templates enable this by default. It automatically dispatches polling, discovery, power collection, SNMP reachability checks, and history prune cycles.
+The `run_scheduler` management command runs as a background process when backend env sets `ENABLE_SCHEDULER=1`. Current dev/prod env templates enable this by default. It automatically dispatches polling, discovery, power collection, collector reachability checks, and history prune cycles.
 
 ```bash
 # Scheduler starts automatically when ENABLE_SCHEDULER=1.
@@ -283,12 +431,12 @@ The `run_scheduler` management command runs as a background process when backend
 docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler
 
 # With custom intervals:
-docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler --tick-seconds 60 --snmp-check-seconds 300
+docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler --tick-seconds 60 --collector-check-seconds 300
 
-# With SNMP backoff cap and per-tick OLT batch limits:
+# With collector-check cadence and per-tick OLT batch limits:
 docker compose -f docker-compose.dev.yml exec backend python manage.py run_scheduler \
-  --snmp-check-seconds 180 \
-  --snmp-check-max-backoff-seconds 1800 \
+  --collector-check-seconds 30 \
+  --collector-check-max-backoff-seconds 1800 \
   --history-prune-seconds 21600 \
   --max-poll-olts-per-tick 20 \
   --max-discovery-olts-per-tick 10 \
@@ -312,14 +460,21 @@ docker compose -f docker-compose.dev.yml exec backend python manage.py discover_
 
 # Polling (runs only due OLTs, respects runtime budget)
 docker compose -f docker-compose.dev.yml exec backend python manage.py poll_onu_status
+
+# Manual immediate polling for one OLT, bypassing upstream execution cap
+docker compose -f docker-compose.dev.yml exec backend python manage.py poll_onu_status \
+  --olt-id 1 --force --refresh-upstream --force-upstream
 ```
 
 The polling command enforces a `max_runtime_seconds` budget (default 180s) to prevent long-running jobs from blocking subsequent cycles. Configure via `SystemSettings.MAX_POLL_RUNTIME_SECONDS` (range 30-1800s).
 
-SNMP check behavior is adaptive:
-- Reachable OLTs are checked on the base `--snmp-check-seconds` cadence.
-- Repeatedly unreachable OLTs are checked less frequently (exponential backoff) up to `--snmp-check-max-backoff-seconds`.
-- Scheduler logs include SNMP summary lines (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed) for tuning verification.
+Collector check behavior:
+- Reachable and unreachable OLTs are checked on the base `--collector-check-seconds` cadence (no runtime backoff delay).
+- `--collector-check-max-backoff-seconds` is still accepted for compatibility, but current runtime cadence does not apply exponential backoff.
+- Sentinel-first check is enabled: when `varunaSnmpAvailability` exists, Varuna uses its freshness (`ZABBIX_AVAILABILITY_STALE_SECONDS`) before falling back to status-item freshness.
+- Freshness validation uses status-item clocks with threshold `max(polling_interval_seconds + 90s, 390s)`.
+- Manual/scoped refresh with `--refresh-upstream` first waits for post-refresh clocks, but can accept pre-refresh clocks that are still inside freshness policy; `503` is reserved for collector unreachability or fully stale/empty status reads.
+- Scheduler logs include collector summary lines (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed) for tuning verification.
 
 History retention knobs:
 - `POWER_HISTORY_RETENTION_DAYS` (default `30`)

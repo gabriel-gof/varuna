@@ -14,9 +14,6 @@ apache_templates_dir="${APACHE_TEMPLATES_DIR:-/opt/varuna/apache}"
 if [ "${BACKEND_BEHIND_FRONTEND_PROXY:-0}" = "1" ]; then
     echo "Frontend proxy mode: Using HTTP-only configuration"
     cp "${apache_templates_dir}/varuna.conf" /etc/apache2/sites-available/000-default.conf
-elif [ "${SNMP_API_ONLY:-0}" = "1" ]; then
-    echo "SNMP API mode: Using HTTP-only configuration"
-    cp "${apache_templates_dir}/varuna.conf" /etc/apache2/sites-available/000-default.conf
 elif [ "${DEBUG:-False}" = "True" ]; then
     echo "Development mode: Using HTTP-only configuration"
     cp "${apache_templates_dir}/varuna.conf" /etc/apache2/sites-available/000-default.conf
@@ -30,14 +27,6 @@ apache_conf=/etc/apache2/sites-available/000-default.conf
 if grep -q '\${' "$apache_conf"; then
     envsubst '$SERVER_NAME $SERVER_ALIASES $WSGI_PROCESSES $WSGI_THREADS' < "$apache_conf" > /tmp/apache.conf
     mv /tmp/apache.conf "$apache_conf"
-fi
-
-# SNMP log path setup (if applicable)
-if [ "${SNMP_API_ONLY:-0}" = "1" ] && [ -n "${SNMP_LOG_PATH:-}" ]; then
-    log_dir="$(dirname "$SNMP_LOG_PATH")"
-    mkdir -p "$log_dir"
-    touch "$SNMP_LOG_PATH"
-    chown www-data:www-data "$SNMP_LOG_PATH" || true
 fi
 
 # Wait for PostgreSQL
@@ -66,6 +55,34 @@ if [ "${DJANGO_MIGRATE:-1}" = "1" ]; then
     python manage.py migrate --noinput
 fi
 
+if [ "${VARUNA_AUTH_BOOTSTRAP:-0}" = "1" ]; then
+    bootstrap_username="${VARUNA_AUTH_USERNAME:-}"
+    bootstrap_password="${VARUNA_AUTH_PASSWORD:-}"
+    bootstrap_role="${VARUNA_AUTH_ROLE:-admin}"
+
+    if [ -z "$bootstrap_username" ] || [ -z "$bootstrap_password" ]; then
+        echo "VARUNA_AUTH_BOOTSTRAP=1 requires VARUNA_AUTH_USERNAME and VARUNA_AUTH_PASSWORD." >&2
+        exit 1
+    fi
+
+    echo "Bootstrapping auth user \"$bootstrap_username\"..."
+    auth_args=(
+        --username "$bootstrap_username"
+        --password "$bootstrap_password"
+        --role "$bootstrap_role"
+    )
+
+    case "${VARUNA_AUTH_SUPERUSER:-0}" in
+        1|true|TRUE|yes|YES|on|ON) auth_args+=(--superuser) ;;
+    esac
+
+    case "${VARUNA_AUTH_FORCE_PASSWORD:-0}" in
+        1|true|TRUE|yes|YES|on|ON) auth_args+=(--force-password) ;;
+    esac
+
+    python manage.py ensure_auth_user "${auth_args[@]}"
+fi
+
 if [ "${DJANGO_COLLECTSTATIC:-1}" = "1" ]; then
     echo "Collecting static files..."
     python manage.py collectstatic --noinput
@@ -77,11 +94,7 @@ if [ "${DJANGO_COLLECTSTATIC:-1}" = "1" ]; then
     fi
 fi
 
-if [ "${SNMP_API_ONLY:-0}" = "1" ] && [ -n "${SNMP_LOG_PATH:-}" ]; then
-    tail -n 0 -F "$SNMP_LOG_PATH" &
-fi
-
-if [ "${ENABLE_SCHEDULER:-0}" = "1" ] && [ "${SNMP_API_ONLY:-0}" != "1" ]; then
+if [ "${ENABLE_SCHEDULER:-0}" = "1" ]; then
     echo "Starting backend scheduler..."
     python manage.py run_scheduler &
 fi

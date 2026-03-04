@@ -21,7 +21,8 @@ const buildInitialForm = (vendorProfiles = []) => {
     snmp_port: '161',
     discovery_interval: '5h',
     polling_interval: '5m',
-    power_interval: '1d'
+    power_interval: '1d',
+    history_days: '7d',
   }
 }
 
@@ -36,9 +37,30 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     snmp_port: String(olt.snmp_port || 161),
     discovery_interval: formatDuration((olt.discovery_interval_minutes || 240) * 60),
     polling_interval: formatDuration(olt.polling_interval_seconds || 300),
-    power_interval: formatDuration(olt.power_interval_seconds || 300)
+    power_interval: formatDuration(olt.power_interval_seconds || 300),
+    history_days: `${olt.history_days || 7}d`,
   }
 }
+
+const normalizeThresholdForm = (value) => {
+  const candidate = (value && typeof value === 'object') ? value : {}
+  return {
+    onu_rx_good: Number.isFinite(Number(candidate.onu_rx_good)) ? Number(candidate.onu_rx_good) : DEFAULT_THRESHOLDS.onu_rx_good,
+    onu_rx_bad: Number.isFinite(Number(candidate.onu_rx_bad)) ? Number(candidate.onu_rx_bad) : DEFAULT_THRESHOLDS.onu_rx_bad,
+    olt_rx_good: Number.isFinite(Number(candidate.olt_rx_good)) ? Number(candidate.olt_rx_good) : DEFAULT_THRESHOLDS.olt_rx_good,
+    olt_rx_bad: Number.isFinite(Number(candidate.olt_rx_bad)) ? Number(candidate.olt_rx_bad) : DEFAULT_THRESHOLDS.olt_rx_bad,
+  }
+}
+
+const parseHistoryDays = (input, fallback = 7) => {
+  const parsed = Number.parseInt(String(input ?? '').trim(), 10)
+  if (!Number.isFinite(parsed)) return fallback
+  if (parsed < 7) return 7
+  if (parsed > 30) return 30
+  return parsed
+}
+
+const formatHistoryDays = (input, fallback = 7) => `${parseHistoryDays(input, fallback)}d`
 
 /**
  * Parse a Zabbix-style duration string to seconds.
@@ -184,10 +206,20 @@ const getOltHealth = (olt, oltHealthById) => {
   return HEALTH_STYLES.neutral
 }
 
+const getModelDisplayLabel = ({ vendor, model_name }, language, t) => {
+  const vendorName = String(vendor || '').trim().toUpperCase()
+  const isUnifiedVendor = vendorName === 'FIBERHOME' || vendorName === 'HUAWEI'
+  const isPortuguese = String(language || '').toLowerCase().startsWith('pt')
+  if (isUnifiedVendor && isPortuguese) {
+    return t('Unified model')
+  }
+  return model_name || ''
+}
+
 /* ─── OLT Card header ─── */
 
-const OltCard = ({ olt, isSelected, health, onSelect, onDeleteClick, deleteBusy, t, children }) => {
-  const meta = [olt.ip_address, olt.vendor_display, olt.vendor_profile_name].filter(Boolean).join('  ·  ')
+const OltCard = ({ olt, modelLabel, isSelected, health, onSelect, onDeleteClick, deleteBusy, t, children }) => {
+  const meta = [olt.ip_address, olt.vendor_display, modelLabel || olt.vendor_profile_name].filter(Boolean).join('  ·  ')
 
   return (
     <div className={`
@@ -282,9 +314,11 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
   }
 
   const handleBlur = () => {
+    const fallbackGood = DEFAULT_THRESHOLDS[goodKey]
+    const fallbackBad = DEFAULT_THRESHOLDS[badKey]
     if (!goodValid) {
-      onChange(goodKey, -25)
-      onChange(badKey, -25 - THRESHOLD_GAP)
+      onChange(goodKey, Number.isFinite(fallbackGood) ? fallbackGood : -27)
+      onChange(badKey, Number.isFinite(fallbackBad) ? fallbackBad : -30)
     }
   }
   
@@ -340,7 +374,7 @@ const ThresholdControl = ({ label, goodKey, badKey, values, onChange, t }) => {
                    className="w-full h-7 pl-6 pr-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 
                               text-[12px] text-compact font-black text-slate-700 dark:text-slate-200 text-center tracking-tight shadow-sm
                               focus:bg-white dark:focus:bg-slate-800 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/10 outline-none transition-all"
-                   placeholder="-25"
+                   placeholder={String(DEFAULT_THRESHOLDS[goodKey] ?? -27)}
                 />
                 <span className="absolute left-2.5 top-1/2 -translate-y-[45%] text-[12px] font-black text-emerald-500 group-focus-within:scale-110 transition-transform">&ge;</span>
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400 pointer-events-none">dBm</span>
@@ -372,7 +406,7 @@ export const SettingsPanel = ({
   actionBusy,
   oltHealthById = {}
 }) => {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [showAddForm, setShowAddForm] = useState(false)
   const [expandedIds, setExpandedIds] = useState(() => {
     try {
@@ -424,6 +458,10 @@ export const SettingsPanel = ({
     () => new Map((vendorProfiles || []).map((profile) => [String(profile.id), profile])),
     [vendorProfiles],
   )
+  const modelLabelForProfile = useCallback((profile) => {
+    if (!profile) return ''
+    return getModelDisplayLabel(profile, i18n.language, t)
+  }, [i18n.language, t])
 
   const createSelectedProfile = vendorProfileById.get(String(form.vendor_profile || ''))
   const createSupportsOltRxPower = typeof createSelectedProfile?.supports_olt_rx_power === 'boolean'
@@ -449,7 +487,7 @@ export const SettingsPanel = ({
         if (olt) {
           setEditForms((p) => ({ ...p, [oltId]: buildEditForm(olt, vendorProfiles) }))
           setEditCardTabs((p) => ({ ...p, [oltId]: 'device' }))
-          const loaded = getOltThresholds(oltId)
+          const loaded = normalizeThresholdForm(getOltThresholds(oltId))
           setThresholdForms((p) => ({ ...p, [oltId]: loaded }))
           setOriginalThresholdsMap((p) => ({ ...p, [oltId]: loaded }))
         }
@@ -523,6 +561,34 @@ export const SettingsPanel = ({
     })
   }, [olts, vendorProfiles, expandedIds])
 
+  // Ensure threshold state always exists for expanded cards (including restored cards).
+  useEffect(() => {
+    const expandedKeys = Object.keys(expandedIds)
+    if (!expandedKeys.length) return
+
+    setThresholdForms((prev) => {
+      let changed = false
+      const next = { ...prev }
+      expandedKeys.forEach((oltId) => {
+        if (next[oltId]) return
+        next[oltId] = normalizeThresholdForm(getOltThresholds(oltId))
+        changed = true
+      })
+      return changed ? next : prev
+    })
+
+    setOriginalThresholdsMap((prev) => {
+      let changed = false
+      const next = { ...prev }
+      expandedKeys.forEach((oltId) => {
+        if (next[oltId]) return
+        next[oltId] = normalizeThresholdForm(getOltThresholds(oltId))
+        changed = true
+      })
+      return changed ? next : prev
+    })
+  }, [expandedIds])
+
   // Create form syncs
   useEffect(() => {
     if (!showAddForm) {
@@ -580,6 +646,18 @@ export const SettingsPanel = ({
     if (!cardForm) return prev
     return { ...prev, [oltId]: { ...cardForm, [key]: value } }
   })
+  const setHistoryDaysField = (value) => setField('history_days', String(value || ''))
+  const normalizeCreateHistoryDays = () => setField('history_days', formatHistoryDays(form.history_days, 7))
+  const setEditHistoryDaysField = (oltId, value) => setEditField(oltId, 'history_days', String(value || ''))
+  const normalizeEditHistoryDays = (oltId) => {
+    setEditForms((prev) => {
+      const cardForm = prev[oltId]
+      if (!cardForm) return prev
+      const normalized = formatHistoryDays(cardForm.history_days, 7)
+      if (String(cardForm.history_days || '') === normalized) return prev
+      return { ...prev, [oltId]: { ...cardForm, history_days: normalized } }
+    })
+  }
 
   const setCreateThresholdField = (key, rawValue) => {
     const numValue = rawValue === '' || rawValue === '-' ? rawValue : parseFloat(rawValue)
@@ -621,7 +699,8 @@ export const SettingsPanel = ({
       polling_enabled: true,
       discovery_interval_minutes: Math.round((parseDuration(form.discovery_interval) || 18000) / 60),
       polling_interval_seconds: parseDuration(form.polling_interval) || 300,
-      power_interval_seconds: parseDuration(form.power_interval) || 86400
+      power_interval_seconds: parseDuration(form.power_interval) || 86400,
+      history_days: parseHistoryDays(form.history_days, 7),
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -655,6 +734,7 @@ export const SettingsPanel = ({
       discovery_interval_minutes: Math.round((parseDuration(cardEditForm.discovery_interval) || 18000) / 60),
       polling_interval_seconds: parseDuration(cardEditForm.polling_interval) || 300,
       power_interval_seconds: parseDuration(cardEditForm.power_interval) || 86400,
+      history_days: parseHistoryDays(cardEditForm.history_days, 7),
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -707,8 +787,7 @@ export const SettingsPanel = ({
   const setThresholdField = (oltId, key, rawValue) => {
     const numValue = rawValue === '' || rawValue === '-' ? rawValue : parseFloat(rawValue)
     setThresholdForms((prev) => {
-      const cardForm = prev[oltId]
-      if (!cardForm) return prev
+      const cardForm = prev[oltId] || normalizeThresholdForm(getOltThresholds(oltId))
       return { ...prev, [oltId]: { ...cardForm, [key]: typeof numValue === 'number' && Number.isFinite(numValue) ? numValue : rawValue } }
     })
   }
@@ -768,7 +847,7 @@ export const SettingsPanel = ({
                           </span>
                           <span className="w-[3px] h-[3px] rounded-full bg-slate-200 dark:bg-slate-700" />
                           <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">
-                              {modelOptions.find(m => String(m.id) === String(form.vendor_profile))?.model_name || '\u2014'}
+                              {modelLabelForProfile(modelOptions.find(m => String(m.id) === String(form.vendor_profile))) || '\u2014'}
                           </span>
                        </div>
                     </div>
@@ -834,7 +913,7 @@ export const SettingsPanel = ({
                                   <FieldSelect
                                     value={form.vendor_profile}
                                     onChange={(val) => setField('vendor_profile', val)}
-                                    options={modelOptions.map((item) => ({ value: String(item.id), label: item.model_name }))}
+                                    options={modelOptions.map((item) => ({ value: String(item.id), label: modelLabelForProfile(item) }))}
                                     disabled={vendorLoading || !modelOptions.length}
                                   />
                                </div>
@@ -877,9 +956,9 @@ export const SettingsPanel = ({
                     {/* TAB: Intervals (Create) */}
                     {createCardTab === 'intervals' && (
                         <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-300 px-2 pt-4 pb-2">
-                            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                              {/* Item 1 */}
-                              <div className="group flex flex-col items-center gap-2.5">
+                            <div className="grid grid-cols-2 gap-4">
+                              {/* Item 1: Discovery */}
+                              <div className="group flex flex-col items-center gap-2.5 order-1">
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                                   {t('ONU discovery')}
                                 </label>
@@ -898,8 +977,8 @@ export const SettingsPanel = ({
                                 </div>
                               </div>
 
-                              {/* Item 2 */}
-                              <div className="group flex flex-col items-center gap-2.5">
+                              {/* Item 2: Status — row 2, right */}
+                              <div className="group flex flex-col items-center gap-2.5 order-4">
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                                   {t('Status collection')}
                                 </label>
@@ -917,8 +996,8 @@ export const SettingsPanel = ({
                                 </div>
                               </div>
 
-                              {/* Item 3 */}
-                              <div className="group flex flex-col items-center gap-2.5 col-span-2 lg:col-span-1">
+                              {/* Item 3: Power — row 2, left */}
+                              <div className="group flex flex-col items-center gap-2.5 order-3">
                                 <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                                   {t('Power collection')}
                                 </label>
@@ -933,6 +1012,22 @@ export const SettingsPanel = ({
                                   <button disabled className="h-7 px-3 rounded-md text-[9px] font-black uppercase tracking-wider text-slate-300 dark:text-slate-600 cursor-not-allowed flex items-center gap-1.5">
                                     <span>{t('Run')}</span>
                                   </button>
+                                </div>
+                              </div>
+
+                              {/* Item 4: History — row 1, right */}
+                              <div className="group flex flex-col items-center gap-2.5 order-2">
+                                <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                                  {t('History retention')}
+                                </label>
+                                <div className="flex items-center justify-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                                  <input
+                                    className="w-[132px] h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                    value={form.history_days}
+                                    onChange={(e) => setHistoryDaysField(e.target.value)}
+                                    onBlur={normalizeCreateHistoryDays}
+                                    placeholder="7d"
+                                  />
                                 </div>
                               </div>
                             </div>
@@ -1030,6 +1125,7 @@ export const SettingsPanel = ({
             const cardEditForm = editForms[oltId]
             const cardTab = editCardTabs[oltId] || 'device'
             const cardThresholdForm = thresholdForms[oltId]
+            const cardThresholdFormForRender = cardThresholdForm || normalizeThresholdForm(getOltThresholds(oltId))
             const cardOriginalThresholds = originalThresholdsMap[oltId]
             const cardError = localErrors[oltId]
 
@@ -1053,6 +1149,7 @@ export const SettingsPanel = ({
               <div key={olt.id}>
                 <OltCard
                   olt={olt}
+                  modelLabel={modelLabelForProfile({ vendor: olt.vendor_display, model_name: olt.vendor_profile_name })}
                   isSelected={isSelected}
                   health={health}
                   onSelect={toggleCard}
@@ -1118,7 +1215,7 @@ export const SettingsPanel = ({
                               <FieldSelect
                                 value={cardEditForm.vendor_profile}
                                 onChange={(val) => setEditField(oltId, 'vendor_profile', val)}
-                                options={cardEditModelOptions.map((item) => ({ value: String(item.id), label: item.model_name }))}
+                                options={cardEditModelOptions.map((item) => ({ value: String(item.id), label: modelLabelForProfile(item) }))}
                                 disabled={vendorLoading || !cardEditModelOptions.length}
                               />
                            </div>
@@ -1165,9 +1262,9 @@ export const SettingsPanel = ({
                     {cardTab === 'intervals' && (
                       <div className="flex flex-col items-center justify-center animate-in fade-in slide-in-from-left-1 duration-300 px-2 pt-4 pb-2">
 
-                        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                          {/* Item 1: Discovery */}
-                          <div className="group flex flex-col items-center gap-2.5">
+                        <div className="grid grid-cols-2 gap-4">
+                          {/* Item 1: Discovery — row 1, left */}
+                          <div className="group flex flex-col items-center gap-2.5 order-1">
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                               {t('ONU discovery')}
                             </label>
@@ -1189,8 +1286,8 @@ export const SettingsPanel = ({
                             </div>
                           </div>
 
-                          {/* Item 2: Status */}
-                          <div className="group flex flex-col items-center gap-2.5">
+                          {/* Item 2: Status — row 2, right */}
+                          <div className="group flex flex-col items-center gap-2.5 order-4">
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                               {t('Status collection')}
                             </label>
@@ -1212,8 +1309,8 @@ export const SettingsPanel = ({
                             </div>
                           </div>
 
-                          {/* Item 3: Power */}
-                          <div className="group flex flex-col items-center gap-2.5 col-span-2 lg:col-span-1">
+                          {/* Item 3: Power — row 2, left */}
+                          <div className="group flex flex-col items-center gap-2.5 order-3">
                             <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
                               {t('Power collection')}
                             </label>
@@ -1234,12 +1331,27 @@ export const SettingsPanel = ({
                               </button>
                             </div>
                           </div>
+                          {/* Item 4: History — row 1, right */}
+                          <div className="group flex flex-col items-center gap-2.5 order-2">
+                            <label className="text-[9px] font-black tracking-widest text-slate-400 dark:text-slate-500 uppercase transition-colors group-focus-within:text-emerald-500 w-full text-center">
+                              {t('History retention')}
+                            </label>
+                            <div className="flex items-center justify-center p-0.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 shadow-sm transition-all group-focus-within:border-emerald-500/30 group-focus-within:ring-2 group-focus-within:ring-emerald-500/10">
+                              <input
+                                className="w-[132px] h-7 bg-transparent text-center text-[11px] text-compact font-bold text-slate-700 dark:text-slate-200 focus:outline-none placeholder:text-slate-300 dark:placeholder:text-slate-600"
+                                value={cardEditForm.history_days}
+                                onChange={(e) => setEditHistoryDaysField(oltId, e.target.value)}
+                                onBlur={() => normalizeEditHistoryDays(oltId)}
+                                placeholder="7d"
+                              />
+                            </div>
+                          </div>
                         </div>
                       </div>
                     )}
 
                     {/* ── TAB: Thresholds ── */}
-                    {cardTab === 'thresholds' && cardThresholdForm && (
+                    {cardTab === 'thresholds' && (
                       <div className="space-y-4 animate-in fade-in slide-in-from-left-1 duration-200">
                          <div className={`grid gap-4 relative ${cardEditSupportsOltRxPower ? 'grid-cols-2' : 'grid-cols-1'}`}>
                             {cardEditSupportsOltRxPower && (
@@ -1250,7 +1362,7 @@ export const SettingsPanel = ({
                                 label="ONU RX"
                                 goodKey="onu_rx_good"
                                 badKey="onu_rx_bad"
-                                values={cardThresholdForm}
+                                values={cardThresholdFormForRender}
                                 onChange={(key, val) => setThresholdField(oltId, key, val)}
                                 t={t}
                             />
@@ -1259,7 +1371,7 @@ export const SettingsPanel = ({
                                   label="OLT RX"
                                   goodKey="olt_rx_good"
                                   badKey="olt_rx_bad"
-                                  values={cardThresholdForm}
+                                  values={cardThresholdFormForRender}
                                   onChange={(key, val) => setThresholdField(oltId, key, val)}
                                   t={t}
                               />

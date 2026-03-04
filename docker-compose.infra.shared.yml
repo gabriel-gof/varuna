@@ -1,0 +1,123 @@
+services:
+  pg-varuna:
+    image: postgres:15-alpine
+    env_file:
+      - docker/infra.shared.env
+    environment:
+      POSTGRES_DB: ${VARUNA_SHARED_PG_BOOTSTRAP_DB:-postgres}
+      POSTGRES_USER: ${VARUNA_SHARED_PG_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${VARUNA_SHARED_PG_SUPERPASS:-postgres}
+    volumes:
+      - pg_varuna_data:/var/lib/postgresql/data
+    ports:
+      - "${VARUNA_SHARED_PG_BIND_IP:-127.0.0.1}:${VARUNA_SHARED_PG_VARUNA_HOST_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - varuna-data
+
+  pg-zabbix:
+    image: postgres:15-alpine
+    env_file:
+      - docker/infra.shared.env
+    command:
+      - postgres
+      - -c
+      - max_connections=${ZBX_PG_MAX_CONNECTIONS:-200}
+      - -c
+      - shared_buffers=${ZBX_PG_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${ZBX_PG_EFFECTIVE_CACHE_SIZE:-3GB}
+      - -c
+      - work_mem=${ZBX_PG_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${ZBX_PG_MAINTENANCE_WORK_MEM:-256MB}
+      - -c
+      - wal_compression=on
+      - -c
+      - max_wal_size=${ZBX_PG_MAX_WAL_SIZE:-4GB}
+      - -c
+      - checkpoint_completion_target=${ZBX_PG_CHECKPOINT_COMPLETION_TARGET:-0.9}
+      - -c
+      - random_page_cost=${ZBX_PG_RANDOM_PAGE_COST:-1.1}
+    environment:
+      POSTGRES_DB: ${ZABBIX_POSTGRES_DB:-zabbix}
+      POSTGRES_USER: ${ZABBIX_POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${ZABBIX_POSTGRES_PASSWORD:-zabbix}
+    volumes:
+      - pg_zabbix_data:/var/lib/postgresql/data
+    ports:
+      - "${VARUNA_SHARED_PG_BIND_IP:-127.0.0.1}:${VARUNA_SHARED_PG_ZABBIX_HOST_PORT:-55433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-zabbix} -d $${POSTGRES_DB:-zabbix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - varuna-data
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    depends_on:
+      pg-zabbix:
+        condition: service_healthy
+    env_file:
+      - docker/infra.shared.env
+    environment:
+      DB_SERVER_HOST: pg-zabbix
+      POSTGRES_DB: ${ZABBIX_POSTGRES_DB:-zabbix}
+      POSTGRES_USER: ${ZABBIX_POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${ZABBIX_POSTGRES_PASSWORD:-zabbix}
+      ZBX_STARTPOLLERS: ${ZBX_STARTPOLLERS:-80}
+      ZBX_STARTPOLLERSUNREACHABLE: ${ZBX_STARTPOLLERSUNREACHABLE:-30}
+      ZBX_STARTSNMPPOLLERS: ${ZBX_STARTSNMPPOLLERS:-40}
+      ZBX_CACHESIZE: ${ZBX_CACHESIZE:-256M}
+      ZBX_STARTPREPROCESSORS: ${ZBX_STARTPREPROCESSORS:-32}
+      ZBX_HISTORYCACHESIZE: ${ZBX_HISTORYCACHESIZE:-256M}
+      ZBX_HISTORYINDEXCACHESIZE: ${ZBX_HISTORYINDEXCACHESIZE:-128M}
+      ZBX_VALUECACHESIZE: ${ZBX_VALUECACHESIZE:-512M}
+      ZBX_TRENDCACHESIZE: ${ZBX_TRENDCACHESIZE:-64M}
+      ZBX_HOUSEKEEPINGFREQUENCY: ${ZBX_HOUSEKEEPINGFREQUENCY:-1}
+      ZBX_MAXHOUSEKEEPERDELETE: ${ZBX_MAXHOUSEKEEPERDELETE:-50000}
+      ZBX_TIMEOUT: ${ZBX_TIMEOUT:-4}
+    ports:
+      - "${VARUNA_SHARED_PG_BIND_IP:-127.0.0.1}:${ZABBIX_SERVER_HOST_PORT:-10051}:10051"
+    restart: unless-stopped
+    networks:
+      - varuna-data
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    depends_on:
+      zabbix-server:
+        condition: service_started
+      pg-zabbix:
+        condition: service_healthy
+    env_file:
+      - docker/infra.shared.env
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      DB_SERVER_HOST: pg-zabbix
+      POSTGRES_DB: ${ZABBIX_POSTGRES_DB:-zabbix}
+      POSTGRES_USER: ${ZABBIX_POSTGRES_USER:-zabbix}
+      POSTGRES_PASSWORD: ${ZABBIX_POSTGRES_PASSWORD:-zabbix}
+      PHP_TZ: ${TZ:-America/Sao_Paulo}
+    ports:
+      - "${VARUNA_SHARED_PG_BIND_IP:-127.0.0.1}:${ZABBIX_WEB_HOST_PORT:-8080}:8080"
+    restart: unless-stopped
+    networks:
+      - varuna-data
+
+volumes:
+  pg_varuna_data:
+  pg_zabbix_data:
+
+networks:
+  varuna-data:
+    name: varuna-data
+    driver: bridge

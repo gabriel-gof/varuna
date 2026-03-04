@@ -1,22 +1,4 @@
 services:
-  db:
-    image: postgres:15-alpine
-    env_file:
-      - ${VARUNA_ENV_FILE:-docker/prod.env}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: ${VARUNA_DB_LIMIT_MEMORY:-1G}
-          cpus: '${VARUNA_DB_LIMIT_CPUS:-1.0}'
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -31,14 +13,12 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_started
     env_file:
       - ${VARUNA_ENV_FILE:-docker/prod.env}
     environment:
-      POSTGRES_HOST: ${VARUNA_POSTGRES_HOST:-db}
+      POSTGRES_HOST: ${VARUNA_POSTGRES_HOST:-pg-varuna}
       DEBUG: "False"
       BACKEND_BEHIND_FRONTEND_PROXY: "1"
     ports:
@@ -68,6 +48,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    networks:
+      - default
+      - varuna-data
 
   frontend:
     build:
@@ -89,8 +72,10 @@ services:
 
 volumes:
   static:
-  postgres_data:
 
 networks:
   default:
     driver: bridge
+  varuna-data:
+    external: true
+    name: varuna-data

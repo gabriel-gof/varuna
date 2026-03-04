@@ -1,5 +1,6 @@
 import logging
 from collections import defaultdict
+import datetime as _dt
 from datetime import timedelta
 from io import StringIO
 
@@ -28,9 +29,11 @@ from topology.services.history_service import persist_power_samples
 from topology.services.maintenance_job_service import maintenance_job_service
 from topology.services.maintenance_runtime import collect_power_for_olt, ensure_status_snapshot_for_power, has_usable_status_snapshot
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
+from topology.services.power_values import normalize_power_value
 from topology.services.power_service import power_service
-from topology.services.snmp_service import snmp_service
 from topology.services.topology_service import TopologyService
+from topology.services.vendor_profile import map_disconnect_reason, map_status_code
+from topology.services.zabbix_service import zabbix_service
 
 logger = logging.getLogger(__name__)
 
@@ -224,20 +227,28 @@ class OLTViewSet(viewsets.ModelViewSet):
             return
 
         if isinstance(status_payload, dict) and status_payload:
-            if 'status' in onu_payload and status_payload.get('status'):
-                onu_payload['status'] = status_payload.get('status')
+            status_value = status_payload.get('status')
+            if (
+                'status' in onu_payload
+                and status_value in {ONU.STATUS_ONLINE, ONU.STATUS_OFFLINE, ONU.STATUS_UNKNOWN}
+            ):
+                onu_payload['status'] = status_value
             if 'disconnect_reason' in onu_payload and 'disconnect_reason' in status_payload:
                 reason = status_payload.get('disconnect_reason')
-                onu_payload['disconnect_reason'] = reason or None
+                if reason not in (None, ''):
+                    onu_payload['disconnect_reason'] = reason
             if 'offline_since' in onu_payload and 'offline_since' in status_payload:
                 offline_since = status_payload.get('offline_since')
-                onu_payload['offline_since'] = offline_since or None
+                if offline_since not in (None, ''):
+                    onu_payload['offline_since'] = offline_since
             if 'disconnect_window_start' in onu_payload and 'disconnect_window_start' in status_payload:
                 window_start = status_payload.get('disconnect_window_start')
-                onu_payload['disconnect_window_start'] = window_start or None
+                if window_start not in (None, ''):
+                    onu_payload['disconnect_window_start'] = window_start
             if 'disconnect_window_end' in onu_payload and 'disconnect_window_end' in status_payload:
                 window_end = status_payload.get('disconnect_window_end')
-                onu_payload['disconnect_window_end'] = window_end or None
+                if window_end not in (None, ''):
+                    onu_payload['disconnect_window_end'] = window_end
 
         if isinstance(power_payload, dict) and power_payload:
             if 'onu_rx_power' in onu_payload and 'onu_rx_power' in power_payload:
@@ -456,10 +467,29 @@ class OLTViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         olt = serializer.save()
+        self._sync_zabbix_host_runtime(olt)
         cache_service.invalidate_olt_cache(olt.id)
+
+    def _sync_zabbix_host_runtime(self, olt, *, previous=None):
+        try:
+            synced = zabbix_service.sync_olt_host_runtime(olt, previous=previous)
+        except Exception:
+            logger.exception(
+                "Failed to sync Zabbix host runtime for OLT id=%s name=%s",
+                olt.id,
+                olt.name,
+            )
+            return
+        if not synced:
+            logger.warning(
+                "Skipped Zabbix host runtime sync because host was not resolved for OLT id=%s name=%s",
+                olt.id,
+                olt.name,
+            )
 
     def perform_update(self, serializer):
         tracked_fields = {
+            'name',
             'vendor_profile_id',
             'protocol',
             'ip_address',
@@ -469,12 +499,14 @@ class OLTViewSet(viewsets.ModelViewSet):
             'discovery_interval_minutes',
             'polling_interval_seconds',
             'power_interval_seconds',
+            'history_days',
             'discovery_enabled',
             'polling_enabled',
         }
         current = serializer.instance
         before = {field: getattr(current, field) for field in tracked_fields}
         olt = serializer.save()
+        self._sync_zabbix_host_runtime(olt, previous=before)
         if any(before[field] != getattr(olt, field) for field in tracked_fields):
             cache_service.invalidate_olt_cache(olt.id)
 
@@ -489,6 +521,19 @@ class OLTViewSet(viewsets.ModelViewSet):
         olt = self.get_object()
         if not olt.is_active:
             return Response(status=status.HTTP_204_NO_CONTENT)
+
+        zabbix_snapshot = {
+            'name': olt.name,
+            'ip_address': olt.ip_address,
+        }
+        try:
+            zabbix_service.delete_olt_host(olt, previous=zabbix_snapshot)
+        except Exception:
+            logger.exception(
+                "Failed to delete Zabbix host for OLT id=%s name=%s",
+                olt.id,
+                olt.name,
+            )
 
         now = timezone.now()
         with transaction.atomic():
@@ -534,6 +579,7 @@ class OLTViewSet(viewsets.ModelViewSet):
             )
 
         oid_templates = profile.oid_templates if isinstance(profile.oid_templates, dict) else {}
+
         missing_paths = []
         for path in required_template_paths:
             node = oid_templates
@@ -568,11 +614,20 @@ class OLTViewSet(viewsets.ModelViewSet):
                 power_map.update(cache_service.get_many_onu_power(olt.id, onu_ids))
         return power_map
 
-    def _collect_power_for_olt(self, olt: OLT, *, force_refresh=True, include_results=True):
+    def _collect_power_for_olt(
+        self,
+        olt: OLT,
+        *,
+        force_refresh=True,
+        include_results=True,
+        refresh_upstream=False,
+    ):
         return collect_power_for_olt(
             olt,
             force_refresh=force_refresh,
             include_results=include_results,
+            refresh_upstream=refresh_upstream,
+            force_upstream=refresh_upstream,
         )
 
     def _serialize_maintenance_job(self, job):
@@ -659,7 +714,7 @@ class OLTViewSet(viewsets.ModelViewSet):
         validation_error = self._validate_vendor_action(
             olt,
             capability_field='supports_power_monitoring',
-            required_template_paths=[('power', 'onu_rx_oid')],
+            required_template_paths=[('zabbix', 'onu_rx_item_key_pattern')],
             action_name='power refresh',
         )
         if validation_error is not None:
@@ -672,7 +727,12 @@ class OLTViewSet(viewsets.ModelViewSet):
                 request=request,
             )
 
-        payload = self._collect_power_for_olt(olt, force_refresh=True, include_results=True)
+        payload = self._collect_power_for_olt(
+            olt,
+            force_refresh=True,
+            include_results=True,
+            refresh_upstream=True,
+        )
         return Response(payload)
 
     @action(detail=False, methods=['post'], url_path='refresh_power')
@@ -706,7 +766,7 @@ class OLTViewSet(viewsets.ModelViewSet):
             validation_error = self._validate_vendor_action(
                 olt,
                 capability_field='supports_power_monitoring',
-                required_template_paths=[('power', 'onu_rx_oid')],
+                required_template_paths=[('zabbix', 'onu_rx_item_key_pattern')],
                 action_name='power refresh',
             )
             if validation_error is not None:
@@ -721,6 +781,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                     olt,
                     force_refresh=force_refresh,
                     include_results=False,
+                    refresh_upstream=force_refresh,
                 )
                 completed_count += 1
                 total_onu_count += payload['count']
@@ -771,7 +832,7 @@ class OLTViewSet(viewsets.ModelViewSet):
         validation_error = self._validate_vendor_action(
             olt,
             capability_field='supports_onu_discovery',
-            required_template_paths=[('discovery', 'onu_serial_oid')],
+            required_template_paths=[('zabbix', 'discovery_item_key')],
             action_name='ONU discovery',
         )
         if validation_error is not None:
@@ -786,7 +847,13 @@ class OLTViewSet(viewsets.ModelViewSet):
 
         output = StringIO()
         try:
-            call_command('discover_onus', olt_id=olt.id, force=True, stdout=output)
+            call_command(
+                'discover_onus',
+                olt_id=olt.id,
+                force=True,
+                refresh_upstream=True,
+                stdout=output,
+            )
         except Exception as exc:
             return Response(
                 {'status': 'error', 'olt_id': olt.id, 'detail': str(exc)},
@@ -799,63 +866,43 @@ class OLTViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def snmp_check(self, request, pk=None):
         """
-        Quick SNMP connectivity check — queries sysDescr.0 to verify the OLT is reachable.
-        Returns { reachable: bool, sys_descr: str|null, olt_id: int }
+        Quick collector connectivity check via Zabbix reachability state.
+        Returns { reachable: bool, sys_descr: null, olt_id: int }
         """
         access_error = self._ensure_settings_write_access(request)
         if access_error is not None:
             return access_error
 
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
-        if str(olt.snmp_version).lower() != 'v2c':
-            detail = 'SNMP v3 is not yet supported by backend runtime credentials.'
-            mark_olt_unreachable(olt, error=detail)
+        try:
+            reachable, detail = zabbix_service.check_olt_reachability(
+                olt,
+                freshness_seconds=max(int(olt.polling_interval_seconds or 0) + 90, 390),
+            )
+            if reachable:
+                mark_olt_reachable(olt)
+                return Response(
+                    {
+                        'reachable': True,
+                        'sys_descr': None,
+                        'olt_id': olt.id,
+                        'failure_count': olt.snmp_failure_count,
+                        'collector': 'zabbix',
+                    }
+                )
+            mark_olt_unreachable(olt, error=detail or 'Zabbix reported OLT unreachable')
             return Response(
                 {
                     'reachable': False,
                     'sys_descr': None,
                     'olt_id': olt.id,
-                    'detail': detail,
+                    'detail': detail or 'Zabbix reported OLT unreachable',
                     'failure_count': olt.snmp_failure_count,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+                    'collector': 'zabbix',
+                }
             )
-
-        sys_descr_oid = '1.3.6.1.2.1.1.1.0'
-        has_running_job = maintenance_job_service.has_active_job(olt.id)
-        try:
-            result = snmp_service.get(olt, [sys_descr_oid])
-            if result and sys_descr_oid in result:
-                mark_olt_reachable(olt)
-                return Response(
-                    {
-                        'reachable': True,
-                        'sys_descr': str(result[sys_descr_oid]) if result[sys_descr_oid] is not None else None,
-                        'olt_id': olt.id,
-                        'failure_count': olt.snmp_failure_count,
-                    }
-                )
-            if has_running_job:
-                return Response({
-                    'reachable': True,
-                    'sys_descr': None,
-                    'olt_id': olt.id,
-                    'failure_count': olt.snmp_failure_count,
-                    'busy': True,
-                })
-            mark_olt_unreachable(olt, error='No sysDescr response')
-            return Response({'reachable': False, 'sys_descr': None, 'olt_id': olt.id, 'failure_count': olt.snmp_failure_count})
         except Exception as exc:
-            if has_running_job:
-                logger.info("SNMP check for OLT %s timed out during active maintenance job; treating as busy.", olt.name)
-                return Response({
-                    'reachable': True,
-                    'sys_descr': None,
-                    'olt_id': olt.id,
-                    'failure_count': olt.snmp_failure_count,
-                    'busy': True,
-                })
-            logger.warning("SNMP check failed for OLT %s: %s", olt.name, exc)
+            logger.warning("Zabbix reachability check failed for OLT %s: %s", olt.name, exc)
             mark_olt_unreachable(olt, error=str(exc))
             return Response(
                 {
@@ -864,6 +911,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                     'olt_id': olt.id,
                     'detail': str(exc),
                     'failure_count': olt.snmp_failure_count,
+                    'collector': 'zabbix',
                 }
             )
 
@@ -880,7 +928,7 @@ class OLTViewSet(viewsets.ModelViewSet):
         validation_error = self._validate_vendor_action(
             olt,
             capability_field='supports_onu_status',
-            required_template_paths=[('status', 'onu_status_oid')],
+            required_template_paths=[('zabbix', 'status_item_key_pattern')],
             action_name='ONU status polling',
         )
         if validation_error is not None:
@@ -895,7 +943,14 @@ class OLTViewSet(viewsets.ModelViewSet):
 
         output = StringIO()
         try:
-            call_command('poll_onu_status', olt_id=olt.id, force=True, stdout=output)
+            call_command(
+                'poll_onu_status',
+                olt_id=olt.id,
+                force=True,
+                refresh_upstream=True,
+                force_upstream=True,
+                stdout=output,
+            )
         except Exception as exc:
             return Response(
                 {'status': 'error', 'olt_id': olt.id, 'detail': str(exc)},
@@ -976,11 +1031,13 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         for onu in onus:
             by_olt[onu.olt_id].append(onu)
 
+        collector_errors = []
         for olt_onus in by_olt.values():
             olt = olt_onus[0].olt
-            status_templates = (olt.vendor_profile.oid_templates or {}).get('status', {})
-            status_oid = status_templates.get('onu_status_oid')
-            if not olt.vendor_profile.supports_onu_status or not status_oid:
+            zabbix_templates = (olt.vendor_profile.oid_templates or {}).get('zabbix', {})
+            zabbix_status_pattern = zabbix_templates.get('status_item_key_pattern')
+            has_status_collector = bool(zabbix_status_pattern)
+            if not olt.vendor_profile.supports_onu_status or not has_status_collector:
                 logger.warning(
                     "Scoped status refresh OLT %s skipped: status polling capability unavailable.",
                     olt.id,
@@ -990,6 +1047,8 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             kwargs = {
                 'olt_id': olt.id,
                 'force': True,
+                'refresh_upstream': True,
+                'force_upstream': True,
                 'stdout': StringIO(),
             }
             if selection_scope.get('mode') == 'pon' and int(selection_scope.get('olt_id')) == int(olt.id):
@@ -999,6 +1058,13 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 kwargs['onu_id'] = [int(onu.id) for onu in olt_onus]
 
             call_command('poll_onu_status', **kwargs)
+            olt.refresh_from_db(fields=['snmp_reachable', 'snmp_failure_count', 'last_snmp_error'])
+            if olt.snmp_reachable is False:
+                detail = str(olt.last_snmp_error or 'Collector reported OLT unreachable').strip()
+                collector_errors.append(f"{olt.name}: {detail}")
+
+        if collector_errors:
+            raise RuntimeError("; ".join(collector_errors))
 
     def _serialize_status_rows(self, onus):
         if not onus:
@@ -1018,13 +1084,18 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             if active_log:
                 disconnect_reason = active_log.disconnect_reason
                 offline_since = active_log.offline_since.isoformat() if active_log.offline_since else None
+                window_anchor = (
+                    active_log.disconnect_window_end
+                    or active_log.disconnect_window_start
+                    or active_log.offline_since
+                )
                 disconnect_window_start = (
-                    active_log.disconnect_window_start.isoformat()
-                    if active_log.disconnect_window_start else None
+                    (active_log.disconnect_window_start or window_anchor).isoformat()
+                    if (active_log.disconnect_window_start or window_anchor) else None
                 )
                 disconnect_window_end = (
-                    active_log.disconnect_window_end.isoformat()
-                    if active_log.disconnect_window_end else None
+                    (active_log.disconnect_window_end or window_anchor).isoformat()
+                    if (active_log.disconnect_window_end or window_anchor) else None
                 )
             else:
                 disconnect_reason = None if onu.status == ONU.STATUS_ONLINE else ONULog.REASON_UNKNOWN
@@ -1117,8 +1188,36 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         ).order_by('olt__name', 'slot_id', 'pon_id', 'onu_id')
 
         rows_source = list(queryset)
+        onu_ids_by_olt = defaultdict(list)
+        for onu in rows_source:
+            onu_ids_by_olt[int(onu.olt_id)].append(int(onu.id))
+
+        cached_power_by_olt = {
+            olt_id: cache_service.get_many_onu_power(olt_id, onu_ids)
+            for olt_id, onu_ids in onu_ids_by_olt.items()
+            if onu_ids
+        }
         rows = []
         for onu in rows_source:
+            onu_rx_power = normalize_power_value(onu.latest_onu_rx_power)
+            olt_rx_power = normalize_power_value(onu.latest_olt_rx_power)
+            power_read_at = (
+                onu.latest_power_read_at.isoformat()
+                if getattr(onu, 'latest_power_read_at', None) else None
+            )
+
+            if onu_rx_power is None and olt_rx_power is None:
+                cached = (cached_power_by_olt.get(int(onu.olt_id), {}) or {}).get(int(onu.id)) or {}
+                if isinstance(cached, dict) and cached:
+                    onu_rx_power = normalize_power_value(cached.get('onu_rx_power'))
+                    olt_rx_power = normalize_power_value(cached.get('olt_rx_power'))
+                    cached_read_at = cached.get('power_read_at')
+                    if cached_read_at:
+                        power_read_at = str(cached_read_at)
+
+            if onu_rx_power is None and olt_rx_power is None:
+                power_read_at = None
+
             rows.append({
                 'id': onu.id,
                 'olt_id': onu.olt_id,
@@ -1132,14 +1231,287 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 'client_name': onu.name or '',
                 'serial': onu.serial or '',
                 'status': onu.status,
-                'onu_rx_power': onu.latest_onu_rx_power,
-                'olt_rx_power': onu.latest_olt_rx_power,
-                'power_read_at': (
-                    onu.latest_power_read_at.isoformat()
-                    if getattr(onu, 'latest_power_read_at', None) else None
-                ),
+                'onu_rx_power': onu_rx_power,
+                'olt_rx_power': olt_rx_power,
+                'power_read_at': power_read_at,
             })
         return Response({'count': len(rows), 'results': rows})
+
+    @staticmethod
+    def _parse_epoch(value):
+        try:
+            if value in (None, ''):
+                return None
+            parsed = int(str(value).strip())
+            if parsed <= 0:
+                return None
+            return parsed
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _epoch_to_iso(epoch):
+        parsed = ONUViewSet._parse_epoch(epoch)
+        if parsed is None:
+            return None
+        try:
+            return _dt.datetime.fromtimestamp(parsed, tz=_dt.timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            return None
+
+    @staticmethod
+    def _normalize_reason_value(raw_reason, disconnect_reason_map):
+        value = str(raw_reason or '').strip().lower()
+        if value in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP, ONULog.REASON_UNKNOWN):
+            return value
+        if not value:
+            return ONULog.REASON_UNKNOWN
+        return map_disconnect_reason(value, disconnect_reason_map or {})
+
+    @staticmethod
+    def _normalize_status_value(raw_status, status_map):
+        value = str(raw_status or '').strip().lower()
+        if value == ONU.STATUS_ONLINE:
+            return {'status': ONU.STATUS_ONLINE, 'reason': ''}
+        if value == ONU.STATUS_OFFLINE:
+            return {'status': ONU.STATUS_OFFLINE, 'reason': ONULog.REASON_UNKNOWN}
+        if value == ONU.STATUS_UNKNOWN:
+            return {'status': ONU.STATUS_UNKNOWN, 'reason': ONULog.REASON_UNKNOWN}
+        if value in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP):
+            return {'status': ONU.STATUS_OFFLINE, 'reason': value}
+
+        mapped = map_status_code(str(raw_status or ''), status_map or {})
+        mapped_status = mapped.get('status', ONU.STATUS_UNKNOWN)
+        mapped_reason = mapped.get('reason', ONULog.REASON_UNKNOWN)
+        if mapped_status == ONU.STATUS_ONLINE:
+            mapped_reason = ''
+        elif mapped_reason not in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP):
+            mapped_reason = ONULog.REASON_UNKNOWN
+        return {'status': mapped_status, 'reason': mapped_reason}
+
+    def _build_zabbix_alarm_rows(
+        self,
+        *,
+        onu,
+        status_samples,
+        previous_status_sample,
+        reason_samples,
+        alarm_cutoff,
+        alarm_end,
+        alarm_limit,
+        status_map,
+        disconnect_reason_map,
+    ):
+        normalized_reason_samples = []
+        for sample in reason_samples or []:
+            epoch = self._parse_epoch((sample or {}).get('clock_epoch'))
+            if epoch is None:
+                continue
+            normalized_reason_samples.append(
+                {
+                    'clock_epoch': epoch,
+                    'reason': self._normalize_reason_value((sample or {}).get('value'), disconnect_reason_map),
+                }
+            )
+        normalized_reason_samples.sort(key=lambda row: row.get('clock_epoch') or 0)
+
+        timeline = []
+        reason_cursor = 0
+        current_reason = ONULog.REASON_UNKNOWN
+        for sample in (status_samples or []):
+            epoch = self._parse_epoch((sample or {}).get('clock_epoch'))
+            if epoch is None:
+                continue
+
+            while (
+                reason_cursor < len(normalized_reason_samples)
+                and normalized_reason_samples[reason_cursor].get('clock_epoch', 0) <= epoch
+            ):
+                current_reason = normalized_reason_samples[reason_cursor].get('reason') or ONULog.REASON_UNKNOWN
+                reason_cursor += 1
+
+            mapped = self._normalize_status_value((sample or {}).get('value'), status_map)
+            status_value = mapped.get('status', ONU.STATUS_UNKNOWN)
+            reason_value = mapped.get('reason', ONULog.REASON_UNKNOWN)
+            if status_value == ONU.STATUS_ONLINE:
+                reason_value = ''
+            elif reason_value == ONULog.REASON_UNKNOWN and current_reason:
+                reason_value = current_reason
+
+            timeline.append(
+                {
+                    'clock_epoch': epoch,
+                    'clock': self._epoch_to_iso(epoch),
+                    'status': status_value,
+                    'reason': reason_value,
+                }
+            )
+        timeline.sort(key=lambda row: row.get('clock_epoch') or 0)
+
+        previous = None
+        if previous_status_sample:
+            prev_epoch = self._parse_epoch((previous_status_sample or {}).get('clock_epoch'))
+            if prev_epoch is not None:
+                previous_mapped = self._normalize_status_value(
+                    (previous_status_sample or {}).get('value'),
+                    status_map,
+                )
+                previous = {
+                    'clock_epoch': prev_epoch,
+                    'status': previous_mapped.get('status', ONU.STATUS_UNKNOWN),
+                    'reason': previous_mapped.get('reason', ONULog.REASON_UNKNOWN),
+                }
+
+        max_gap_seconds = max(
+            int(onu.olt.polling_interval_seconds or 0) * 2
+            + max(int(getattr(settings, 'ZABBIX_DISCONNECT_WINDOW_MARGIN_SECONDS', 90) or 90), 0),
+            1,
+        )
+        cutoff_iso = alarm_cutoff.isoformat()
+        end_epoch = int(alarm_end.timestamp())
+
+        alarms = []
+        open_alarm = None
+        sequence = 0
+
+        def start_alarm(*, start_iso, reason, window_start_iso, window_end_iso):
+            nonlocal sequence
+            sequence += 1
+            return {
+                'id': f"zbx-{onu.id}-{sequence}",
+                'event_type': reason or ONULog.REASON_UNKNOWN,
+                'start_at': start_iso,
+                'end_at': None,
+                'status': 'active',
+                'duration_seconds': None,
+                'disconnect_window_start': window_start_iso,
+                'disconnect_window_end': window_end_iso,
+            }
+
+        if previous and previous.get('status') == ONU.STATUS_OFFLINE:
+            previous_reason = previous.get('reason') or ONULog.REASON_UNKNOWN
+            open_alarm = start_alarm(
+                start_iso=cutoff_iso,
+                reason=previous_reason,
+                window_start_iso=cutoff_iso,
+                window_end_iso=cutoff_iso,
+            )
+
+        for sample in timeline:
+            sample_status = sample.get('status')
+            sample_reason = sample.get('reason') or ONULog.REASON_UNKNOWN
+            sample_iso = sample.get('clock')
+            sample_epoch = self._parse_epoch(sample.get('clock_epoch'))
+            if sample_iso is None or sample_epoch is None:
+                previous = sample
+                continue
+
+            if sample_status == ONU.STATUS_OFFLINE:
+                if open_alarm is None:
+                    window_start_iso = sample_iso
+                    window_end_iso = sample_iso
+                    prev_epoch = self._parse_epoch((previous or {}).get('clock_epoch'))
+                    prev_status = (previous or {}).get('status')
+                    if (
+                        prev_epoch is not None
+                        and prev_status == ONU.STATUS_ONLINE
+                        and 0 < (sample_epoch - prev_epoch) <= max_gap_seconds
+                    ):
+                        prev_iso = self._epoch_to_iso(prev_epoch)
+                        if prev_iso:
+                            window_start_iso = prev_iso
+                        window_end_iso = sample_iso
+
+                    open_alarm = start_alarm(
+                        start_iso=sample_iso,
+                        reason=sample_reason,
+                        window_start_iso=window_start_iso,
+                        window_end_iso=window_end_iso,
+                    )
+                else:
+                    if (
+                        open_alarm.get('event_type') == ONULog.REASON_UNKNOWN
+                        and sample_reason in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP)
+                    ):
+                        open_alarm['event_type'] = sample_reason
+            elif sample_status == ONU.STATUS_ONLINE and open_alarm is not None:
+                open_alarm['end_at'] = sample_iso
+                open_alarm['status'] = 'resolved'
+                start_at = open_alarm.get('start_at')
+                if start_at:
+                    start_dt = _dt.datetime.fromisoformat(start_at)
+                    end_dt = _dt.datetime.fromisoformat(sample_iso)
+                    duration = int((end_dt - start_dt).total_seconds())
+                    open_alarm['duration_seconds'] = max(duration, 0)
+                alarms.append(open_alarm)
+                open_alarm = None
+
+            previous = sample
+
+        if open_alarm is not None:
+            start_iso = open_alarm.get('start_at')
+            if start_iso:
+                start_dt = _dt.datetime.fromisoformat(start_iso)
+                end_dt = _dt.datetime.fromtimestamp(end_epoch, tz=_dt.timezone.utc)
+                duration = int((end_dt - start_dt).total_seconds())
+                open_alarm['duration_seconds'] = max(duration, 0)
+            alarms.append(open_alarm)
+
+        alarms.sort(key=lambda row: row.get('start_at') or '', reverse=True)
+        if alarm_limit > 0:
+            alarms = alarms[:alarm_limit]
+
+        stats = {
+            'total': 0,
+            'link_loss': 0,
+            'dying_gasp': 0,
+            'unknown': 0,
+            'active': 0,
+            'resolved': 0,
+        }
+        for alarm in alarms:
+            reason = alarm.get('event_type') or ONULog.REASON_UNKNOWN
+            if reason not in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP):
+                reason = ONULog.REASON_UNKNOWN
+            status_value = 'active' if alarm.get('status') == 'active' else 'resolved'
+            stats['total'] += 1
+            stats[reason] += 1
+            stats[status_value] += 1
+            alarm['event_type'] = reason
+            alarm['status'] = status_value
+
+        return alarms, stats
+
+    def _build_zabbix_power_history(self, *, onu_rx_samples, olt_rx_samples, max_power_points):
+        merged = {}
+
+        for sample in onu_rx_samples or []:
+            epoch = self._parse_epoch((sample or {}).get('clock_epoch'))
+            if epoch is None:
+                continue
+            row = merged.setdefault(epoch, {'timestamp': self._epoch_to_iso(epoch), 'onu_rx_power': None, 'olt_rx_power': None})
+            try:
+                row['onu_rx_power'] = normalize_power_value(float((sample or {}).get('value')))
+            except (TypeError, ValueError):
+                pass
+
+        for sample in olt_rx_samples or []:
+            epoch = self._parse_epoch((sample or {}).get('clock_epoch'))
+            if epoch is None:
+                continue
+            row = merged.setdefault(epoch, {'timestamp': self._epoch_to_iso(epoch), 'onu_rx_power': None, 'olt_rx_power': None})
+            try:
+                row['olt_rx_power'] = normalize_power_value(float((sample or {}).get('value')))
+            except (TypeError, ValueError):
+                pass
+
+        rows = [
+            row
+            for _, row in sorted(merged.items(), key=lambda entry: entry[0])
+            if row.get('onu_rx_power') is not None or row.get('olt_rx_power') is not None
+        ]
+        rows = self._downsample_samples(rows, max_points=max_power_points)
+        return rows
 
     @action(detail=False, methods=['get'], url_path='alarm-clients')
     def alarm_clients(self, request):
@@ -1167,6 +1539,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 'slot_id': onu.slot_id,
                 'pon_id': onu.pon_id,
                 'onu_number': onu.onu_id,
+                'history_days': onu.olt.history_days,
             }
             for onu in queryset
         ]
@@ -1175,20 +1548,57 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['get'], url_path='alarm-history')
     def alarm_history(self, request, pk=None):
         onu = self.get_object()
-        alarm_days = self._positive_int(request.query_params.get('alarm_days'), default=30, minimum=1, maximum=365)
-        power_days = self._positive_int(request.query_params.get('power_days'), default=7, minimum=1, maximum=30)
         alarm_limit = self._positive_int(request.query_params.get('alarm_limit'), default=200, minimum=1, maximum=1000)
         max_power_points = self._positive_int(request.query_params.get('max_power_points'), default=240, minimum=20, maximum=1000)
 
         now = timezone.now()
-        alarm_cutoff = now - timedelta(days=alarm_days)
-        power_cutoff = now - timedelta(days=power_days)
+        today = now.date()
 
-        alarm_logs = list(
-            ONULog.objects.filter(onu_id=onu.id, offline_since__gte=alarm_cutoff)
-            .order_by('-offline_since')[:alarm_limit]
+        # Try exact date range (start_date / end_date)
+        raw_start = request.query_params.get('start_date')
+        raw_end = request.query_params.get('end_date')
+        use_date_range = False
+        if raw_start and raw_end:
+            try:
+                start_d = _dt.date.fromisoformat(raw_start)
+                end_d = _dt.date.fromisoformat(raw_end)
+                earliest = today - _dt.timedelta(days=365)
+                start_d = max(start_d, earliest)
+                end_d = min(end_d, today)
+                use_date_range = True
+            except (ValueError, TypeError):
+                pass
+
+        if use_date_range:
+            alarm_cutoff = timezone.make_aware(_dt.datetime.combine(start_d, _dt.time.min))
+            alarm_end = timezone.make_aware(_dt.datetime.combine(end_d, _dt.time.max))
+            power_cutoff = alarm_cutoff
+            power_end = alarm_end
+        else:
+            alarm_days = self._positive_int(request.query_params.get('alarm_days'), default=30, minimum=1, maximum=365)
+            power_days = self._positive_int(request.query_params.get('power_days'), default=7, minimum=1, maximum=30)
+            alarm_cutoff = now - timedelta(days=alarm_days)
+            alarm_end = now
+            power_cutoff = now - timedelta(days=power_days)
+            power_end = now
+
+        templates = getattr(getattr(onu.olt, 'vendor_profile', None), 'oid_templates', {}) or {}
+        zabbix_cfg = templates.get('zabbix', {}) if isinstance(templates.get('zabbix', {}), dict) else {}
+        status_cfg = templates.get('status', {}) if isinstance(templates.get('status', {}), dict) else {}
+        status_map_cfg = status_cfg.get('status_map', {}) if isinstance(status_cfg.get('status_map', {}), dict) else {}
+        disconnect_reason_map = (
+            status_cfg.get('disconnect_reason_map', {})
+            if isinstance(status_cfg.get('disconnect_reason_map', {}), dict)
+            else {}
         )
 
+        status_pattern = str(zabbix_cfg.get('status_item_key_pattern') or '').strip()
+        reason_pattern = str(zabbix_cfg.get('reason_item_key_pattern') or '').strip()
+        onu_rx_pattern = str(zabbix_cfg.get('onu_rx_item_key_pattern') or '').strip()
+        olt_rx_pattern = str(zabbix_cfg.get('olt_rx_item_key_pattern') or '').strip()
+
+        data_source = 'varuna'
+        alarms = []
         stats = {
             'total': 0,
             'link_loss': 0,
@@ -1197,53 +1607,114 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             'active': 0,
             'resolved': 0,
         }
-        alarms = []
-        for log in alarm_logs:
-            reason = log.disconnect_reason or ONULog.REASON_UNKNOWN
-            if reason not in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP):
-                reason = ONULog.REASON_UNKNOWN
+        power_history = []
 
-            status_value = 'active' if log.offline_until is None else 'resolved'
-            duration_seconds = None
-            if log.offline_since and log.offline_until:
-                duration_seconds = max(0, int((log.offline_until - log.offline_since).total_seconds()))
+        if status_pattern and onu.snmp_index:
+            try:
+                status_time_from = int(alarm_cutoff.timestamp())
+                status_time_till = int(alarm_end.timestamp())
+                power_time_from = int(power_cutoff.timestamp())
+                power_time_till = int(power_end.timestamp())
+                zabbix_payload = zabbix_service.fetch_onu_item_timelines(
+                    onu.olt,
+                    index=str(onu.snmp_index),
+                    status_item_key_pattern=status_pattern,
+                    reason_item_key_pattern=reason_pattern,
+                    onu_rx_item_key_pattern=onu_rx_pattern,
+                    olt_rx_item_key_pattern=olt_rx_pattern,
+                    status_time_from=status_time_from,
+                    status_time_till=status_time_till,
+                    power_time_from=power_time_from,
+                    power_time_till=power_time_till,
+                    status_limit=max(alarm_limit * 20, 5000),
+                    power_limit=max(max_power_points * 10, 2000),
+                )
+                if zabbix_payload and zabbix_payload.get('status_samples'):
+                    alarms, stats = self._build_zabbix_alarm_rows(
+                        onu=onu,
+                        status_samples=zabbix_payload.get('status_samples') or [],
+                        previous_status_sample=zabbix_payload.get('status_previous'),
+                        reason_samples=zabbix_payload.get('reason_samples') or [],
+                        alarm_cutoff=alarm_cutoff,
+                        alarm_end=alarm_end,
+                        alarm_limit=alarm_limit,
+                        status_map=status_map_cfg,
+                        disconnect_reason_map=disconnect_reason_map,
+                    )
+                    power_history = self._build_zabbix_power_history(
+                        onu_rx_samples=zabbix_payload.get('onu_rx_samples') or [],
+                        olt_rx_samples=zabbix_payload.get('olt_rx_samples') or [],
+                        max_power_points=max_power_points,
+                    )
+                    data_source = 'zabbix'
+            except Exception:
+                logger.exception("Failed to build alarm-history from Zabbix for onu_id=%s", onu.id)
 
-            stats['total'] += 1
-            stats[reason] += 1
-            stats[status_value] += 1
-
-            alarms.append(
-                {
-                    'id': log.id,
-                    'event_type': reason,
-                    'start_at': log.offline_since.isoformat() if log.offline_since else None,
-                    'end_at': log.offline_until.isoformat() if log.offline_until else None,
-                    'status': status_value,
-                    'duration_seconds': duration_seconds,
-                    'disconnect_window_start': (
-                        log.disconnect_window_start.isoformat()
-                        if log.disconnect_window_start else None
-                    ),
-                    'disconnect_window_end': (
-                        log.disconnect_window_end.isoformat()
-                        if log.disconnect_window_end else None
-                    ),
-                }
+        if data_source != 'zabbix':
+            alarm_logs = list(
+                ONULog.objects.filter(
+                    onu_id=onu.id,
+                    offline_since__gte=alarm_cutoff,
+                    offline_since__lte=alarm_end,
+                )
+                .order_by('-offline_since')[:alarm_limit]
             )
 
-        power_samples = list(
-            ONUPowerSample.objects.filter(onu_id=onu.id, read_at__gte=power_cutoff)
-            .order_by('read_at')
-        )
-        power_samples = self._downsample_samples(power_samples, max_points=max_power_points)
-        power_history = [
-            {
-                'timestamp': sample.read_at.isoformat(),
-                'onu_rx_power': sample.onu_rx_power,
-                'olt_rx_power': sample.olt_rx_power,
-            }
-            for sample in power_samples
-        ]
+            for log in alarm_logs:
+                reason = log.disconnect_reason or ONULog.REASON_UNKNOWN
+                if reason not in (ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP):
+                    reason = ONULog.REASON_UNKNOWN
+
+                status_value = 'active' if log.offline_until is None else 'resolved'
+                duration_seconds = None
+                if log.offline_since and log.offline_until:
+                    duration_seconds = max(0, int((log.offline_until - log.offline_since).total_seconds()))
+
+                stats['total'] += 1
+                stats[reason] += 1
+                stats[status_value] += 1
+
+                alarms.append(
+                    {
+                        'id': log.id,
+                        'event_type': reason,
+                        'start_at': log.offline_since.isoformat() if log.offline_since else None,
+                        'end_at': log.offline_until.isoformat() if log.offline_until else None,
+                        'status': status_value,
+                        'duration_seconds': duration_seconds,
+                        'disconnect_window_start': (
+                            log.disconnect_window_start.isoformat()
+                            if log.disconnect_window_start else None
+                        ),
+                        'disconnect_window_end': (
+                            log.disconnect_window_end.isoformat()
+                            if log.disconnect_window_end else None
+                        ),
+                    }
+                )
+
+            power_samples = list(
+                ONUPowerSample.objects.filter(
+                    onu_id=onu.id,
+                    read_at__gte=power_cutoff,
+                    read_at__lte=power_end,
+                )
+                .order_by('read_at')
+            )
+            power_samples = self._downsample_samples(power_samples, max_points=max_power_points)
+            power_history = []
+            for sample in power_samples:
+                onu_rx = normalize_power_value(sample.onu_rx_power)
+                olt_rx = normalize_power_value(sample.olt_rx_power)
+                if onu_rx is None and olt_rx is None:
+                    continue
+                power_history.append(
+                    {
+                        'timestamp': sample.read_at.isoformat(),
+                        'onu_rx_power': onu_rx,
+                        'olt_rx_power': olt_rx,
+                    }
+                )
 
         return Response(
             {
@@ -1258,10 +1729,13 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                     'serial': onu.serial or '',
                 },
                 'stats': stats,
-                'alarm_days': alarm_days,
-                'power_days': power_days,
+                'alarm_days': alarm_days if not use_date_range else None,
+                'power_days': power_days if not use_date_range else None,
+                'start_date': str(start_d) if use_date_range else None,
+                'end_date': str(end_d) if use_date_range else None,
                 'alarms': alarms,
                 'power_history': power_history,
+                'source': data_source,
                 'generated_at': now.isoformat(),
             }
         )
@@ -1270,20 +1744,36 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
     def power(self, request, pk=None):
         """
         Returns power information for one ONU.
-        Query param refresh=true/false controls SNMP refresh vs cache read.
+        Query param refresh=true/false controls upstream Zabbix refresh vs cache read.
         """
         onu = self.get_object()
         refresh = _is_true(request.query_params.get('refresh', 'false'))
         if refresh:
             self._ensure_status_snapshot_for_power(onu.olt)
+            onu.olt.refresh_from_db(
+                fields=['last_poll_at', 'snmp_reachable', 'snmp_failure_count', 'last_snmp_error']
+            )
+            if not self._has_usable_status_snapshot(onu.olt):
+                detail = str(onu.olt.last_snmp_error or 'Collector reported OLT unreachable').strip()
+                return Response(
+                    {'detail': f"{onu.olt.name}: {detail}"},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
         refresh_started_at = timezone.now()
-        result_map = power_service.refresh_for_onus([onu], force_refresh=refresh)
+        result_map = power_service.refresh_for_onus(
+            [onu],
+            force_refresh=refresh,
+            refresh_upstream=refresh,
+        )
         if refresh:
+            history_min_read_at = None
+            history_max_age_minutes = 180
             persist_power_samples(
                 [onu],
                 result_map,
                 source=ONUPowerSample.SOURCE_SCOPED,
-                min_read_at=refresh_started_at - timedelta(minutes=1),
+                min_read_at=history_min_read_at,
+                max_age_minutes=history_max_age_minutes,
             )
         data = result_map.get(
             onu.id,
@@ -1303,13 +1793,19 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
     def refresh_status(self, request, pk=None):
         """
         Returns status information for one ONU.
-        Body/query option: refresh=true/false controls SNMP refresh vs cached DB/log read.
+        Body/query option: refresh=true/false controls upstream Zabbix refresh vs cached DB/log read.
         """
         onu = self.get_object()
         refresh = _is_true(request.data.get('refresh', request.query_params.get('refresh', 'false')))
 
         if refresh:
-            self._run_scoped_status_refresh([onu], {'mode': 'onu_ids'})
+            try:
+                self._run_scoped_status_refresh([onu], {'mode': 'onu_ids'})
+            except RuntimeError as exc:
+                return Response(
+                    {'detail': str(exc)},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             onu.refresh_from_db(fields=['status'])
 
         payload = self._serialize_status_rows([onu])[0]
@@ -1332,7 +1828,13 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'count': 0, 'results': []})
 
         if refresh:
-            self._run_scoped_status_refresh(onus, selection_scope)
+            try:
+                self._run_scoped_status_refresh(onus, selection_scope)
+            except RuntimeError as exc:
+                return Response(
+                    {'detail': str(exc)},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             refreshed_ids = [int(onu.id) for onu in onus]
             onus = list(
                 ONU.objects.filter(id__in=refreshed_ids, is_active=True)
@@ -1370,16 +1872,46 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 if refreshable_olts.get(onu.olt_id)
             ]
             if onus_requiring_status_refresh:
-                self._run_scoped_status_refresh(onus_requiring_status_refresh, selection_scope)
+                try:
+                    self._run_scoped_status_refresh(onus_requiring_status_refresh, selection_scope)
+                except RuntimeError as exc:
+                    return Response(
+                        {'detail': str(exc)},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+            collector_errors = []
+            for olt_id in sorted({int(onu.olt_id) for onu in onus}):
+                olt = next((candidate.olt for candidate in onus if int(candidate.olt_id) == olt_id), None)
+                if olt is None:
+                    continue
+                olt.refresh_from_db(
+                    fields=['last_poll_at', 'snmp_reachable', 'snmp_failure_count', 'last_snmp_error']
+                )
+                if self._has_usable_status_snapshot(olt):
+                    continue
+                detail = str(olt.last_snmp_error or 'Collector reported OLT unreachable').strip()
+                collector_errors.append(f"{olt.name}: {detail}")
+            if collector_errors:
+                return Response(
+                    {'detail': '; '.join(collector_errors)},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
         refresh_started_at = timezone.now()
-        result_map = power_service.refresh_for_onus(onus, force_refresh=refresh)
+        result_map = power_service.refresh_for_onus(
+            onus,
+            force_refresh=refresh,
+            refresh_upstream=refresh,
+        )
         if refresh:
+            history_min_read_at = None
+            history_max_age_minutes = 180
             persist_power_samples(
                 onus,
                 result_map,
                 source=ONUPowerSample.SOURCE_SCOPED,
-                min_read_at=refresh_started_at - timedelta(minutes=1),
+                min_read_at=history_min_read_at,
+                max_age_minutes=history_max_age_minutes,
             )
         results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
         return Response({'count': len(results), 'results': results})

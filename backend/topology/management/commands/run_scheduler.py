@@ -12,13 +12,10 @@ from django.utils import timezone
 from topology.models import OLT, ONUPowerSample
 from topology.services.maintenance_runtime import collect_power_for_olt as collect_power_runtime
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
-from topology.services.snmp_service import snmp_service
+from topology.services.zabbix_service import zabbix_service
 
 
 logger = logging.getLogger(__name__)
-
-SYS_DESCR_OID = '1.3.6.1.2.1.1.1.0'
-
 
 def _optional_positive_int(value):
     if value is None:
@@ -40,11 +37,8 @@ def _is_power_due(olt, now):
 
 
 def _snmp_check_interval_seconds(olt, base_interval_seconds: int, max_backoff_seconds: int) -> int:
-    failures = max(int(olt.snmp_failure_count or 0), 0)
-    if olt.snmp_reachable is False and failures > 0:
-        # Exponential backoff for consistently unreachable OLTs.
-        multiplier = 2 ** min(max(failures - 1, 0), 5)
-        return min(max_backoff_seconds, max(base_interval_seconds * multiplier, base_interval_seconds))
+    # Keep collector checks at a fixed cadence so recovery after VPN/network
+    # return is detected quickly and does not stay gray for long windows.
     return base_interval_seconds
 
 
@@ -76,7 +70,7 @@ def _collect_power_for_olt(olt):
 
 
 class Command(BaseCommand):
-    help = "Long-lived scheduler that dispatches polling, discovery, power collection, and SNMP checks."
+    help = "Long-lived scheduler that dispatches polling, discovery, power collection, and collector checks."
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -90,12 +84,18 @@ class Command(BaseCommand):
             help='Seconds between scheduler ticks (default: 30)',
         )
         parser.add_argument(
-            '--snmp-check-seconds', type=int, default=180,
-            help='Seconds between SNMP reachability checks (default: 180)',
+            '--collector-check-seconds', '--snmp-check-seconds',
+            dest='collector_check_seconds',
+            type=int,
+            default=int(getattr(settings, 'COLLECTOR_CHECK_SECONDS', 30) or 30),
+            help='Seconds between collector reachability checks (default from COLLECTOR_CHECK_SECONDS, fallback: 30)',
         )
         parser.add_argument(
-            '--snmp-check-max-backoff-seconds', type=int, default=1800,
-            help='Maximum SNMP check backoff for unreachable OLTs (default: 1800)',
+            '--collector-check-max-backoff-seconds', '--snmp-check-max-backoff-seconds',
+            dest='collector_check_max_backoff_seconds',
+            type=int,
+            default=int(getattr(settings, 'COLLECTOR_CHECK_MAX_BACKOFF_SECONDS', 1800) or 1800),
+            help='Maximum collector check backoff for unreachable OLTs (default from COLLECTOR_CHECK_MAX_BACKOFF_SECONDS, fallback: 1800)',
         )
         parser.add_argument(
             '--max-poll-olts-per-tick',
@@ -124,20 +124,23 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         tick_seconds = max(5, options['tick_seconds'])
-        snmp_check_seconds = max(30, options['snmp_check_seconds'])
-        snmp_check_max_backoff_seconds = max(snmp_check_seconds, options['snmp_check_max_backoff_seconds'])
+        collector_check_seconds = max(30, options['collector_check_seconds'])
+        collector_check_max_backoff_seconds = max(
+            collector_check_seconds,
+            options['collector_check_max_backoff_seconds'],
+        )
         history_prune_seconds = _optional_positive_int(options.get('history_prune_seconds'))
         self.max_poll_olts_per_tick = _optional_positive_int(options.get('max_poll_olts_per_tick'))
         self.max_discovery_olts_per_tick = _optional_positive_int(options.get('max_discovery_olts_per_tick'))
         self.max_power_olts_per_tick = _optional_positive_int(options.get('max_power_olts_per_tick'))
-        last_snmp_check_at = 0
+        last_collector_check_at = 0
         last_history_prune_at = 0
 
         logger.info(
-            "scheduler: starting (tick=%ss, snmp_check=%ss, snmp_check_max_backoff=%ss, history_prune=%ss, max_poll=%s, max_discovery=%s, max_power=%s).",
+            "scheduler: starting (tick=%ss, collector_check=%ss, collector_check_max_backoff=%ss, history_prune=%ss, max_poll=%s, max_discovery=%s, max_power=%s).",
             tick_seconds,
-            snmp_check_seconds,
-            snmp_check_max_backoff_seconds,
+            collector_check_seconds,
+            collector_check_max_backoff_seconds,
             history_prune_seconds,
             self.max_poll_olts_per_tick,
             self.max_discovery_olts_per_tick,
@@ -145,8 +148,8 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             "Scheduler started "
-            f"(tick={tick_seconds}s, snmp_check={snmp_check_seconds}s, "
-            f"snmp_check_max_backoff={snmp_check_max_backoff_seconds}s, "
+            f"(tick={tick_seconds}s, collector_check={collector_check_seconds}s, "
+            f"collector_check_max_backoff={collector_check_max_backoff_seconds}s, "
             f"history_prune={history_prune_seconds or 'off'}s, "
             f"max_poll={self.max_poll_olts_per_tick or 'all'}, "
             f"max_discovery={self.max_discovery_olts_per_tick or 'all'}, "
@@ -157,12 +160,12 @@ class Command(BaseCommand):
             try:
                 close_old_connections()
                 now_mono = time.monotonic()
-                if now_mono - last_snmp_check_at >= snmp_check_seconds:
+                if now_mono - last_collector_check_at >= collector_check_seconds:
                     self._run_snmp_checks(
-                        base_interval_seconds=snmp_check_seconds,
-                        max_backoff_seconds=snmp_check_max_backoff_seconds,
+                        base_interval_seconds=collector_check_seconds,
+                        max_backoff_seconds=collector_check_max_backoff_seconds,
                     )
-                    last_snmp_check_at = now_mono
+                    last_collector_check_at = now_mono
                 if history_prune_seconds and (now_mono - last_history_prune_at >= history_prune_seconds):
                     self._run_history_prune()
                     last_history_prune_at = now_mono
@@ -180,21 +183,6 @@ class Command(BaseCommand):
         logger.debug("scheduler: tick.")
 
         output = StringIO()
-        poll_started = time.monotonic()
-        try:
-            call_kwargs = {'stdout': output}
-            if self.max_poll_olts_per_tick:
-                call_kwargs['max_olts'] = self.max_poll_olts_per_tick
-            call_command('poll_onu_status', **call_kwargs)
-        except Exception:
-            logger.exception("scheduler: poll_onu_status failed.")
-        poll_elapsed = time.monotonic() - poll_started
-        poll_output = output.getvalue().strip()
-        if poll_output:
-            logger.info("scheduler: poll_onu_status (%.2fs): %s", poll_elapsed, poll_output)
-            self.stdout.write(f"scheduler: poll_onu_status ({poll_elapsed:.2f}s): {poll_output}")
-
-        output = StringIO()
         discovery_started = time.monotonic()
         try:
             call_kwargs = {'stdout': output}
@@ -208,6 +196,21 @@ class Command(BaseCommand):
         if discover_output:
             logger.info("scheduler: discover_onus (%.2fs): %s", discovery_elapsed, discover_output)
             self.stdout.write(f"scheduler: discover_onus ({discovery_elapsed:.2f}s): {discover_output}")
+
+        output = StringIO()
+        poll_started = time.monotonic()
+        try:
+            call_kwargs = {'stdout': output}
+            if self.max_poll_olts_per_tick:
+                call_kwargs['max_olts'] = self.max_poll_olts_per_tick
+            call_command('poll_onu_status', **call_kwargs)
+        except Exception:
+            logger.exception("scheduler: poll_onu_status failed.")
+        poll_elapsed = time.monotonic() - poll_started
+        poll_output = output.getvalue().strip()
+        if poll_output:
+            logger.info("scheduler: poll_onu_status (%.2fs): %s", poll_elapsed, poll_output)
+            self.stdout.write(f"scheduler: poll_onu_status ({poll_elapsed:.2f}s): {poll_output}")
 
         now = timezone.now()
         try:
@@ -265,7 +268,7 @@ class Command(BaseCommand):
                 .select_related('vendor_profile')
             )
         except Exception:
-            logger.exception("scheduler: failed to query OLTs for SNMP checks.")
+            logger.exception("scheduler: failed to query OLTs for collector checks.")
             return
 
         now = timezone.now()
@@ -280,7 +283,7 @@ class Command(BaseCommand):
             )
         ]
         if not due_olts:
-            logger.debug("scheduler: SNMP checks skipped; no OLT is due.")
+            logger.debug("scheduler: collector checks skipped; no OLT is due.")
             return
 
         total_started = time.monotonic()
@@ -289,21 +292,27 @@ class Command(BaseCommand):
         for olt in due_olts:
             started = time.monotonic()
             try:
-                result = snmp_service.get(olt, [SYS_DESCR_OID])
-                if result and SYS_DESCR_OID in result:
+                was_unreachable = bool(olt.snmp_reachable is False)
+                reachable, detail = zabbix_service.check_olt_reachability(
+                    olt,
+                    freshness_seconds=max(int(olt.polling_interval_seconds or 0) + 90, 390),
+                )
+                if reachable:
                     mark_olt_reachable(olt)
+                    if was_unreachable:
+                        OLT.objects.filter(id=olt.id).update(next_poll_at=timezone.now())
                     reachable_count += 1
                 else:
-                    mark_olt_unreachable(olt, error='No sysDescr response')
+                    mark_olt_unreachable(olt, error=detail or "Zabbix reported OLT unreachable")
                     unreachable_count += 1
             except Exception as exc:
                 mark_olt_unreachable(olt, error=str(exc)[:500])
                 unreachable_count += 1
-                logger.warning("scheduler: SNMP check failed for OLT %s: %s", olt.id, exc)
-            logger.debug("scheduler: SNMP check for OLT %s completed in %.2fs.", olt.id, time.monotonic() - started)
+                logger.warning("scheduler: collector check failed for OLT %s: %s", olt.id, exc)
+            logger.debug("scheduler: collector check for OLT %s completed in %.2fs.", olt.id, time.monotonic() - started)
 
         logger.info(
-            "scheduler: SNMP check summary checked=%s skipped_not_due=%s reachable=%s unreachable=%s elapsed=%.2fs.",
+            "scheduler: collector check summary checked=%s skipped_not_due=%s reachable=%s unreachable=%s elapsed=%.2fs.",
             len(due_olts),
             len(olts) - len(due_olts),
             reachable_count,
@@ -311,7 +320,7 @@ class Command(BaseCommand):
             time.monotonic() - total_started,
         )
         self.stdout.write(
-            "scheduler: SNMP check summary "
+            "scheduler: collector check summary "
             f"checked={len(due_olts)} skipped_not_due={len(olts) - len(due_olts)} "
             f"reachable={reachable_count} unreachable={unreachable_count} "
             f"elapsed={time.monotonic() - total_started:.2f}s."

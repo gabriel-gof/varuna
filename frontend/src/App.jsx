@@ -29,6 +29,7 @@ import { InlineEditableText } from './components/InlineEditableText'
 import { classifyOnu, getOnuStats } from './utils/stats'
 import { deriveOltHealthState } from './utils/oltHealth'
 import { getPowerColor, powerColorClass } from './utils/powerThresholds'
+import { getApiErrorMessage } from './utils/apiErrorMessages'
 
 const normalizeList = (data) => {
   if (Array.isArray(data)) return data
@@ -41,61 +42,6 @@ const parseTimestampMs = (value) => {
   const ms = Date.parse(value)
   return Number.isFinite(ms) ? ms : null
 }
-const BACKEND_MESSAGE_MAP = {
-  'Power refresh scheduled in background.': 'Power refresh scheduled in background.',
-  'Discovery scheduled in background.': 'Discovery scheduled in background.',
-  'Polling scheduled in background.': 'Polling scheduled in background.',
-  'Another maintenance task is already running for this OLT.': 'Another maintenance task is already running for this OLT.',
-  'Vendor profile is inactive.': 'Vendor profile is inactive.',
-  'Vendor profile does not support this action.': 'Vendor profile does not support this action.',
-  'Vendor profile is missing required OID templates.': 'Vendor profile is missing required OID templates.',
-  'Name cannot be empty.': 'Name cannot be empty.',
-  'An active OLT with this name already exists.': 'An active OLT with this name already exists.',
-  'Only SNMP protocol is supported.': 'Only SNMP protocol is supported.',
-  'SNMP community cannot be empty.': 'SNMP community cannot be empty.',
-  'SNMP port must be an integer.': 'SNMP port must be an integer.',
-  'SNMP port must be between 1 and 65535.': 'SNMP port must be between 1 and 65535.',
-  'Only SNMP v2c is currently supported.': 'Only SNMP v2c is currently supported.',
-  'Discovery interval must be greater than 0 minutes.': 'Discovery interval must be greater than 0 minutes.',
-  'Polling interval must be greater than 0 seconds.': 'Polling interval must be greater than 0 seconds.',
-  'Power interval must be greater than 0 seconds.': 'Power interval must be greater than 0 seconds.',
-  'Insufficient permissions for this action.': 'Insufficient permissions for this action.',
-}
-
-const BACKEND_PREFIX_PATTERNS = [
-  { prefix: 'Discovery interval must be <=', key: 'Discovery interval exceeds maximum' },
-  { prefix: 'Polling interval must be <=', key: 'Polling interval exceeds maximum' },
-  { prefix: 'Power interval must be <=', key: 'Power interval exceeds maximum' },
-  { prefix: 'Vendor profile does not support', key: 'Vendor profile does not support this action.' },
-]
-
-const translateBackendMessage = (message, t) => {
-  if (!message || !t) return message
-  const key = BACKEND_MESSAGE_MAP[message]
-  if (key) return t(key)
-  for (const { prefix, key: patternKey } of BACKEND_PREFIX_PATTERNS) {
-    if (message.startsWith(prefix)) return t(patternKey)
-  }
-  return message
-}
-
-const getApiErrorMessage = (error, fallback, t) => {
-  const data = error?.response?.data
-  if (typeof data === 'string' && data.trim()) return translateBackendMessage(data.trim(), t)
-  if (data?.detail) return translateBackendMessage(String(data.detail), t)
-  if (data && typeof data === 'object') {
-    const parts = Object.entries(data)
-      .map(([key, value]) => {
-        if (Array.isArray(value)) return `${key}: ${value.map(v => translateBackendMessage(String(v), t)).join(', ')}`
-        if (value && typeof value === 'object') return `${key}: ${JSON.stringify(value)}`
-        return `${key}: ${translateBackendMessage(String(value), t)}`
-      })
-      .filter(Boolean)
-    if (parts.length) return parts.join(' | ')
-  }
-  return error?.message || fallback
-}
-
 const clampPonPanelWidth = (value) => {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 42
@@ -118,8 +64,6 @@ const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return '—'
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return '—'
-  if (Object.is(numeric, -0) || (numeric > -0.005 && numeric < 0.005)) return '—'
-  if (numeric <= -39.995) return '—'
   return `${numeric.toFixed(2)} dBm`
 }
 
@@ -411,11 +355,11 @@ const patchPonStatusRows = (olts, target, rows) => {
 }
 
 const formatDisconnectionWindow = (startValue, endValue, language) => {
-  if (!startValue || !endValue) return '—'
+  const anchorValue = endValue || startValue
+  if (!anchorValue) return '—'
 
-  const start = new Date(startValue)
-  const end = new Date(endValue)
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '—'
+  const anchor = new Date(anchorValue)
+  if (Number.isNaN(anchor.getTime())) return '—'
 
   const locale = language === 'pt' ? 'pt-BR' : 'en-US'
   const timestampFormatter = new Intl.DateTimeFormat(locale, {
@@ -426,8 +370,7 @@ const formatDisconnectionWindow = (startValue, endValue, language) => {
     minute: '2-digit'
   })
 
-  // Compact table display: show the window upper bound using the same style as power timestamps.
-  return timestampFormatter.format(end)
+  return timestampFormatter.format(anchor)
 }
 
 const formatReadingAt = (value, language) => {
@@ -1492,12 +1435,7 @@ const App = () => {
 
   const selectedPonStats = useMemo(() => getOnuStats(selectedOnus), [selectedOnus])
 
-  const hasOnuNames = useMemo(() => {
-    return selectedOnus.some((onu) => {
-      const name = onu.client_name || onu.name
-      return name && name.trim() !== ''
-    })
-  }, [selectedOnus])
+  const hasOnuNames = true
 
   const powerRows = useMemo(() => {
     const baseRows = selectedOnus.map((onu) => {
@@ -1799,7 +1737,7 @@ const App = () => {
       >
         <section
           className={`
-            min-w-0 overflow-y-auto custom-scrollbar ${isResizingPonPanel ? '' : 'transition-[width] duration-150'}
+            min-w-0 ${activeNav === 'alarm-history' ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'} ${isResizingPonPanel ? '' : 'transition-[width] duration-150'}
             ${isPonPanelOpen
               ? 'hidden lg:block lg:w-[calc(100%-var(--pon-panel-width))] border-r border-slate-100 dark:border-slate-700/50'
               : 'flex-1'}
@@ -2023,7 +1961,7 @@ const App = () => {
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger asChild>
                           <button
-                            className="flex items-center gap-0.5 h-7 w-[130px] lg:w-[136px] rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-[0.97] pl-1.5 pr-1"
+                            className="flex items-center gap-0.5 h-7 w-[120px] rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 hover:text-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-[0.97] pl-1.5 pr-1"
                             aria-label={t('Sort by')}
                             title={t('Sort by')}
                           >
@@ -2154,7 +2092,8 @@ const App = () => {
                                     : statusKey === 'unknown'
                                       ? t('Unknown')
                                       : t('Offline')
-                              const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                              const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                              const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                               const { serialValue, hasSerial } = getDisplaySerial(onu)
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                               const disconnectWindow = statusKey === 'online'
@@ -2168,7 +2107,7 @@ const App = () => {
                               const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
                                 (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
                                 (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                                (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                                (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
                               ))
                               return (
                                 <tr
@@ -2273,7 +2212,8 @@ const App = () => {
                                 : statusKey === 'unknown'
                                   ? t('Unknown')
                                   : t('Offline')
-                          const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                          const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                          const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                           const { serialValue, hasSerial } = getDisplaySerial(onu)
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                           const disconnectWindow = statusKey === 'online'
@@ -2287,7 +2227,7 @@ const App = () => {
                           const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
                             (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
                             (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                            (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                            (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
                           ))
                           return (
                             <div
@@ -2298,7 +2238,7 @@ const App = () => {
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-1">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
-                                {(onu.client_name || onu.name || '').trim() ? (
+                                {rawClientName ? (
                                   <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate">{clientLabel}</span>
                                 ) : (
                                   <span className="text-[11px] text-slate-300 dark:text-slate-600">{MISSING_VALUE_PLACEHOLDER}</span>
@@ -2407,7 +2347,8 @@ const App = () => {
                           </colgroup>
                           <tbody className="divide-y divide-slate-100/80 dark:divide-slate-800">
                             {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
-                              const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                              const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                              const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                               const { serialValue, hasSerial } = getDisplaySerial(onu)
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                               const hasOnuRx = onuRx !== null
@@ -2423,7 +2364,7 @@ const App = () => {
                               const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
                                 (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
                                 (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                                (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                                (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
                               ))
                               return (
                                 <tr
@@ -2509,7 +2450,8 @@ const App = () => {
                     <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
                         {powerRows.map(({ onu, statusKey, onuRx, oltRx, readAt }) => {
-                          const clientLabel = onu.client_name || onu.login || onu.client_login || onu.name || `ONU ${onu.onu_number ?? onu.onu_id ?? ''}`.trim()
+                          const rawClientName = String(onu.client_name || onu.login || onu.client_login || onu.name || '').trim()
+                          const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                           const { serialValue, hasSerial } = getDisplaySerial(onu)
                           const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                           const hasOnuRx = onuRx !== null
@@ -2524,7 +2466,7 @@ const App = () => {
                           const isHighlightedFromSearch = Boolean(searchTargetMatchesPon && (
                             (selectedSearchMatch.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(selectedSearchMatch.serial)) ||
                             (selectedSearchMatch.onuId && Number(onuNumber) === Number(selectedSearchMatch.onuId)) ||
-                            (selectedSearchMatch.clientName && normalizeMatchValue(clientLabel) === normalizeMatchValue(selectedSearchMatch.clientName))
+                            (selectedSearchMatch.clientName && normalizeMatchValue(rawClientName) === normalizeMatchValue(selectedSearchMatch.clientName))
                           ))
                           return (
                             <div
@@ -2535,7 +2477,7 @@ const App = () => {
                             >
                               <div className="min-w-0 flex-1 flex flex-col gap-1">
                                 <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{onuNumber}</span>
-                                {(onu.client_name || onu.name || '').trim() ? (
+                                {rawClientName ? (
                                   <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate">{clientLabel}</span>
                                 ) : (
                                   <span className="text-[11px] text-slate-300 dark:text-slate-600">{MISSING_VALUE_PLACEHOLDER}</span>
