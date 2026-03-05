@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone as dt_timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.error import URLError
@@ -992,7 +993,17 @@ class ZabbixService:
             rows = self._call(
                 "item.get",
                 {
-                    "output": ["itemid", "key_", "lastvalue", "prevvalue", "lastclock", "state", "value_type"],
+                    "output": [
+                        "itemid",
+                        "key_",
+                        "lastvalue",
+                        "prevvalue",
+                        "lastclock",
+                        "state",
+                        "status",
+                        "error",
+                        "value_type",
+                    ],
                     "hostids": [hostid],
                     "filter": {"key_": chunk},
                     "sortfield": "itemid",
@@ -1369,29 +1380,10 @@ class ZabbixService:
             "olt_rx_samples": olt_rx_samples,
         }
 
-    def check_olt_reachability(self, olt, *, freshness_seconds: int = 900) -> Tuple[bool, str]:
+    def check_olt_reachability(self, olt) -> Tuple[bool, str]:
         hostid = self.get_hostid(olt)
         if not hostid:
             return False, "Zabbix host not found."
-
-        interface_healthy = False
-        interfaces = self._call(
-            "hostinterface.get",
-            {
-                "output": ["interfaceid", "type", "available", "error", "ip"],
-                "hostids": [hostid],
-            },
-        )
-        for interface in interfaces:
-            if str(interface.get("type")) != "2":
-                continue
-            available = str(interface.get("available", "0"))
-            if available == "1":
-                interface_healthy = True
-                continue
-            if available == "2":
-                detail = str(interface.get("error") or "SNMP interface unavailable")
-                return False, detail[:2000]
 
         zabbix_cfg = (
             (getattr(olt.vendor_profile, "oid_templates", {}) or {}).get("zabbix", {})
@@ -1401,48 +1393,61 @@ class ZabbixService:
         availability_key = str(
             zabbix_cfg.get("availability_item_key") or DEFAULT_AVAILABILITY_ITEM_KEY
         ).strip()
-        status_key = str(zabbix_cfg.get("status_collection_key") or "").strip()
-        status_pattern = str(zabbix_cfg.get("status_item_key_pattern") or "").strip()
-        status_prefix = self._status_item_prefix(status_pattern)
         availability_freshness_seconds = max(
             int(getattr(settings, "ZABBIX_AVAILABILITY_STALE_SECONDS", 45) or 45),
             5,
         )
+        if not availability_key:
+            return False, "SNMP availability item key is not configured."
 
-        availability_item = None
-        if availability_key:
-            availability_item = self.get_single_item(hostid, availability_key)
-        if availability_item:
-            availability_lastclock = _to_int_or_none((availability_item or {}).get("lastclock"))
-            if availability_lastclock:
-                availability_age_seconds = int(datetime.now(tz=dt_timezone.utc).timestamp()) - availability_lastclock
-                if availability_age_seconds > availability_freshness_seconds:
-                    return (
-                        False,
-                        f"Last SNMP availability sample is stale ({availability_age_seconds}s old).",
-                    )
-                return True, ""
+        def _classify_availability(item_row: Optional[Dict]) -> Tuple[bool, str]:
+            item = item_row or {}
+            if not item:
+                return False, f'SNMP availability item "{availability_key}" was not found.'
 
-        item = None
-        if status_key:
-            item = self.get_single_item(hostid, status_key)
-        elif status_prefix:
-            item = self.get_latest_item_by_key_prefix(hostid, status_prefix)
+            item_status = str(item.get("status", "0")).strip()
+            if item_status == "1":
+                return False, "SNMP availability item is disabled."
 
-        if item is None:
-            if interface_healthy:
-                # Keep compatibility for initial provisioning flows where items may
-                # not exist yet, but still avoid a hard failure.
-                return True, ""
-            return False, "No SNMP interface status available in Zabbix."
+            item_state = str(item.get("state", "0")).strip()
+            item_error = str(item.get("error") or "").strip()
+            if item_state == "1":
+                return False, (item_error or "SNMP availability item is not supported.")[:2000]
 
-        lastclock = _to_int_or_none((item or {}).get("lastclock"))
-        if not lastclock:
-            return False, "No recent status collection in Zabbix."
-        age_seconds = int(datetime.now(tz=dt_timezone.utc).timestamp()) - lastclock
-        if age_seconds > freshness_seconds:
-            return False, f"Last Zabbix status sample is stale ({age_seconds}s old)."
-        return True, ""
+            lastclock = _to_int_or_none(item.get("lastclock"))
+            if not lastclock:
+                return False, "SNMP availability item has no samples yet."
+
+            age_seconds = int(datetime.now(tz=dt_timezone.utc).timestamp()) - lastclock
+            if age_seconds > availability_freshness_seconds:
+                return False, f"Last SNMP availability sample is stale ({age_seconds}s old)."
+
+            return True, ""
+
+        availability_item = self.get_single_item(hostid, availability_key)
+        reachable, detail = _classify_availability(availability_item)
+        if reachable:
+            return True, ""
+
+        availability_itemid = str((availability_item or {}).get("itemid") or "").strip()
+        if availability_itemid and "stale" in detail.lower():
+            try:
+                executed = self.execute_items_now([availability_itemid])
+                if executed:
+                    time.sleep(0.8)
+                    refreshed_item = self.get_single_item(hostid, availability_key)
+                    refreshed_reachable, refreshed_detail = _classify_availability(refreshed_item)
+                    if refreshed_reachable:
+                        return True, ""
+                    detail = refreshed_detail or detail
+            except Exception:
+                logger.exception(
+                    "Failed to force-refresh SNMP availability item for hostid=%s itemid=%s",
+                    hostid,
+                    availability_itemid,
+                )
+
+        return False, detail
 
     @staticmethod
     def _extract_index_from_item_key(key: str, key_prefix: str) -> str:

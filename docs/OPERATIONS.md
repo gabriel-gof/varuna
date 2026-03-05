@@ -75,6 +75,10 @@ Current dev compose includes Zabbix `7.0 LTS` services:
 - `zabbix-web`
 - `zabbix-agent` (agent2 sidecar used for local self-monitoring checks)
 - default server timeout is tuned to `ZBX_TIMEOUT=10` for slow OLT SNMP walks.
+- SNMP unreachable convergence is tuned for faster gray/recovery transitions:
+  - `ZBX_UNREACHABLEDELAY=5`
+  - `ZBX_UNAVAILABLEDELAY=15`
+  - `ZBX_UNREACHABLEPERIOD=30`
 - dev cache sizing is tuned with `ZBX_CACHESIZE=1G` to reduce configuration-cache pressure with large ONU inventories.
 - dev server concurrency/caches are tuned for larger ONU fleets:
   - `ZBX_STARTPOLLERS=120`
@@ -177,6 +181,22 @@ Core rules:
 - one dedicated Varuna logical database per client inside shared `pg-varuna`,
 - one dedicated Redis per client stack (recommended practical isolation).
 
+Shared vs per-instance responsibility:
+- Shared once per host:
+  - `pg-varuna` (single PostgreSQL service, multiple Varuna logical DBs),
+  - `pg-zabbix`,
+  - `zabbix-server`,
+  - `zabbix-web` (optional external exposure for operators).
+- Per Varuna instance (one stack per client):
+  - `frontend`,
+  - `backend`,
+  - `redis`.
+
+Per-instance mandatory identity in shared Zabbix:
+- `ZABBIX_HOST_GROUP_NAME` must be unique per client namespace (for example `Varuna/GabSAT`, `Varuna/VNET`).
+- `ZABBIX_HOST_NAME_PREFIX` must be unique per client (for example `GabSAT-`, `VNET-`) to avoid host name collisions.
+- Keep a dedicated API user for Varuna (for example `varuna_api`) and a separate personal/admin user for manual Zabbix UI access.
+
 Recommended practical deployment on one VM:
 - shared infra stack (run once):
   - `pg-varuna` (single PostgreSQL container for all Varuna logical DBs),
@@ -200,7 +220,7 @@ Shared-mode compose files:
 - `docker-compose.infra.shared.yml`: starts shared `pg-varuna`, `pg-zabbix`, `zabbix-server`, `zabbix-web`.
 - `docker-compose.prod.shared-pg.yml`: per-client app stack using shared `pg-varuna` over external network `varuna-data`.
 - Shared infra tuning knobs live in `docker/infra.shared.env`:
-  - Zabbix server worker/cache knobs (`ZBX_START*`, `ZBX_*CACHESIZE`, `ZBX_TIMEOUT`, housekeeping knobs),
+  - Zabbix server worker/cache knobs (`ZBX_START*`, `ZBX_*CACHESIZE`, `ZBX_TIMEOUT`, `ZBX_UNREACHABLEDELAY`, `ZBX_UNAVAILABLEDELAY`, `ZBX_UNREACHABLEPERIOD`, housekeeping knobs),
   - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied directly by `pg-zabbix` container command.
 
 Production backend mode:
@@ -494,8 +514,9 @@ The polling command enforces a `max_runtime_seconds` budget (default 180s) to pr
 Collector check behavior:
 - Reachable and unreachable OLTs are checked on the base `--collector-check-seconds` cadence (no runtime backoff delay).
 - `--collector-check-max-backoff-seconds` is still accepted for compatibility, but current runtime cadence does not apply exponential backoff.
-- Sentinel-first check is enabled: when `varunaSnmpAvailability` exists, Varuna uses its freshness (`ZABBIX_AVAILABILITY_STALE_SECONDS`) before falling back to status-item freshness.
-- Freshness validation uses status-item clocks with threshold `max(polling_interval_seconds + 90s, 390s)`.
+- Reachability is sentinel-only: Varuna uses `varunaSnmpAvailability` (or vendor `zabbix.availability_item_key`) as the single source of truth.
+- Sentinel must be present, enabled, supported, and fresh (`ZABBIX_AVAILABILITY_STALE_SECONDS`).
+- On stale sentinel clock, Varuna may force one immediate item execution (`task.create`) and re-check once before declaring unreachable.
 - Manual/scoped refresh with `--refresh-upstream` first waits for post-refresh clocks, but can accept pre-refresh clocks that are still inside freshness policy; `503` is reserved for collector unreachability or fully stale/empty status reads.
 - Scheduler logs include collector summary lines (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed) for tuning verification.
 

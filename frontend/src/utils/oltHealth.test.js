@@ -53,12 +53,46 @@ test('deriveOltHealthState marks OLT gray when status polling is stale', () => {
   assert.equal(state.reason, 'status_stale')
 })
 
+test('deriveOltHealthState keeps OLT gray when status polling is stale even with fresh SNMP check', () => {
+  const state = deriveOltHealthState(
+    {
+      snmp_reachable: true,
+      snmp_failure_count: 0,
+      last_poll_at: isoAgoSeconds(1800),
+      last_snmp_check_at: isoAgoSeconds(20),
+      polling_interval_seconds: 300,
+      online_count: 1,
+      offline_count: 0,
+    },
+    NOW_MS,
+  )
+  assert.equal(state.state, 'gray')
+  assert.equal(state.reason, 'status_stale')
+})
+
 test('deriveOltHealthState uses discovery timestamp when polling timestamp is absent', () => {
   const state = deriveOltHealthState(
     {
       snmp_reachable: true,
       snmp_failure_count: 0,
       last_discovery_at: isoAgoSeconds(1200),
+      polling_interval_seconds: 300,
+      online_count: 1,
+      offline_count: 0,
+    },
+    NOW_MS,
+  )
+  assert.equal(state.state, 'gray')
+  assert.equal(state.reason, 'status_stale')
+})
+
+test('deriveOltHealthState keeps OLT gray when polling timestamp is absent even with fresh SNMP check', () => {
+  const state = deriveOltHealthState(
+    {
+      snmp_reachable: true,
+      snmp_failure_count: 0,
+      last_discovery_at: isoAgoSeconds(1200),
+      last_snmp_check_at: isoAgoSeconds(25),
       polling_interval_seconds: 300,
       online_count: 1,
       offline_count: 0,

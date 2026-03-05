@@ -22,6 +22,10 @@
   - `zabbix-web`
   - `zabbix-agent` (agent2 sidecar for local self-monitoring checks)
   - slow-OLT tolerance is configured via `ZBX_TIMEOUT` (current default: `10`).
+  - unreachable/recovery convergence is tuned via:
+    - `ZBX_UNREACHABLEDELAY` (default `5`)
+    - `ZBX_UNAVAILABLEDELAY` (default `15`)
+    - `ZBX_UNREACHABLEPERIOD` (default `30`)
   - high-volume defaults are pre-tuned in compose/env:
     - Zabbix server worker/cache knobs (`ZBX_STARTPOLLERS`, `ZBX_STARTSNMPPOLLERS`, `ZBX_STARTPREPROCESSORS`, `ZBX_*CACHESIZE`);
     - configuration cache uses Zabbix server native env `ZBX_CACHESIZE` (not `ZBX_CACHE_SIZE`);
@@ -147,6 +151,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - Reachability checks are due-aware per OLT and run at fixed cadence (no runtime exponential backoff delay).
 - Reachability source is collector-mode aware:
   - `zabbix`: host/interface availability plus sentinel/status freshness.
+  - interface backoff signals (`errors_from`, `disable_until`) are treated as early unreachable signals before `available=2` convergence.
   - if template key `varunaSnmpAvailability` exists (`zabbix.availability_item_key`), its freshness is validated first for fast gray/green transitions.
 - Polling, discovery, and power collection skip OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
 - Frontend derives OLT health from backend fields (`snmp_reachable`, `snmp_failure_count >= 2`) and renders unreachable OLT nodes as gray.

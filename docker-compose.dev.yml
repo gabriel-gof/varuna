@@ -78,6 +78,9 @@ services:
       - ZBX_HOUSEKEEPINGFREQUENCY=1
       - ZBX_MAXHOUSEKEEPERDELETE=50000
       - ZBX_TIMEOUT=10
+      - ZBX_UNREACHABLEDELAY=5
+      - ZBX_UNAVAILABLEDELAY=15
+      - ZBX_UNREACHABLEPERIOD=30
     ports:
       - "10051:10051"
     restart: unless-stopped

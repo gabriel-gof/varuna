@@ -229,6 +229,8 @@ const mergeBaseOltsPreservingTopology = (previousOlts, nextBaseOlts) => {
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
 const TOPOLOGY_REFRESH_MIN_INTERVAL_MS = 30_000
+const TOPOLOGY_REFRESH_DEFAULT_INTERVAL_MS = 30_000
+const TOPOLOGY_REFRESH_RECOVERY_INTERVAL_MS = 5_000
 const SEARCH_HIGHLIGHT_STYLE = {
   boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.6)',
   background: 'rgba(16, 185, 129, 0.06)',
@@ -727,6 +729,11 @@ const App = () => {
     }
   }, [])
 
+  const hasGrayOlt = useMemo(() => {
+    const now = Date.now()
+    return olts.some((olt) => deriveOltHealthState(olt, now).state === 'gray')
+  }, [olts, healthTick])
+
   useEffect(() => {
     if (!authToken) return
     const isTopologyNav = activeNav === 'topology'
@@ -750,14 +757,19 @@ const App = () => {
     } else {
       setVendorProfiles([])
     }
+
+    const refreshIntervalMs = hasGrayOlt
+      ? TOPOLOGY_REFRESH_RECOVERY_INTERVAL_MS
+      : TOPOLOGY_REFRESH_DEFAULT_INTERVAL_MS
+
     const interval = setInterval(() => {
       void fetchOlts({ includeTopology: activeNav === 'topology' })
-    }, 30000)
+    }, refreshIntervalMs)
     return () => {
       clearInterval(interval)
       if (topologyDeferredTimer) clearTimeout(topologyDeferredTimer)
     }
-  }, [activeNav, authToken, canManageSettings, fetchOlts, fetchVendorProfiles])
+  }, [activeNav, authToken, canManageSettings, fetchOlts, fetchVendorProfiles, hasGrayOlt])
 
   useEffect(() => {
     if (topologySnapshotLoadedRef.current) return
@@ -806,9 +818,12 @@ const App = () => {
   }, [selectedOltIds])
 
   useEffect(() => {
-    const timer = setInterval(() => setHealthTick(Date.now()), 30_000)
+    const healthIntervalMs = hasGrayOlt
+      ? TOPOLOGY_REFRESH_RECOVERY_INTERVAL_MS
+      : TOPOLOGY_REFRESH_DEFAULT_INTERVAL_MS
+    const timer = setInterval(() => setHealthTick(Date.now()), healthIntervalMs)
     return () => clearInterval(timer)
-  }, [])
+  }, [hasGrayOlt])
 
   useEffect(() => {
     if (!authToken) return
@@ -1530,7 +1545,7 @@ const App = () => {
           >
             <Network className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Topology')}</span>
-            {activeNav === 'topology' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+            {activeNav === 'topology' && <div className="absolute bottom-0 left-2 right-1.5 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
           <button
             onClick={() => setActiveNav('power-report')}
@@ -1538,7 +1553,7 @@ const App = () => {
           >
             <Zap className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Power Report')}</span>
-            {activeNav === 'power-report' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+            {activeNav === 'power-report' && <div className="absolute bottom-0 left-2 right-1.5 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
           <button
             onClick={() => setActiveNav('alarm-history')}
@@ -1546,7 +1561,7 @@ const App = () => {
           >
             <History className="w-[18px] h-[18px] shrink-0" />
             <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Alarm History')}</span>
-            {activeNav === 'alarm-history' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+            {activeNav === 'alarm-history' && <div className="absolute bottom-0 left-2 right-1.5 h-0.5 bg-emerald-600 rounded-t-full" />}
           </button>
         </div>
 
@@ -1558,7 +1573,7 @@ const App = () => {
             >
               <SettingsIcon className="w-[18px] h-[18px] shrink-0" />
               <span className="text-[12px] font-black uppercase tracking-wider whitespace-nowrap hidden sm:block">{t('Settings')}</span>
-              {activeNav === 'settings' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-600 rounded-t-full" />}
+              {activeNav === 'settings' && <div className="absolute bottom-0 left-2 right-1.5 h-0.5 bg-emerald-600 rounded-t-full" />}
             </button>
           )}
           <DropdownMenu.Root>

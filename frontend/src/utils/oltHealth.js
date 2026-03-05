@@ -67,13 +67,7 @@ const isStatusStale = (olt, nowMs = Date.now()) => {
     (pollingIntervalMs * 3) + staleMarginMs,
     staleMarginMs + 300_000
   )
-
-  if (!lastPollMs) {
-    const lastDiscoveryMs = parseTimestampMs(olt?.last_discovery_at)
-    if (!lastDiscoveryMs) return false
-    return nowMs - lastDiscoveryMs > staleWindowMs
-  }
-
+  if (!lastPollMs) return true
   return nowMs - lastPollMs > staleWindowMs
 }
 

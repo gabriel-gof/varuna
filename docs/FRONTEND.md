@@ -70,6 +70,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - When a PON sidebar is open for an OLT in gray state (stale/unreachable), status badges, status dots, power color values, and status-colored placeholder hyphens are all forced to gray to signal that displayed data may be outdated.
 - `loading` is only `true` during the initial fetch when no OLT data exists. Background refreshes silently update `olts` state without toggling `loading`, keeping the topology tree mounted. If a background refresh fails, existing data is preserved.
 - `fetchOlts` uses request deduplication per request shape (`topology` vs `base`) to avoid redundant loads when multiple triggers fire simultaneously (30s poll timer + settings action + resume-on-focus).
+- Auto-refresh is adaptive for recovery:
+  - normal cadence: 30s;
+  - when any OLT is in gray state (unreachable/stale), cadence temporarily increases to 5s for faster visual recovery after connectivity returns.
 - Settings mutations (`updateOlt`, `deleteOlt`) trigger `fetchOlts` without `await`, so the success toast shows immediately and the topology refreshes silently in the background (same pattern as `createOlt`).
 - Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
@@ -98,8 +101,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - OLT health color is shared between topology and settings views.
 - During bootstrap with lightweight OLT payloads (`/api/olts/` without topology tree), frontend avoids warning colors (`yellow`/`red`) from aggregate counts only; it keeps reachable OLTs green until full topology data arrives. This prevents transient false alarm flashes on hard refresh.
 - Stale status data is considered unreliable and forced to gray:
+  - if `last_poll_at` is missing, OLT remains gray (`status_stale`) even when SNMP sentinel is reachable.
   - if `now - last_poll_at > max(polling_interval_seconds * 3 + 90s, 390s)`.
-  - this keeps gray-state timing aligned with backend stale-status protection (`poll_onu_status`).
+  - OLT returns to active color only after fresh ONU status polling updates `last_poll_at`.
 - OLT color semantics follow slot health:
   - `red` when all active slots are `red`,
   - `yellow` when at least one active slot is `red` but not all slots are `red`,
@@ -233,7 +237,7 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ## Toolbar Layout
 - The topology area has two visual rows: a single toolbar row and the container surface below it.
-- The toolbar row contains filter button and action buttons (collapse, counters, alarm) all on one line. Action buttons are pushed to the right via `ml-auto`. Client search has moved to the universal search bar in the navbar. All toolbar icon buttons use a neutral pill container (`bg-white dark:bg-slate-800`, `border-slate-200/80 dark:border-slate-700`, `rounded-lg shadow-sm`) matching the PON sidebar button style. The background never changes. State is communicated through icon color (`text-slate-400` default, `text-slate-600` hover, semantic color when active) and a subtle tinted fill — active buttons get `bg-emerald-50 dark:bg-emerald-500/10` (filter/counters) or `bg-rose-50 dark:bg-rose-500/10` (alarm) while the border stays neutral (`border-slate-200/80`). Filter button also activates (green icon + tinted fill) when its dropdown is open.
+- The toolbar row contains filter button, inline client search input, and action buttons (collapse, counters, alarm) on one line. Action buttons are pushed to the right via `ml-auto`. Search suggestions/dropdown open below the input. All toolbar icon buttons use a neutral pill container (`bg-white dark:bg-slate-800`, `border-slate-200/80 dark:border-slate-700`, `rounded-lg shadow-sm`) matching the PON sidebar button style. The background never changes. State is communicated through icon color (`text-slate-400` default, `text-slate-600` hover, semantic color when active) and a subtle tinted fill — active buttons get `bg-emerald-50 dark:bg-emerald-500/10` (filter/counters) or `bg-rose-50 dark:bg-rose-500/10` (alarm) while the border stays neutral (`border-slate-200/80`). Filter button also activates (green icon + tinted fill) when its dropdown is open.
 - The toolbar is inside a sticky wrapper (`sticky top-0 z-20`). The toolbar itself uses `bg-slate-100 dark:bg-slate-950` matching the topology container surface, so white buttons pop against the tinted background (same relationship as the PON sidebar). Below the toolbar, a 32px gradient fade (`h-8 -mb-8`) goes from the surface color to transparent, creating an Apple-style scroll fade where content dissolves as it scrolls under the toolbar. Uses `from-slate-100` (light) / `from-slate-950` (dark) with `pointer-events-none`.
 - Filter dropdown opens downward (`top-11`) on all breakpoints.
 - Toolbar vertical padding is `pt-4 pb-4`, centering the controls between the nav header and the container surface. Horizontal padding is `px-3` on mobile, `lg:px-8` on desktop — matching the container margins for coherent alignment.
@@ -328,7 +332,8 @@ The UI remains topology-first. No dashboard page is required for current product
   - gray on repeated SNMP failures (`snmp_failure_count >= 2`);
   - transient failures are not immediately gray;
   - stale polling data becomes gray by interval window;
-  - `last_discovery_at` fallback drives stale detection when `last_poll_at` is absent.
+  - fresh SNMP sentinel alone does not clear stale gray when `last_poll_at` is stale/missing;
+  - OLT leaves gray only after fresh ONU status polling (`last_poll_at` inside window).
 
 ## Power Report Tab
 - Accessible via "Power Report" nav tab (`activeNav === 'power-report'`); available to all roles.
@@ -353,12 +358,12 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Alarm History Tab
 - Accessible via "History" nav tab (`activeNav === 'alarm-history'`); available to all roles. Label: "History" (en) / "Histórico" (pt).
 - Component: `frontend/src/components/AlarmHistory.jsx`.
-- Client selection comes from the universal search bar in the navbar (`selectedClient` prop). When a client is selected, AlarmHistory resolves the serial to an alarm-client `id` via `GET /api/onu/alarm-clients/` to load history data. If no matching alarm-client is found, displays "No history available for this client" message.
+- Client selection is done inside the Alarm History toolbar search input. Suggestions are loaded from `GET /api/onu/alarm-clients/` (debounced). Selecting a client loads that client's alarm/power history.
 - Empty state shown when no client is selected; vertically centered with `pb-[28vh]` optical lift so the prompt sits well above geometric center. The "Last N days" toolbar label is hidden until a client is selected.
 - History window is per-OLT configurable via `OLT.history_days` (default 7, range 7–30). Frontend reads `selectedClient.history_days` (returned by `alarm-clients`) and falls back to 7. Label in toolbar: "Last {{days}} days" (localized).
 - Toolbar: shows selected client name (if any) on the left, "Last N days" label on the right. No desktop tab switcher (desktop is always side-by-side).
 - Mobile toolbar contains a centered STATUS/POTÊNCIA tab switcher (`flex lg:hidden`) in the middle of the toolbar row.
-- Selected client persists via universal search bar `selectedClient` in App.jsx `localStorage`.
+- Selected client/search is component-local state in AlarmHistory and resets on page reload.
 - The `<section>` in App.jsx uses `overflow-hidden` (not `overflow-y-auto`) when `alarm-history` is active. This gives AlarmHistory's `h-full` root a proper viewport-bounded height so the internal grid panels can scroll independently. All other tabs retain `overflow-y-auto` for page-level scroll.
 - The inner flex container (`flex-1 flex flex-col`) carries `min-h-0` — required at every flex level so that child `flex-1 min-h-0` elements can be properly bounded and scroll. Without it the container grows unbounded and scroll never triggers.
 - **Desktop layout (≥1024px)**: Side-by-side `grid-cols-2 gap-3` grid within `max-w-[1400px]` container.

@@ -877,7 +877,6 @@ class OLTViewSet(viewsets.ModelViewSet):
         try:
             reachable, detail = zabbix_service.check_olt_reachability(
                 olt,
-                freshness_seconds=max(int(olt.polling_interval_seconds or 0) + 90, 390),
             )
             if reachable:
                 mark_olt_reachable(olt)

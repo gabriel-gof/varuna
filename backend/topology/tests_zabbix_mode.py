@@ -2026,24 +2026,50 @@ class ZabbixModeTests(TestCase):
             patch.object(service, "get_hostid", return_value="10090"),
             patch.object(
                 service,
-                "_call",
-                return_value=[{"interfaceid": "9001", "type": "2", "available": "1", "error": ""}],
-            ),
-            patch.object(
-                service,
                 "get_single_item",
                 side_effect=lambda hostid, key: (
-                    {"itemid": "8101", "key_": key, "lastclock": str(now_epoch - 10), "lastvalue": "OLT-FH-CAS"}
+                    {
+                        "itemid": "8101",
+                        "key_": key,
+                        "status": "0",
+                        "state": "0",
+                        "error": "",
+                        "lastclock": str(now_epoch - 10),
+                        "lastvalue": "OLT-FH-CAS",
+                    }
                     if key == DEFAULT_AVAILABILITY_ITEM_KEY else None
                 ),
             ),
-            patch.object(service, "get_latest_item_by_key_prefix") as latest_by_prefix_mock,
         ):
-            reachable, detail = service.check_olt_reachability(self.olt, freshness_seconds=300)
+            reachable, detail = service.check_olt_reachability(self.olt)
 
         self.assertTrue(reachable)
         self.assertEqual(detail, "")
-        latest_by_prefix_mock.assert_not_called()
+
+    def test_check_olt_reachability_marks_unreachable_when_availability_item_is_disabled(self):
+        service = ZabbixService()
+
+        with (
+            patch.object(service, "get_hostid", return_value="10090"),
+            patch.object(
+                service,
+                "get_single_item",
+                return_value={
+                    "itemid": "8101",
+                    "key_": DEFAULT_AVAILABILITY_ITEM_KEY,
+                    "status": "1",
+                    "state": "0",
+                    "error": "",
+                    "lastclock": str(int(timezone.now().timestamp()) - 10),
+                },
+            ),
+            patch.object(service, "execute_items_now") as execute_items_now_mock,
+        ):
+            reachable, detail = service.check_olt_reachability(self.olt)
+
+        self.assertFalse(reachable)
+        self.assertIn("disabled", detail.lower())
+        execute_items_now_mock.assert_not_called()
 
     @override_settings(ZABBIX_AVAILABILITY_STALE_SECONDS=45)
     def test_check_olt_reachability_marks_unreachable_when_availability_item_stale(self):
@@ -2054,51 +2080,91 @@ class ZabbixModeTests(TestCase):
             patch.object(service, "get_hostid", return_value="10090"),
             patch.object(
                 service,
-                "_call",
-                return_value=[{"interfaceid": "9001", "type": "2", "available": "1", "error": ""}],
-            ),
-            patch.object(
-                service,
                 "get_single_item",
                 side_effect=lambda hostid, key: (
-                    {"itemid": "8101", "key_": key, "lastclock": str(now_epoch - 120), "lastvalue": "OLT-FH-CAS"}
+                    {
+                        "itemid": "8101",
+                        "key_": key,
+                        "status": "0",
+                        "state": "0",
+                        "error": "",
+                        "lastclock": str(now_epoch - 120),
+                        "lastvalue": "OLT-FH-CAS",
+                    }
                     if key == DEFAULT_AVAILABILITY_ITEM_KEY else None
                 ),
             ),
-            patch.object(service, "get_latest_item_by_key_prefix") as latest_by_prefix_mock,
+            patch.object(service, "execute_items_now", return_value=0),
         ):
-            reachable, detail = service.check_olt_reachability(self.olt, freshness_seconds=300)
+            reachable, detail = service.check_olt_reachability(self.olt)
 
         self.assertFalse(reachable)
         self.assertIn("availability", detail.lower())
-        latest_by_prefix_mock.assert_not_called()
 
-    def test_check_olt_reachability_marks_stale_even_if_interface_is_available(self):
+    @override_settings(ZABBIX_AVAILABILITY_STALE_SECONDS=45)
+    def test_check_olt_reachability_recovers_when_availability_refresh_becomes_fresh(self):
         service = ZabbixService()
         now_epoch = int(timezone.now().timestamp())
+        sample_calls = {"count": 0}
+
+        def _single_item(_hostid, key):
+            if key != DEFAULT_AVAILABILITY_ITEM_KEY:
+                return None
+            sample_calls["count"] += 1
+            if sample_calls["count"] == 1:
+                return {
+                    "itemid": "8101",
+                    "key_": key,
+                    "status": "0",
+                    "state": "0",
+                    "error": "",
+                    "lastclock": str(now_epoch - 120),
+                    "lastvalue": "OLT-FH-CAS",
+                }
+            return {
+                "itemid": "8101",
+                "key_": key,
+                "status": "0",
+                "state": "0",
+                "error": "",
+                "lastclock": str(now_epoch - 5),
+                "lastvalue": "OLT-FH-CAS",
+            }
+
+        with (
+            patch.object(service, "get_hostid", return_value="10090"),
+            patch.object(service, "get_single_item", side_effect=_single_item),
+            patch.object(service, "execute_items_now", return_value=1),
+            patch("topology.services.zabbix_service.time.sleep", return_value=None),
+        ):
+            reachable, detail = service.check_olt_reachability(self.olt)
+
+        self.assertTrue(reachable)
+        self.assertEqual(detail, "")
+        self.assertGreaterEqual(sample_calls["count"], 2)
+
+    def test_check_olt_reachability_marks_unreachable_when_availability_has_no_samples(self):
+        service = ZabbixService()
 
         with (
             patch.object(service, "get_hostid", return_value="10090"),
             patch.object(
                 service,
-                "_call",
-                return_value=[{"interfaceid": "9001", "type": "2", "available": "1", "error": ""}],
-            ),
-            patch.object(
-                service,
-                "get_latest_item_by_key_prefix",
+                "get_single_item",
                 return_value={
-                    "itemid": "7001",
-                    "key_": "onuStatusValue[11.1]",
-                    "lastclock": str(now_epoch - 1800),
+                    "itemid": "8101",
+                    "key_": DEFAULT_AVAILABILITY_ITEM_KEY,
+                    "status": "0",
+                    "state": "0",
+                    "error": "",
+                    "lastclock": "0",
                 },
-            ) as latest_by_prefix_mock,
+            ),
         ):
-            reachable, detail = service.check_olt_reachability(self.olt, freshness_seconds=300)
+            reachable, detail = service.check_olt_reachability(self.olt)
 
         self.assertFalse(reachable)
-        self.assertIn("stale", detail.lower())
-        latest_by_prefix_mock.assert_called_once_with("10090", "onuStatusValue[")
+        self.assertIn("no samples", detail.lower())
 
     @patch("topology.management.commands.run_scheduler.zabbix_service.check_olt_reachability")
     def test_scheduler_recovery_schedules_immediate_poll(self, check_reachability_mock):

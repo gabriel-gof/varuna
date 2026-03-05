@@ -291,7 +291,6 @@ class Command(BaseCommand):
             try:
                 reachable, detail = zabbix_service.check_olt_reachability(
                     olt,
-                    freshness_seconds=max(stale_status_max_age_seconds, 86400),
                 )
             except Exception as exc:
                 reachable, detail = False, str(exc)

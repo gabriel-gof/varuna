@@ -13,6 +13,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - No dashboard tab in current scope.
 - Primary views: topology, power report, alarm history, settings. Settings is a dedicated nav tab (visible for admin/operator only).
 - Per-tab search: Topology has inline search (client-side via `useUniversalSearch` hook), Power Report has text filter (filters rows by name/serial), Alarm History has API-based search (debounced `alarm-clients` endpoint). Each tab manages its own search state independently. Power Report → Topology drill-through uses `ponHighlightTarget` state in App.jsx.
+- There is no global/universal search input in the navbar header; search is local to each tab.
 - Unreachable OLTs must be visually gray.
 - Backend domain app is `topology`; do not reintroduce backend `dashboard` naming.
 - Backend is currently single-tenant at application level.
@@ -42,7 +43,10 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - ONU item prototypes should carry `slot={#SLOT}` and `pon={#PON}` tags so operators can filter item data by slot/PON directly in Zabbix.
 - Template-first hygiene is mandatory: serial/status/power normalization belongs to Zabbix template preprocessing. Frontend must not implement vendor-specific data repair.
 - Manual/scoped refresh can request immediate Zabbix item execution; this is capped by `ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS` (default `512`) to avoid overload on global runs.
-- Reachability is sentinel-first: shared template `Varuna SNMP Availability` provides `varunaSnmpAvailability` (sysName.0) at 30s cadence, and backend validates its freshness before falling back to status-item freshness.
+- Reachability is sentinel-only: shared template `Varuna SNMP Availability` provides `varunaSnmpAvailability` (sysName.0) at 30s cadence, and backend uses that item as the single source of truth for OLT SNMP availability.
+- Sentinel checks are fail-closed: item must be present, enabled, supported, and fresh (`ZABBIX_AVAILABILITY_STALE_SECONDS`).
+- If sentinel clock is stale, backend may force one immediate sentinel execution and re-check once to speed recovery after connectivity return.
+- Frontend recovery rule is stricter than reachability: an OLT only leaves gray after fresh ONU status polling (`last_poll_at` inside stale window); sentinel reachability alone does not make OLT active/green.
 - Scheduler reachability cadence default is `COLLECTOR_CHECK_SECONDS=30`.
 - Upstream-forced refresh prefers post-refresh clocks, but recent pre-refresh clocks are accepted when still inside stale-age policy; backend returns `503` only for unreachability or fully stale/empty status payloads.
 - Topology-heavy API reads (`/api/olts/`, `/api/olts/?include_topology=true`, `/api/olts/{id}/topology/`) use Redis response cache with short TTLs and runtime invalidation.

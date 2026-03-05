@@ -459,13 +459,12 @@ When `disconnect_reason_oid` is configured (Huawei), both status and disconnect 
 
 ## Backend Scheduler
 The `run_scheduler` management command (`backend/topology/management/commands/run_scheduler.py`) is a long-lived process that periodically dispatches:
-- **Collector reachability checks** (run first): every `--collector-check-seconds` (default `30s`), checks OLT availability from Zabbix host/interface freshness and calls `mark_olt_reachable`/`mark_olt_unreachable`.
+- **Collector reachability checks** (run first): every `--collector-check-seconds` (default `30s`), checks OLT availability from the dedicated Zabbix sentinel item and calls `mark_olt_reachable`/`mark_olt_unreachable`.
   - checks are due-aware per OLT (`last_snmp_check_at`) and run with a fixed cadence to speed recovery detection when connectivity returns (no exponential backoff delay in runtime loop).
-  - reachability logic uses SNMP interface availability plus collector item freshness:
-    - if `zabbix.availability_item_key` exists (default `varunaSnmpAvailability`), its clock is validated against `ZABBIX_AVAILABILITY_STALE_SECONDS` (default `45s`);
-    - if `zabbix.status_collection_key` exists, its `lastclock` is validated against freshness.
-    - otherwise Varuna validates freshness using the newest per-ONU status item from `zabbix.status_item_key_pattern` prefix (for example `onuStatusValue[`), preventing false "reachable" when interfaces are stale but still reported as available.
-  - freshness threshold for collector checks is aligned with stale-status policy: `max(polling_interval_seconds + 90s, 390s)`.
+  - reachability logic is sentinel-only:
+    - uses `zabbix.availability_item_key` (default `varunaSnmpAvailability`);
+    - item must be present, enabled, supported, and fresh (`lastclock` <= `ZABBIX_AVAILABILITY_STALE_SECONDS`, default `45s`);
+    - stale sentinel clocks are fail-closed by default; Varuna can force an immediate sentinel execution (`task.create`) and re-check once for fast recovery.
   - scheduler emits per-cycle summary (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed time).
 - **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-discovery-olts-per-tick`.
 - **Polling**: `call_command('poll_onu_status')` — runs after discovery in the same tick, respects per-OLT `_is_due()` logic, skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-poll-olts-per-tick`.
