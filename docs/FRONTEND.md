@@ -152,7 +152,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - Missing metric values are never coerced to `0.00` (prevents false zero readings in history rows/charts).
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
 - All columns (ONU, Name, Serial, ONU RX, OLT RX, Reading) are always shown regardless of OLT vendor capabilities. Missing values display `—`. No conditional column hiding per vendor — consistency over compactness.
-- In Power tab, placeholder hyphens (`—`) follow the same status/disconnection palette as the status table in both `Potência` and `Leitura` columns/rows (green online, rose offline/link loss, blue dying gasp, purple unknown; gray when OLT is gray/stale).
+- In Power tab, all placeholder hyphens (`—`) use neutral gray (`text-slate-300 dark:text-slate-600`) regardless of ONU status. Hyphens simply mean "no value" — they do not carry status semantics in the Power tab.
 - During topology reload, if an ONU temporarily arrives without power fields while `last_power_at` has not advanced, the UI keeps the last in-memory ONU power snapshot to avoid false `—` flicker from cache gaps.
 - In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
 - Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
@@ -304,12 +304,8 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Missing Serial Highlighting
 - ONUs with missing or empty serial values render a normalized placeholder glyph `—` (em dash) in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
 - Missing-serial placeholder typography is kept coherent with disconnection placeholders (`text-[11px]`, `font-semibold`, tabular digits) so both hyphens have the same visual weight/size.
-- The missing-serial placeholder color follows the ONU/disconnection status palette:
-  - green for online,
-  - rose for offline/link loss,
-  - blue for dying gasp,
-  - purple for unknown,
-  - neutral gray for gray-tree (stale/unreachable) context.
+- In the Status tab, missing-serial placeholder color follows the ONU/disconnection status palette (green for online, rose for offline/link loss, blue for dying gasp, purple for unknown, neutral gray for gray-tree/stale context).
+- In the Power tab, missing-serial placeholders use neutral gray (`text-slate-300 dark:text-slate-600`) — no status coloring.
 
 ## Adaptive Name Column
 - The Name column in the PON sidebar is always rendered in both `Status` and `Potência` views (desktop and mobile), even for mixed-vendor OLT selections.

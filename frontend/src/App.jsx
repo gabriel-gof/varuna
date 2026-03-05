@@ -1499,7 +1499,7 @@ const App = () => {
     if (disconnectWindow !== MISSING_VALUE_PLACEHOLDER) {
       return 'text-slate-500 dark:text-slate-400'
     }
-    return disconnectPlaceholderClass(statusKey)
+    return 'text-slate-300 dark:text-slate-600'
   }
 
   const handleAlarmModeChange = useCallback((config) => {
@@ -2298,7 +2298,7 @@ const App = () => {
                                   </td>
                                   <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
                                     {hasSerial ? serialValue : (
-                                      <span className={serialPlaceholderClass(statusKey)}>{serialValue}</span>
+                                      <span className="text-[11px] font-semibold tabular-nums text-slate-300 dark:text-slate-600">{serialValue}</span>
                                     )}
                                   </td>
                                   <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>
@@ -2392,7 +2392,7 @@ const App = () => {
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
                                 ) : (
-                                  <span className={`block text-center ${serialPlaceholderClass(statusKey)}`}>{serialValue}</span>
+                                  <span className="block text-center text-[11px] font-semibold tabular-nums text-slate-300 dark:text-slate-600">{serialValue}</span>
                                 )}
                               </div>
                               <div className="shrink-0 flex flex-col gap-1">
@@ -2400,16 +2400,16 @@ const App = () => {
                                   <>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                                      <span className={`w-[76px] text-right font-semibold ${hasOnuRx ? onuRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                      <span className={`w-[76px] text-right font-semibold ${hasOnuRx ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                     </span>
                                     <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                                       <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                      <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : disconnectPlaceholderClass(statusKey)}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                      <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
                                     </span>
-                                    <span className={`self-stretch text-left text-[10px] font-semibold tabular-nums ${hasReading ? 'text-slate-400 dark:text-slate-500' : disconnectPlaceholderClass(statusKey)}`}>{readingAt}</span>
+                                    <span className={`self-stretch text-left text-[10px] font-semibold tabular-nums ${hasReading ? 'text-slate-400 dark:text-slate-500' : 'text-slate-300 dark:text-slate-600'}`}>{readingAt}</span>
                                   </>
                                 ) : (
-                                  <span className={`text-[11px] font-semibold tabular-nums ${disconnectPlaceholderClass(statusKey)}`}>{MISSING_VALUE_PLACEHOLDER}</span>
+                                  <span className="text-[11px] font-semibold tabular-nums text-slate-300 dark:text-slate-600">{MISSING_VALUE_PLACEHOLDER}</span>
                                 )}
                               </div>
                             </div>
