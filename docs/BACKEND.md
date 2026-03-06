@@ -194,6 +194,9 @@ Create semantics were also hardened:
 - Direct backend SNMP polling/walk code was removed from runtime services and commands.
 - Discovery, status, and power refresh now run exclusively through Zabbix API reads.
 - Manual and scoped refresh paths can request immediate Zabbix execution (`task.create`) before reading values.
+- First-ever discovery (no ONUs exist yet) automatically triggers upstream Zabbix LLD execution (`refresh_upstream`) so newly created OLTs don't wait for the Zabbix LLD schedule.
+- Failed discovery retries in 2 minutes (not the full discovery interval) so transient LLD delays don't block topology for hours.
+- Empty discovery rows (Zabbix LLD not ready yet) no longer mark the OLT unreachable; reachability is determined solely by the collector sentinel check.
 - Discovery upstream refresh (`discover_onus --refresh-upstream`) uses a short retry window before failing empty:
   - `ZABBIX_DISCOVERY_REFRESH_WAIT_SECONDS` (default `15`)
   - `ZABBIX_DISCOVERY_REFRESH_WAIT_STEP_SECONDS` (default `2`)
@@ -322,8 +325,8 @@ Role resolution (`resolve_user_role`):
 
 Permission enforcement:
 - `VendorProfileViewSet` is `ReadOnlyModelViewSet` (no create/update/delete).
-- `OLTViewSet` guards `create`, `update`, `destroy`, and all maintenance actions (`run_discovery`, `run_polling`, `snmp_check`, `refresh_power`, `refresh_power_all`) with `can_modify_settings`.
-- PON `partial_update` (description editing) requires `can_modify_settings`.
+- `OLTViewSet` guards `create`, `update`, `destroy`, and all maintenance actions (`run_discovery`, `run_polling`, `snmp_check`, `refresh_power`, `refresh_power_all`) with `can_modify_settings` (admin-only).
+- PON `partial_update` (description editing) requires `can_modify_settings` (admin-only).
 - Successful PON description patch invalidates topology API response cache for that OLT so refreshed topology reads return the updated description immediately.
 - Read operations (list, retrieve, topology) remain accessible to all authenticated users.
 

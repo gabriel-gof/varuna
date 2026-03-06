@@ -22,8 +22,8 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
   - shared infra stack with `pg-varuna` (all Varuna logical DBs), `pg-zabbix`, `zabbix-server`, `zabbix-web`,
   - per-client app stacks with `frontend` + `backend` + `redis`.
 - Production Zabbix security rule: keep a dedicated API account (`varuna_api`) for Varuna and a separate personal admin/operator account for UI; never use default credentials.
-- Role-based access: `admin`/`operator` (full), `viewer` (read-only). Enforce via `can_modify_settings()` on backend, `canManageSettings` on frontend.
-- PON descriptions are operator-managed metadata: editable by `admin`/`operator`, read-only for `viewer`, and must persist across discovery refreshes.
+- Role-based access: `admin` (full including settings/maintenance), `operator` (read-only topology and monitoring), `viewer` (read-only). Enforce via `can_modify_settings()` on backend, `canManageSettings` on frontend.
+- PON descriptions are admin-managed metadata: editable by `admin`, read-only for `operator`/`viewer`, and must persist across discovery refreshes.
 - Discovery, polling, power collection, and reachability checks are scheduled by the backend `run_scheduler` command. The frontend does not submit automatic maintenance; it relies on backend scheduling and provides manual trigger buttons.
 - Backend now persists power history snapshots in `ONUPowerSample` and exposes report APIs for the new tabs:
   - `GET /api/onu/power-report/`

@@ -266,6 +266,12 @@ class Command(BaseCommand):
         indexing_cfg = oid_templates.get("indexing", {})
         discovery_key = self._resolve_zabbix_discovery_key(olt)
 
+        # Auto-trigger upstream LLD on first-ever discovery so newly created
+        # OLTs don't have to wait for the Zabbix LLD schedule.
+        never_discovered = not ONU.objects.filter(olt=olt).exists()
+        if never_discovered and not refresh_upstream:
+            refresh_upstream = True
+
         if refresh_upstream:
             try:
                 hostid = zabbix_service.get_hostid(olt)
@@ -313,8 +319,6 @@ class Command(BaseCommand):
 
         if not rows:
             self._mark_discovery_result(olt, success=False, dry_run=dry_run)
-            if not dry_run:
-                mark_olt_unreachable(olt, error="No Zabbix ONU discovery data returned")
             self.stdout.write(f"OLT {olt.id}: no Zabbix discovery data returned.")
             return
 
@@ -533,11 +537,17 @@ class Command(BaseCommand):
             f"(created={created}, updated={updated})."
         )
 
+    _DISCOVERY_RETRY_MINUTES = 2
+
     def _mark_discovery_result(self, olt: OLT, success: bool, dry_run: bool) -> None:
         if dry_run:
             return
         now = timezone.now()
-        next_at = now + timedelta(minutes=olt.discovery_interval_minutes or 0)
+        if success:
+            retry_minutes = olt.discovery_interval_minutes or 0
+        else:
+            retry_minutes = min(self._DISCOVERY_RETRY_MINUTES, olt.discovery_interval_minutes or 0)
+        next_at = now + timedelta(minutes=retry_minutes)
         olt.last_discovery_at = now
         olt.next_discovery_at = next_at
         olt.discovery_healthy = success

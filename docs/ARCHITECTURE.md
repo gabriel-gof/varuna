@@ -20,16 +20,17 @@
   - `zabbix-db`
   - `zabbix-server`
   - `zabbix-web`
-  - `zabbix-agent` (agent2 sidecar for local self-monitoring checks)
+  - `zabbix-hardening` (one-shot post-start policy enforcer for Zabbix users)
+  - `zabbix-agent` (agent2 sidecar for Zabbix server self-monitoring)
   - slow-OLT tolerance is configured via `ZBX_TIMEOUT` (current default: `10`).
   - unreachable/recovery convergence is tuned via:
     - `ZBX_UNREACHABLEDELAY` (default `5`)
     - `ZBX_UNAVAILABLEDELAY` (default `15`)
     - `ZBX_UNREACHABLEPERIOD` (default `30`)
-  - high-volume defaults are pre-tuned in compose/env:
-    - Zabbix server worker/cache knobs (`ZBX_STARTPOLLERS`, `ZBX_STARTSNMPPOLLERS`, `ZBX_STARTPREPROCESSORS`, `ZBX_*CACHESIZE`);
+  - high-volume defaults are pre-tuned in compose/env (baseline: 4 CPU / 16 GB / SSD):
+    - Zabbix server worker/cache knobs (`ZBX_STARTPOLLERS=30`, `ZBX_STARTSNMPPOLLERS=80`, `ZBX_STARTPREPROCESSORS=12`, `ZBX_STARTLLDPROCESSORS=4`, `ZBX_CACHESIZE=1G`);
     - configuration cache uses Zabbix server native env `ZBX_CACHESIZE` (not `ZBX_CACHE_SIZE`);
-    - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied at container start (`shared_buffers`, WAL/checkpoint, memory/workload settings).
+    - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied at container start (`shared_buffers=2GB`, `synchronous_commit=off`, `wal_buffers=64MB`, `checkpoint_timeout=15min`, `effective_io_concurrency=200`, WAL/checkpoint settings).
 
 Backend collection runtime:
 - Discovery/status/power are read from Zabbix API item keys.
@@ -51,11 +52,16 @@ Container/runtime health:
 - Recommended shared infrastructure on one VM:
   - shared `pg-varuna` PostgreSQL container for all Varuna logical DBs,
   - separate shared `pg-zabbix` PostgreSQL container for Zabbix only,
-  - shared `zabbix-server` + `zabbix-web`.
+  - shared `zabbix-server` + `zabbix-web`,
+  - shared `zabbix-agent` (agent2) for Zabbix server self-monitoring,
+  - shared `zabbix-hardening` one-shot service that enforces runtime user policy on every infra `compose up`.
 - Zabbix auth boundary:
   - Varuna integration should use a dedicated API user/token (`varuna_api`),
   - human debugging should use a separate operator/admin user,
   - never couple personal admin credentials to runtime integration envs.
+- Shared infra user-hardening policy:
+  - ensure operator user (`gabriel`) and integration user (`varuna`) exist,
+  - remove bootstrap default user (`Admin`) after those users are ensured.
 - Standalone mode (per-stack local `varuna-db`) is still supported for simpler single-instance deployments.
 
 ### Multi-Instance on One Host
@@ -64,6 +70,7 @@ Container/runtime health:
   - unique host port bindings (typically localhost-only bind),
   - isolated env vars/secrets.
 - Current gabisat production hostname is `varuna.gabisat.com.br` (single canonical host, no secondary alias).
+- Current demo instance hostname is `demo.varuna.network` (ports 18100/18101, project `varuna_demo`).
 - `docker-compose.prod.yml` is instance-parameterized via:
   - `VARUNA_ENV_FILE` (env file injected into `backend` and standalone `varuna-db`),
   - `VARUNA_FRONTEND_BIND_IP`,
@@ -167,7 +174,9 @@ When to split into dedicated `discovery` and `poller` workers:
 
 ## Role-Based Access Control
 - Users have roles (`admin`, `operator`, `viewer`) via `UserProfile.role`.
-- `admin`/`operator` have full read/write access; `viewer` is read-only (no settings changes, no maintenance actions, no power refresh).
+- `admin` has full read/write access including settings, OLT management, and maintenance actions.
+- `operator` has read access to topology and monitoring but cannot access settings or trigger maintenance actions.
+- `viewer` is read-only (no settings, no maintenance actions, no power refresh).
 - Role resolution: superuser → admin; profile role if valid; fallback → viewer.
 - Permission enforcement at API level via `can_modify_settings()` checks; `VendorProfileViewSet` is read-only for all users.
 - Frontend hides settings tab and action buttons for viewers via `canManageSettings` derived state.

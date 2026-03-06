@@ -38,3 +38,6 @@ artifacts/
 
 # Secrets
 olt-zte-cedrentials
+
+# Backups
+backups/

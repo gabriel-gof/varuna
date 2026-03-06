@@ -81,15 +81,16 @@ Current dev compose includes Zabbix `7.0 LTS` services:
   - `ZBX_UNREACHABLEPERIOD=30`
 - dev cache sizing is tuned with `ZBX_CACHESIZE=1G` to reduce configuration-cache pressure with large ONU inventories.
 - dev server concurrency/caches are tuned for larger ONU fleets:
-  - `ZBX_STARTPOLLERS=120`
-  - `ZBX_STARTPOLLERSUNREACHABLE=40`
+  - `ZBX_STARTPOLLERS=30`
+  - `ZBX_STARTPOLLERSUNREACHABLE=15`
   - `ZBX_STARTSNMPPOLLERS=80`
-  - `ZBX_STARTPREPROCESSORS=32`
+  - `ZBX_STARTPREPROCESSORS=12`
+  - `ZBX_STARTLLDPROCESSORS=4`
   - `ZBX_HISTORYCACHESIZE=256M`
-  - `ZBX_HISTORYINDEXCACHESIZE=128M`
-  - `ZBX_VALUECACHESIZE=512M`
-  - `ZBX_TRENDCACHESIZE=64M`
-- dev `zabbix-db` container uses PostgreSQL tuning for write-heavy history workloads (`shared_buffers=1GB`, `effective_cache_size=3GB`, `work_mem=16MB`, `maintenance_work_mem=256MB`, `max_wal_size=4GB`, `checkpoint_completion_target=0.9`).
+  - `ZBX_HISTORYINDEXCACHESIZE=64M`
+  - `ZBX_VALUECACHESIZE=256M`
+  - `ZBX_TRENDCACHESIZE=32M`
+- dev `zabbix-db` container uses PostgreSQL tuning for write-heavy history workloads (`shared_buffers=2GB`, `effective_cache_size=6GB`, `work_mem=4MB`, `maintenance_work_mem=512MB`, `max_wal_size=4GB`, `min_wal_size=1GB`, `wal_buffers=64MB`, `synchronous_commit=off`, `checkpoint_completion_target=0.9`, `checkpoint_timeout=15min`, `effective_io_concurrency=200`).
 
 Default dev login:
 - user: `Admin`
@@ -139,8 +140,10 @@ Template import workflow:
 - Trends are disabled in Varuna templates (`trends=0`) to reduce Zabbix storage overhead.
 - Item history in Varuna templates is driven by `{$VARUNA.HISTORY_DAYS}` (default `7d`) for ONU status and power metrics.
 - ONU item prototypes include `slot` and `pon` tags (`slot={#SLOT}`, `pon={#PON}`) for direct slot/PON filtering in Zabbix item views.
-- Dev self-monitoring note:
+- Self-monitoring (dev and production):
   - `Zabbix server` host agent interface must target `zabbix-agent:10050` (DNS), not `127.0.0.1:10050` inside `zabbix-server`.
+  - Required templates on `Zabbix server` host: `Zabbix server health` (internal checks) + `Zabbix agent` (passive agent).
+  - `zabbix-agent` (agent2) service must be running in the same compose stack and network as `zabbix-server`.
 
 Production:
 ```bash
@@ -169,6 +172,9 @@ If `zabbix-web` is exposed for operator debugging, keep this mandatory policy:
   - personal operator/admin user (for example `gabriel`) for manual Zabbix UI access;
 - do not use personal admin credentials in Varuna env files;
 - keep `zabbix-web` bound to private/localhost interfaces when possible, or restrict with IP allowlist/VPN.
+- in shared infra, `zabbix-hardening` enforces user policy on every `docker compose ... up`:
+  - ensures `gabriel` and `varuna` users exist (passwords from `docker/infra.shared.env` / runtime env file),
+  - removes default bootstrap `Admin` user when `ZABBIX_REMOVE_BOOTSTRAP_ADMIN=1`.
 
 ## Multi-Instance Production (Per Client)
 Use one production Compose stack per client when serving different OLT fleets.
@@ -218,10 +224,12 @@ Recommended practical deployment on one VM:
 
 Shared-mode compose files:
 - `docker-compose.infra.shared.yml`: starts shared `pg-varuna`, `pg-zabbix`, `zabbix-server`, `zabbix-web`.
+  - also includes one-shot `zabbix-hardening` to enforce secure user policy after startup.
 - `docker-compose.prod.shared-pg.yml`: per-client app stack using shared `pg-varuna` over external network `varuna-data`.
 - Shared infra tuning knobs live in `docker/infra.shared.env`:
   - Zabbix server worker/cache knobs (`ZBX_START*`, `ZBX_*CACHESIZE`, `ZBX_TIMEOUT`, `ZBX_UNREACHABLEDELAY`, `ZBX_UNAVAILABLEDELAY`, `ZBX_UNREACHABLEPERIOD`, housekeeping knobs),
-  - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied directly by `pg-zabbix` container command.
+  - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied directly by `pg-zabbix` container command,
+  - production baseline is tuned for 4 CPU / 16 GB RAM / SSD with ~141 Zabbix worker processes and `synchronous_commit=off` for maximum write throughput.
 
 Production backend mode:
 - `BACKEND_BEHIND_FRONTEND_PROXY=1` is set in compose so backend serves API over internal HTTP (no 80->443 redirect loop when frontend proxies `/api`).
@@ -233,6 +241,9 @@ Bring up shared infra (once per host):
 cd /Users/gabriel/Documents/varuna
 cp docker/infra.shared.env /etc/varuna/infra.shared.env
 # Edit secrets and ports in /etc/varuna/infra.shared.env
+# Required for automatic Zabbix user hardening:
+# - ZABBIX_OPERATOR_PASSWORD
+# - ZABBIX_VARUNA_PASSWORD
 
 docker compose --env-file /etc/varuna/infra.shared.env -f docker-compose.infra.shared.yml up -d
 ```
@@ -279,6 +290,13 @@ cd /Users/gabriel/Documents/varuna
 # - SERVER_NAME=varuna.gabisat.com.br
 
 docker compose -p varuna_gabisat --env-file /etc/varuna/prod.gabisat.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build
+```
+
+Example: `demo` instance (`demo.varuna.network`, ports 18100/18101):
+```bash
+cd /Users/gabriel/Documents/varuna
+docker compose -p varuna_demo --env-file docker/prod.demo.env \
   -f docker-compose.prod.shared-pg.yml up -d --build
 ```
 

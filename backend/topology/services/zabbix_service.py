@@ -203,7 +203,18 @@ class ZabbixService:
             auth = self._get_auth_token()
             if auth:
                 payload["auth"] = auth
-        return self._post_json(payload, include_bearer=True)
+        try:
+            return self._post_json(payload, include_bearer=True)
+        except ZabbixAPIError as exc:
+            msg = str(exc).lower()
+            if "re-login" not in msg and "session terminated" not in msg:
+                raise
+            self._auth_token = None
+            auth = self._get_auth_token()
+            if auth:
+                payload["auth"] = auth
+                payload["id"] = self._next_id()
+            return self._post_json(payload, include_bearer=True)
 
     def _resolve_host_candidate_names(self, olt) -> List[str]:
         candidates: List[str] = []
