@@ -11,7 +11,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 
 ## Current Product Decisions
 - No dashboard tab in current scope.
-- Primary views: topology, power report, alarm history, settings. Settings is a dedicated nav tab (visible for admin/operator only).
+- Primary views: topology, power report, alarm history, settings. Settings is a dedicated nav tab visible only for `admin`.
 - Per-tab search: Topology has inline search (client-side via `useUniversalSearch` hook), Power Report has text filter (filters rows by name/serial), Alarm History has API-based search (debounced `alarm-clients` endpoint). Each tab manages its own search state independently. Power Report → Topology drill-through uses `ponHighlightTarget` state in App.jsx.
 - There is no global/universal search input in the navbar header; search is local to each tab.
 - Unreachable OLTs must be visually gray.
@@ -22,8 +22,8 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
   - shared infra stack with `pg-varuna` (all Varuna logical DBs), `pg-zabbix`, `zabbix-server`, `zabbix-web`,
   - per-client app stacks with `frontend` + `backend` + `redis`.
 - Production Zabbix security rule: keep a dedicated API account (`varuna_api`) for Varuna and a separate personal admin/operator account for UI; never use default credentials.
-- Role-based access: `admin` (full including settings/maintenance), `operator` (read-only topology and monitoring), `viewer` (read-only). Enforce via `can_modify_settings()` on backend, `canManageSettings` on frontend.
-- PON descriptions are admin-managed metadata: editable by `admin`, read-only for `operator`/`viewer`, and must persist across discovery refreshes.
+- Role-based access: `admin` (full including settings/maintenance), `operator` (no settings, but can edit PON descriptions and trigger scoped live status/power refresh), `viewer` (read-only). Enforce via `can_modify_settings()` / `can_operate_topology()` on backend and `canManageSettings` / `canOperateTopology` on frontend.
+- PON descriptions are operator-managed metadata: editable by `admin` and `operator`, read-only for `viewer`, and must persist across discovery refreshes.
 - Discovery, polling, power collection, and reachability checks are scheduled by the backend `run_scheduler` command. The frontend does not submit automatic maintenance; it relies on backend scheduling and provides manual trigger buttons.
 - Backend now persists power history snapshots in `ONUPowerSample` and exposes report APIs for the new tabs:
   - `GET /api/onu/power-report/`
@@ -49,7 +49,9 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Frontend recovery rule is stricter than reachability: an OLT only leaves gray after fresh ONU status polling (`last_poll_at` inside stale window); sentinel reachability alone does not make OLT active/green.
 - Scheduler reachability cadence default is `COLLECTOR_CHECK_SECONDS=30`.
 - Upstream-forced refresh prefers post-refresh clocks, but recent pre-refresh clocks are accepted when still inside stale-age policy; backend returns `503` only for unreachability or fully stale/empty status payloads.
-- Topology-heavy API reads (`/api/olts/`, `/api/olts/?include_topology=true`, `/api/olts/{id}/topology/`) use Redis response cache with short TTLs and runtime invalidation.
+- Topology-heavy API reads use hybrid caching: per-OLT Redis entries store only static topology structure (OLT/slot/PON/ONU identity fields), while live status/disconnect fields are overlaid from PostgreSQL on every read.
+- Topology list/detail no longer load full-tree power snapshots. Power fields stay in the payload for compatibility but may be `null` until the frontend requests scoped `batch-power refresh=false` for the selected PON.
+- `GET /api/onu/{id}/power/` and `POST /api/onu/batch-power/` with `refresh=false` read the latest persisted `ONUPowerSample`; `refresh=true` still runs live Zabbix collection and persists the result.
 - Topology list/detail payloads expose SNMP health metadata used by frontend gray-state logic (`snmp_reachable`, `last_snmp_check_at`, `snmp_failure_count`, `last_snmp_error`).
 - ONU batch status/power endpoints default to snapshot mode (`refresh=false` unless explicitly provided), so opening/refreshing topology panels does not implicitly trigger upstream collection.
 - `snmp_check` endpoint name is kept for compatibility, but behavior is Zabbix-only.
@@ -89,9 +91,14 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 ## Vendor-Specific Structural Features
 - **Indexing: `pon_resolve: interface_map`** — Huawei ONU index still uses `{pon_ifindex}.{onu_id}` semantics and is parsed through vendor profile metadata.
 - **Status reason mapping** — Fiberhome reason can come directly from status value (`link_loss` / `dying_gasp`) while Huawei can use separate reason item keys.
+- **Operator-facing ONU statuses** — frontend status badges intentionally expose only `online`, `link_loss`, `dying_gasp`, and `unknown`; backend `offline` rows with no known disconnect reason are shown as `unknown`.
 - **Power normalization in templates** — Zabbix templates normalize vendor raw values before Varuna reads them.
 - **Power validity contract** — accepted optical RX values are strictly `-40 dBm < value < 0 dBm`; template-level preprocessing enforces this first, and backend `normalize_power_value` mirrors it as a defensive guard.
 - **Serial normalization in templates** — discovery preprocessing must sanitize malformed serial payloads (comma/punctuation artifacts) before Varuna consumes LLD rows.
-- Current vendor profiles: ZTE C300, VSOL LIKE GPON 8P, Huawei MA5680T (seed migration `0012`), Fiberhome AN5516 (seed migration `0013`).
+- Current vendor profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei MA5680T (seed migration `0012`), Fiberhome AN5516 (seed migration `0013`).
 - Zabbix template set in repo root includes: `snmp-avail-template.yaml`, `huawei-template.yaml`, `fiberhome-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`.
+- `zte-template.yaml` now exports two Varuna templates: `OLT ZTE C300` and `OLT ZTE C600`.
+- **ZTE C600 live mapping** — validation on `192.168.7.151` (`sysName=ZTE-PONTAL`) plus CLI `show gpon onu state` output showed `3/4 -> online`, `2 -> link_loss`, `5 -> dying_gasp`, `7 -> offline`; keep `1 -> link_loss` only as a compatibility fallback for unseen LOS-class rows.
+- **ZTE C600 ONU names** — the correct ONU name OID is still `.1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`, but nameless ONUs legitimately return `""`; do not invent numeric placeholder names from serial prefixes.
+- **ZTE C600 serial cleanup** — comma-prefixed serial payloads such as `1,DD72E68F39E5` must be normalized to the serial token in template preprocessing and backend fallback parsing.
 - **Fiberhome AN5516** — enterprise OID prefix `1.3.6.1.4.1.5875`, flat integer SNMP index (not dotted), slot/pon resolved from separate OID columns (`onu_slot_oid`/`onu_pon_oid` via `index_from: oid_columns`), onu_id extracted from byte2 of flat index, no ONU name OID (serial-only identification, `onu_name_oid` is empty), both ONU Rx and OLT Rx power via `hundredths_dbm`, OLT Rx uses `{pon_base}.{onu_id}` index format via `olt_rx_index_formula: fiberhome_pon_onu`.

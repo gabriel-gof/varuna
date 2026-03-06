@@ -23,12 +23,13 @@ The UI remains topology-first. No dashboard page is required for current product
 - `frontend/src/components/SettingsPanel.jsx`: OLT CRUD/configuration UX.
 - `frontend/src/components/PowerReport.jsx`: network-wide power levels report with sortable/filterable table. Has inline text filter (`searchText`) in toolbar that filters rows by client name or serial.
 - `frontend/src/components/AlarmHistory.jsx`: client alarm/power history with disconnection bar chart, optical power line chart, and alerts table. Has self-contained search via debounced `alarm-clients` API; manages its own `selectedClient` state.
+- Settings, Power Report, and Alarm History are lazy-loaded from `App.jsx`; Topology stays eager because it is the primary operational surface.
 - `frontend/src/services/api.js`: Axios API client with auth token interceptor.
 - `frontend/src/utils/stats.js`: ONU status classification helpers.
 
 ## Authentication
 - App checks for stored token on mount by calling `GET /api/auth/me/`. If valid, user proceeds to the main app. If invalid/missing, the login page is shown.
-- Login page sends `POST /api/auth/login/` with username/password, receives a token and user info (including `role` and `can_modify_settings`), stores token in `localStorage` as `auth_token`.
+- Login page sends `POST /api/auth/login/` with username/password, receives a token and user info (including `role`, `can_modify_settings`, and `can_operate_topology`), stores token in `localStorage` as `auth_token`.
 - Logout calls `POST /api/auth/logout/`, clears the token from `localStorage`, and returns to the login page.
 - Axios request interceptor attaches `Authorization: Token <key>` header on every request.
 - Axios response interceptor clears the stored token on 401 responses (no page reload — React state handles the transition).
@@ -37,15 +38,27 @@ The UI remains topology-first. No dashboard page is required for current product
 
 ### Role-Aware UX
 - `canManageSettings` is derived from `authUser?.can_modify_settings` after login/me response.
-- Settings tab guard waits for auth bootstrap completion (`authChecked=true`) before enforcing viewer-only restrictions. This preserves the last saved tab (`varuna_active_tab`) across hard refreshes for admin users.
-- Viewers (`can_modify_settings=false`):
+- `canOperateTopology` is derived from `authUser?.can_operate_topology` after login/me response.
+- Settings tab guard waits for auth bootstrap completion (`authChecked=true`) before enforcing non-admin restrictions. This preserves the last saved tab (`varuna_active_tab`) across hard refreshes for admin users.
+- Admins (`canManageSettings=true`):
+  - Settings tab is visible.
+  - Vendor profile fetch is enabled.
+  - PON sidebar refresh is available.
+  - PON description is editable inline from the sidebar.
+- Operators (`canManageSettings=false`, `canOperateTopology=true`):
   - Settings tab is hidden from nav.
   - Vendor profile fetch is skipped.
   - Auto-maintenance (discovery/polling/power) runs on the backend scheduler.
   - PON sidebar refresh is available and can trigger live ONU status/power refresh for the selected PON.
+  - PON description is editable inline from the sidebar (desktop and mobile header variants).
+  - OLT creation/editing/deletion is blocked.
+- Viewers (`canOperateTopology=false`):
+  - Settings tab is hidden from nav.
+  - Vendor profile fetch is skipped.
+  - Auto-maintenance (discovery/polling/power) runs on the backend scheduler.
+  - PON sidebar refresh button is hidden.
   - PON description is read-only text in the sidebar (no inline edit control).
   - OLT creation/editing/deletion is blocked.
-- Admin/operator (`can_modify_settings=true`) can edit PON description inline from the sidebar (desktop and mobile header variants).
 - Permission error responses from the backend (`'Insufficient permissions for this action.'`) are translated through the shared frontend error translator (`frontend/src/utils/apiErrorMessages.js`) and displayed as contextual errors.
 
 ## Threshold Control Logic
@@ -57,10 +70,9 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Live Data Flow
 - Topology view fetches OLTs with topology (`/api/olts/?include_topology=true`).
 - Power Report, Alarm History, and Settings views use lightweight OLT fetches (`/api/olts/`) and avoid topology-tree payloads unless topology tab is active.
-- When app starts on a non-topology tab, frontend performs a one-time background topology warm-up fetch so switching to Topology does not wait on first full-tree load.
+- Secondary tabs (`settings`, `power-report`, `alarm-history`) are code-split and loaded on first navigation, reducing the initial JS payload for the topology-first entry flow.
 - Frontend enriches topology rows with per-PON cached stats (`total/online/offline/linkLoss/dyingGasp/unknown`) once per topology refresh to reduce mount-time recomputation.
-- When switching to Topology and a cached tree already exists in memory, frontend renders cached topology first and triggers full topology refresh shortly after, reducing perceived tab-switch blocking.
-- Deferred full-topology refresh on tab switch is throttled (30s minimum interval) to avoid repeatedly loading large topology payloads during rapid tab changes.
+- Topology data now comes from the backend hybrid contract: static OLT/slot/PON/ONU inventory may be Redis-backed on the server, but status/disconnect state is always overlaid from live DB rows before the payload reaches the browser.
 - Refresh periodically.
 - Production frontend Nginx preserves incoming `X-Forwarded-Proto` when proxying `/api` and `/admin` to backend so Django security middleware can correctly detect HTTPS behind host-level TLS termination.
 - In production compose, frontend also serves `/static` directly from shared volume mount `/var/www/static` (populated by backend `collectstatic`).
@@ -85,13 +97,15 @@ The UI remains topology-first. No dashboard page is required for current product
   - line 1: ONU name (`-` when unavailable),
   - line 2: `serial · OLT · slot/pon/onu`.
 - ONU name rendering in PON Status/Power tables now uses only backend name fields (`client_name`/`name`); UI no longer falls back to login-like fields that can leak numeric ONU identifiers.
-- Search suggestions (Topology) are deduplicated by serial (when present) so the same ONU is shown once even if topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and live status (`online` > `offline` > `unknown`).
+- Search suggestions (Topology) are deduplicated by serial (when present) so the same ONU is shown once even if topology temporarily contains multiple rows for that serial; the UI keeps the best candidate by match score and operator-facing status priority (`online` > `link_loss` / `dying_gasp` > `unknown`).
 - Client search does not filter the topology tree while typing — the tree stays unchanged until a suggestion is selected. On selection, the tree pins to the exact OLT/slot/PON path containing the matched ONU.
 - Alarm filtering is bypassed while a search match is selected, ensuring the searched client PON remains visible even if it fails current alarm thresholds.
 - Topology expansion state respects manual operator intent during background refreshes: initial default expansion (first OLT/slot) is applied only once on first data load, and later refreshes do not re-open collapsed nodes. Explicit search selection and alarm-mode auto-expansion may still open nodes by design.
 - Slot and PON child trees are rendered lazily only when their parent node is open, reducing topology tab mount/switch latency on large installations.
 - ONU search highlight is unified across desktop and mobile: `inset 0 0 0 2px` emerald box-shadow for a uniform 2px stroke on all sides, plus a subtle emerald background tint. Desktop table rows drop odd/even striping when highlighted; mobile cards use `border-transparent` so only the inset shadow renders the stroke. Highlight persists across Status/Power tab switches. Scroll-to-highlight uses `querySelectorAll` + `offsetParent` visibility check to target the correct viewport (desktop or mobile), avoiding false matches on CSS-hidden elements.
 - Alarm mode state propagation from topology to app shell uses a stable callback and no-op equality guard to avoid render loops (`Maximum update depth exceeded`) during topology view startup.
+- Manual PON power/status refresh keeps its live-read semantics for admin/operator users: `refresh=true` requests still force immediate upstream execution before the scoped rows are returned.
+- ONU status labels come from `classifyOnu()` in `frontend/src/utils/stats.js`: the operator-facing vocabulary is limited to `ONLINE`, `LINK LOSS`, `DYING GASP`, and `UNKNOWN`. Backend `status=offline` rows without a known reason are intentionally collapsed to `UNKNOWN` in the UI.
 
 ## Resume-on-Focus Refresh
 - When the browser tab regains visibility (via `visibilitychange`, `focus`, or `pageshow` events), the app triggers a topology refresh if the tab was hidden for longer than `RESUME_REFRESH_THROTTLE_MS` (4 seconds).
@@ -131,7 +145,13 @@ The UI remains topology-first. No dashboard page is required for current product
   - `power_interval_seconds`
   - `history_days`
 - Discovery, polling, and power collection are scheduled by the backend `run_scheduler` management command. The frontend no longer submits automatic maintenance requests.
-- The power panel renders cached power values from topology payload immediately when opening/switching PONs.
+- Topology payloads no longer assume current power for every ONU in the tree. When the operator opens the `Potência` tab for a selected PON, frontend requests `POST /api/onu/batch-power/` with `refresh=false` and patches only that PON's ONU rows in local state.
+- The initial `Potência` tab load for a selected PON shows a local loading overlay while the persisted snapshot request is in flight. Manual refresh keeps using `refresh=true`.
+- Background topology refresh now preserves any already-loaded PON power snapshot in local state, so the open sidebar does not blink or re-request persisted power on every topology poll.
+- Backend source contract for power tabs:
+  - topology list/detail may return `null` power fields by default,
+  - `batch-power refresh=false` returns the latest persisted `ONUPowerSample`,
+  - `batch-power refresh=true` triggers live Zabbix collection and persists the new samples.
 - PON sidebar refresh is tab-aware and live-refresh capable:
   - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped status polling and return fresh rows.
   - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped power collection and return fresh rows.
@@ -142,8 +162,8 @@ The UI remains topology-first. No dashboard page is required for current product
 - Status table disconnection column is interval-aware:
   - displays a compact single timestamp (`dd/mm/yyyy hh:mm`, locale-aware) using `disconnect_window_end` with fallback to `disconnect_window_start`;
   - when transition proof is unavailable, backend now returns a detection-point window (`disconnect_window_start == disconnect_window_end == offline_since`), so the table still shows when Varuna confirmed the offline state.
-  - when `—` is shown, its color follows the ONU status palette (green/online, red/link loss-offline, blue/dying gasp, purple/unknown); gray-tree rows keep neutral gray.
-- Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, even when backend canonical `status` is `offline`.
+  - when `—` is shown, its color follows the ONU status palette (green/online, rose/link loss, blue/dying gasp, purple/unknown); gray-tree rows keep neutral gray.
+- Status badge classification treats `disconnect_reason=unknown` (or localized unknown text) as `Unknown` in the UI, including when backend canonical `status` is `offline`.
 - PON sidebar refresh has a 5-second cooldown after each collection completes. During cooldown the button is disabled and shows a depleting SVG ring animation around the icon (CSS `cooldown-ring` keyframe in `index.css`). Cooldown resets when the selected PON changes.
 - PON sidebar refresh failures are shown inside the sidebar as contextual errors and do not replace the topology tree with a global error banner.
 - While power data is being collected, the power table/cards area shows a translucent overlay with a centered spinner. Existing data stays visible underneath for a smooth, non-disruptive loading experience.
@@ -153,7 +173,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Power tab sorting (`Best/Worst ONU RX`, `Best/Worst OLT RX`) treats missing readings as unavailable and keeps those ONUs after rows with valid numeric dBm values.
 - All columns (ONU, Name, Serial, ONU RX, OLT RX, Reading) are always shown regardless of OLT vendor capabilities. Missing values display `—`. No conditional column hiding per vendor — consistency over compactness.
 - In Power tab, all placeholder hyphens (`—`) use neutral gray (`text-slate-300 dark:text-slate-600`) regardless of ONU status. Hyphens simply mean "no value" — they do not carry status semantics in the Power tab.
-- During topology reload, if an ONU temporarily arrives without power fields while `last_power_at` has not advanced, the UI keeps the last in-memory ONU power snapshot to avoid false `—` flicker from cache gaps.
+- During topology reload, the UI replaces ONU power values with the latest API payload without carrying forward old in-memory power snapshots.
 - In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
 - Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
 - Mobile Status and Power cards always render three left-side lines (ONU number, name, serial). When no name exists for an ONU, a dash placeholder is shown. This ensures identical left-column structure between tabs, preventing layout shift when switching between Status and Power.
@@ -335,7 +355,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Accessible via "Power Report" nav tab (`activeNav === 'power-report'`); available to all roles.
 - Component: `frontend/src/components/PowerReport.jsx`.
 - Loads flattened ONU rows from `GET /api/onu/power-report/` (latest persisted power sample per active ONU).
-- Mount behavior mirrors topology warm-start: when the component has an in-memory snapshot from a previous visit, it renders rows immediately on tab switch and performs the API refresh in background (no blocking first-paint spinner).
+- Mount behavior is direct-read only: the component waits for `GET /api/onu/power-report/` and does not reuse cached operational rows from a previous visit.
 - Signal classification uses `getPowerColor` from `powerThresholds.js` — an ONU is "critical" if any reading is red, "warning" if any is yellow, "good" if all are green.
 - Default report mode is "problems first": signal filter starts with `Critical + Warning + No reading` and sort starts at `Worst ONU RX`.
 - Toolbar is flat on the page surface (no wrapping card), organized in two rows:
@@ -354,6 +374,7 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Alarm History Tab
 - Accessible via "History" nav tab (`activeNav === 'alarm-history'`); available to all roles. Label: "History" (en) / "Histórico" (pt).
 - Component: `frontend/src/components/AlarmHistory.jsx`.
+- History data is always requested from the backend on demand; there is no frontend cache layer for operational history payloads.
 - Client selection is done inside the Alarm History toolbar search input. Suggestions are loaded from `GET /api/onu/alarm-clients/` (debounced). Selecting a client loads that client's alarm/power history.
 - Empty state shown when no client is selected; vertically centered with `pb-[28vh]` optical lift so the prompt sits well above geometric center. The "Last N days" toolbar label is hidden until a client is selected.
 - History window is per-OLT configurable via `OLT.history_days` (default 7, range 7–30). Frontend reads `selectedClient.history_days` (returned by `alarm-clients`) and falls back to 7. Label in toolbar: "Last {{days}} days" (localized).

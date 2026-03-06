@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 
 _SERIAL_SENTINEL_VALUES = frozenset({"N/A", "NA", "NONE", "NULL", "--", "-"})
 _SERIAL_LIKE_RE = re.compile(r"^[A-Z]{4}[A-Z0-9-]{4,28}$")
+_GENERIC_SERIAL_LIKE_RE = re.compile(r"^(?=(?:.*\d){4,})[A-Z0-9-]{8,32}$")
+_PLACEHOLDER_ONU_NAME_RE = re.compile(r"^\d{1,3}$")
+
+
+def _is_serial_like(value: str) -> bool:
+    return bool(_SERIAL_LIKE_RE.fullmatch(value) or _GENERIC_SERIAL_LIKE_RE.fullmatch(value))
 
 
 def _decode_hex_serial(hex_str: str) -> Optional[str]:
@@ -99,10 +105,12 @@ def _normalize_serial_candidate(raw: str, *, strict: bool) -> str:
     recovered = _recover_mangled_serial(normalized)
     if recovered:
         return recovered
-    if strict and not _SERIAL_LIKE_RE.fullmatch(normalized):
+    if strict and not _is_serial_like(normalized):
         return ""
-    if _SERIAL_LIKE_RE.fullmatch(normalized):
+    if _is_serial_like(normalized):
         return normalized.replace("-", "")
+    if re.fullmatch(r"\d{1,4}", normalized):
+        return ""
     return normalized
 
 
@@ -360,6 +368,7 @@ class Command(BaseCommand):
                 {
                     "slot_id": int(parsed_slot),
                     "pon_id": int(parsed_pon),
+                    "pon_index": int(parsed_pon_numeric) if parsed_pon_numeric is not None else None,
                     "onu_id": int(parsed_onu),
                     "snmp_index": raw_index,
                     "name": name_value,
@@ -378,21 +387,12 @@ class Command(BaseCommand):
         updated = 0
         seen_onu_keys: Set[Tuple[int, int, int]] = set()
         seen_slot_keys: Set[str] = set()
-        seen_pon_keys: Set[Tuple[int, str]] = set()
+        seen_pon_keys: Set[Tuple[str, str]] = set()
         now = timezone.now()
 
         if not dry_run:
-            slot_map: Dict[str, OLTSlot] = {slot.slot_key: slot for slot in OLTSlot.objects.filter(olt=olt)}
-            pon_map: Dict[Tuple[int, str], OLTPON] = {
-                (pon.slot_id, pon.pon_key): pon for pon in OLTPON.objects.filter(olt=olt).select_related("slot")
-            }
-            onu_map: Dict[Tuple[int, int, int], ONU] = {
-                (onu.slot_id, onu.pon_id, onu.onu_id): onu for onu in ONU.objects.filter(olt=olt)
-            }
-
-            onus_to_create: List[ONU] = []
-            onus_to_update: List[ONU] = []
-
+            slot_specs: Dict[str, Dict[str, Any]] = {}
+            pon_specs: Dict[Tuple[str, str], Dict[str, Any]] = {}
             for entry in normalized_entries:
                 slot_identity = {
                     "slot_id": entry["slot_id"],
@@ -401,20 +401,7 @@ class Command(BaseCommand):
                 }
                 slot_key = _slot_key(slot_identity)
                 seen_slot_keys.add(slot_key)
-                slot_obj = slot_map.get(slot_key)
-                if slot_obj is None:
-                    slot_obj = OLTSlot.objects.create(
-                        olt=olt,
-                        slot_id=entry["slot_id"],
-                        rack_id=None,
-                        shelf_id=None,
-                        slot_key=slot_key,
-                        is_active=True,
-                    )
-                    slot_map[slot_key] = slot_obj
-                elif not slot_obj.is_active:
-                    slot_obj.is_active = True
-                    slot_obj.save(update_fields=["is_active", "last_discovered_at"])
+                slot_specs.setdefault(slot_key, slot_identity)
 
                 pon_identity = {
                     "slot_id": entry["slot_id"],
@@ -424,72 +411,199 @@ class Command(BaseCommand):
                     "port_id": None,
                 }
                 pon_key = _pon_key(pon_identity)
-                pon_lookup = (slot_obj.id, pon_key)
-                seen_pon_keys.add(pon_lookup)
-                pon_obj = pon_map.get(pon_lookup)
-                if pon_obj is None:
-                    pon_obj = OLTPON.objects.create(
-                        olt=olt,
-                        slot=slot_obj,
-                        pon_id=entry["pon_id"],
-                        pon_index=None,
-                        rack_id=None,
-                        shelf_id=None,
-                        port_id=None,
-                        pon_key=pon_key,
-                        is_active=True,
-                    )
-                    pon_map[pon_lookup] = pon_obj
-                elif (not pon_obj.is_active) or pon_obj.slot_id != slot_obj.id:
-                    pon_obj.slot = slot_obj
-                    pon_obj.is_active = True
-                    pon_obj.save(update_fields=["slot", "is_active", "last_discovered_at"])
-
-                onu_key = (entry["slot_id"], entry["pon_id"], entry["onu_id"])
-                seen_onu_keys.add(onu_key)
-                existing = onu_map.get(onu_key)
-                if existing is None:
-                    created += 1
-                    onus_to_create.append(
-                        ONU(
-                            olt=olt,
-                            slot_ref=slot_obj,
-                            pon_ref=pon_obj,
-                            slot_id=entry["slot_id"],
-                            pon_id=entry["pon_id"],
-                            onu_id=entry["onu_id"],
-                            snmp_index=entry["snmp_index"] or f"{entry['pon_id']}.{entry['onu_id']}",
-                            name=entry["name"] or "",
-                            serial=entry["serial"] or "",
-                            status=ONU.STATUS_UNKNOWN,
-                            is_active=True,
-                        )
-                    )
-                else:
-                    dirty = False
-                    if existing.slot_ref_id != slot_obj.id:
-                        existing.slot_ref = slot_obj
-                        dirty = True
-                    if existing.pon_ref_id != pon_obj.id:
-                        existing.pon_ref = pon_obj
-                        dirty = True
-                    if existing.snmp_index != (entry["snmp_index"] or existing.snmp_index):
-                        existing.snmp_index = entry["snmp_index"] or existing.snmp_index
-                        dirty = True
-                    if entry["name"] and existing.name != entry["name"]:
-                        existing.name = entry["name"]
-                        dirty = True
-                    if entry["serial"] and existing.serial != entry["serial"]:
-                        existing.serial = entry["serial"]
-                        dirty = True
-                    if not existing.is_active:
-                        existing.is_active = True
-                        dirty = True
-                    if dirty:
-                        updated += 1
-                        onus_to_update.append(existing)
+                seen_pon_keys.add((slot_key, pon_key))
+                pon_specs.setdefault(
+                    (slot_key, pon_key),
+                    {
+                        "slot_key": slot_key,
+                        "pon_id": entry["pon_id"],
+                        "pon_index": entry["pon_index"],
+                        "rack_id": None,
+                        "shelf_id": None,
+                        "port_id": None,
+                        "pon_key": pon_key,
+                    },
+                )
 
             with transaction.atomic():
+                slot_map: Dict[str, OLTSlot] = {
+                    slot.slot_key: slot for slot in OLTSlot.objects.filter(olt=olt)
+                }
+                slots_to_create: List[OLTSlot] = []
+                slots_to_update: List[OLTSlot] = []
+                for slot_key, slot_identity in slot_specs.items():
+                    slot_obj = slot_map.get(slot_key)
+                    if slot_obj is None:
+                        slots_to_create.append(
+                            OLTSlot(
+                                olt=olt,
+                                slot_id=slot_identity["slot_id"],
+                                rack_id=slot_identity["rack_id"],
+                                shelf_id=slot_identity["shelf_id"],
+                                slot_key=slot_key,
+                                is_active=True,
+                            )
+                        )
+                        continue
+                    if not slot_obj.is_active:
+                        slot_obj.is_active = True
+                        slot_obj.last_discovered_at = now
+                        slots_to_update.append(slot_obj)
+                if slots_to_create:
+                    OLTSlot.objects.bulk_create(slots_to_create)
+                if slots_to_update:
+                    OLTSlot.objects.bulk_update(slots_to_update, ["is_active", "last_discovered_at"])
+                slot_map = {
+                    slot.slot_key: slot for slot in OLTSlot.objects.filter(olt=olt)
+                }
+
+                existing_pons = list(
+                    OLTPON.objects.filter(olt=olt)
+                    .select_related("slot")
+                    .order_by("-is_active", "-last_discovered_at", "-id")
+                )
+                description_by_pon_index: Dict[int, str] = {}
+                description_by_pon_key: Dict[str, str] = {}
+                description_by_slot_pon: Dict[Tuple[int, int], str] = {}
+                for existing_pon in existing_pons:
+                    description = str(existing_pon.description or "").strip()
+                    if not description:
+                        continue
+                    if existing_pon.pon_index is not None and existing_pon.pon_index not in description_by_pon_index:
+                        description_by_pon_index[int(existing_pon.pon_index)] = description
+                    if existing_pon.pon_key and existing_pon.pon_key not in description_by_pon_key:
+                        description_by_pon_key[str(existing_pon.pon_key)] = description
+                    slot_pon_key = (int(existing_pon.slot.slot_id), int(existing_pon.pon_id))
+                    if slot_pon_key not in description_by_slot_pon:
+                        description_by_slot_pon[slot_pon_key] = description
+
+                pon_map: Dict[Tuple[str, str], OLTPON] = {
+                    (pon.slot.slot_key, pon.pon_key): pon
+                    for pon in existing_pons
+                }
+                pons_to_create: List[OLTPON] = []
+                pons_to_update: List[OLTPON] = []
+                for pon_lookup, pon_spec in pon_specs.items():
+                    slot_key = pon_spec["slot_key"]
+                    slot_obj = slot_map[slot_key]
+                    pon_obj = pon_map.get(pon_lookup)
+                    if pon_obj is None:
+                        inherited_description = ""
+                        if pon_spec["pon_index"] is not None:
+                            inherited_description = description_by_pon_index.get(int(pon_spec["pon_index"]), "")
+                        if not inherited_description:
+                            inherited_description = description_by_pon_key.get(str(pon_spec["pon_key"]), "")
+                        if not inherited_description:
+                            inherited_description = description_by_slot_pon.get(
+                                (int(slot_obj.slot_id), int(pon_spec["pon_id"])),
+                                "",
+                            )
+                        pons_to_create.append(
+                            OLTPON(
+                                olt=olt,
+                                slot=slot_obj,
+                                pon_id=pon_spec["pon_id"],
+                                pon_index=pon_spec["pon_index"],
+                                rack_id=pon_spec["rack_id"],
+                                shelf_id=pon_spec["shelf_id"],
+                                port_id=pon_spec["port_id"],
+                                pon_key=pon_spec["pon_key"],
+                                description=inherited_description,
+                                is_active=True,
+                            )
+                        )
+                        continue
+                    if (not pon_obj.is_active) or pon_obj.slot_id != slot_obj.id:
+                        pon_obj.slot = slot_obj
+                        pon_obj.is_active = True
+                        pon_obj.last_discovered_at = now
+                        pons_to_update.append(pon_obj)
+                if pons_to_create:
+                    OLTPON.objects.bulk_create(pons_to_create)
+                if pons_to_update:
+                    OLTPON.objects.bulk_update(pons_to_update, ["slot", "is_active", "last_discovered_at"])
+                pon_map = {
+                    (pon.slot.slot_key, pon.pon_key): pon
+                    for pon in OLTPON.objects.filter(olt=olt).select_related("slot")
+                }
+
+                onu_map: Dict[Tuple[int, int, int], ONU] = {
+                    (onu.slot_id, onu.pon_id, onu.onu_id): onu for onu in ONU.objects.filter(olt=olt)
+                }
+                onus_to_create: List[ONU] = []
+                onus_to_update: List[ONU] = []
+
+                for entry in normalized_entries:
+                    slot_key = _slot_key(
+                        {
+                            "slot_id": entry["slot_id"],
+                            "rack_id": None,
+                            "shelf_id": None,
+                        }
+                    )
+                    pon_key = _pon_key(
+                        {
+                            "slot_id": entry["slot_id"],
+                            "pon_id": entry["pon_id"],
+                            "rack_id": None,
+                            "shelf_id": None,
+                            "port_id": None,
+                        }
+                    )
+                    slot_obj = slot_map[slot_key]
+                    pon_obj = pon_map[(slot_key, pon_key)]
+
+                    onu_key = (entry["slot_id"], entry["pon_id"], entry["onu_id"])
+                    seen_onu_keys.add(onu_key)
+                    existing = onu_map.get(onu_key)
+                    if existing is None:
+                        created += 1
+                        onus_to_create.append(
+                            ONU(
+                                olt=olt,
+                                slot_ref=slot_obj,
+                                pon_ref=pon_obj,
+                                slot_id=entry["slot_id"],
+                                pon_id=entry["pon_id"],
+                                onu_id=entry["onu_id"],
+                                snmp_index=entry["snmp_index"] or f"{entry['pon_id']}.{entry['onu_id']}",
+                                name=entry["name"] or "",
+                                serial=entry["serial"] or "",
+                                status=ONU.STATUS_UNKNOWN,
+                                is_active=True,
+                            )
+                        )
+                    else:
+                        dirty = False
+                        if existing.slot_ref_id != slot_obj.id:
+                            existing.slot_ref = slot_obj
+                            dirty = True
+                        if existing.pon_ref_id != pon_obj.id:
+                            existing.pon_ref = pon_obj
+                            dirty = True
+                        if existing.snmp_index != (entry["snmp_index"] or existing.snmp_index):
+                            existing.snmp_index = entry["snmp_index"] or existing.snmp_index
+                            dirty = True
+                        if entry["name"] and existing.name != entry["name"]:
+                            existing.name = entry["name"]
+                            dirty = True
+                        elif (
+                            not entry["name"]
+                            and existing.name
+                            and _PLACEHOLDER_ONU_NAME_RE.fullmatch(existing.name.strip())
+                        ):
+                            existing.name = ""
+                            dirty = True
+                        if entry["serial"] and existing.serial != entry["serial"]:
+                            existing.serial = entry["serial"]
+                            dirty = True
+                        if not existing.is_active:
+                            existing.is_active = True
+                            dirty = True
+                        if dirty:
+                            updated += 1
+                            onus_to_update.append(existing)
+
                 if onus_to_create:
                     ONU.objects.bulk_create(onus_to_create)
                 if onus_to_update:
@@ -529,7 +643,7 @@ class Command(BaseCommand):
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:
                 logger.exception("OLT %s zabbix discovery: failed to refresh cached topology counters.", olt.id)
-            cache_service.invalidate_topology_api_cache(olt.id)
+            cache_service.invalidate_topology_structure_cache(olt.id)
 
         self._mark_discovery_result(olt, success=True, dry_run=dry_run)
         self.stdout.write(

@@ -15,7 +15,7 @@
   - Scheduler startup is controlled by `ENABLE_SCHEDULER=1` at backend container boot.
   - Optional auth bootstrap at container boot: when `VARUNA_AUTH_BOOTSTRAP=1`, backend entrypoint runs `ensure_auth_user` using `VARUNA_AUTH_*` envs before serving traffic.
 - `varuna-db`: PostgreSQL source of truth.
-- `redis`: low-latency status/power cache.
+- `redis`: infrastructure service kept in the default stack; used for per-OLT topology structure cache only. Live status, scoped power reads, Power Report, and Alarm History do not depend on Redis read-path caching.
 - Optional collector stack (enabled in current dev compose):
   - `zabbix-db`
   - `zabbix-server`
@@ -117,7 +117,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - or you need independent autoscaling by job type.
 
 ## Data Model Highlights
-- `VendorProfile`: vendor/model OID templates and capabilities. Seeded profiles: ZTE C300, VSOL LIKE GPON 8P, Huawei UNIFICADO, Fiberhome UNIFICADO.
+- `VendorProfile`: vendor/model OID templates and capabilities. Seeded profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei UNIFICADO, Fiberhome UNIFICADO.
 - `OLT`: scheduler intervals and runtime reachability state fields (`snmp_*` field names kept for compatibility).
 - `OLTSlot` and `OLTPON`: discovered topology map.
 - `ONU`: per-OLT endpoint with active/inactive lifecycle and status.
@@ -175,11 +175,11 @@ When to split into dedicated `discovery` and `poller` workers:
 ## Role-Based Access Control
 - Users have roles (`admin`, `operator`, `viewer`) via `UserProfile.role`.
 - `admin` has full read/write access including settings, OLT management, and maintenance actions.
-- `operator` has read access to topology and monitoring but cannot access settings or trigger maintenance actions.
-- `viewer` is read-only (no settings, no maintenance actions, no power refresh).
+- `operator` cannot access settings, but can edit PON descriptions and trigger scoped live status/power refresh from topology view.
+- `viewer` is read-only (no settings, no PON description edits, no live refresh).
 - Role resolution: superuser → admin; profile role if valid; fallback → viewer.
-- Permission enforcement at API level via `can_modify_settings()` checks; `VendorProfileViewSet` is read-only for all users.
-- Frontend hides settings tab and action buttons for viewers via `canManageSettings` derived state.
+- Permission enforcement at API level splits between `can_modify_settings()` (admin-only settings/OLT maintenance) and `can_operate_topology()` (admin/operator PON description edits and live topology refresh); `VendorProfileViewSet` is read-only for all users.
+- Frontend hides settings tab for non-admin users via `canManageSettings` and gates PON sidebar edit/refresh controls via `canOperateTopology`.
 
 ## Background Collection Scheduling
 - The `run_scheduler` management command is the primary scheduler. It runs as a long-lived background process alongside the Django server and dispatches polling, discovery, power collection, reachability checks, and periodic history pruning on configurable tick intervals.
@@ -188,7 +188,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - Scheduler supports per-tick OLT caps (`max-poll`, `max-discovery`, `max-power`) for load shaping during high-scale deployments.
 - `--force` flag bypasses due checks for manual/emergency runs.
 - Polling command enforces a runtime budget (`max_runtime_seconds`, default 180s) to prevent long-running jobs.
-- Power service pre-fetches cached values, skips cache writes for empty reads, and retains cached snapshots when forced refresh fails.
+- Power service reads directly from Zabbix and persists fresh samples to PostgreSQL for topology/report/history surfaces.
 
 ## Performance Decisions
 - Removed global `ONU.snmp_index` uniqueness in favor of per-OLT uniqueness (`(olt, snmp_index)`), enabling multi-vendor/multi-OLT scale.
@@ -196,6 +196,9 @@ When to split into dedicated `discovery` and `poller` workers:
 - `poll_onu_status` refactored to avoid per-ONU log queries.
 - Redis invalidation switched from `KEYS` to `SCAN` pattern deletion.
 - Topology serializers now use annotated counts where available.
-- Redis response cache is used for topology-heavy API reads (`/api/olts/`, `/api/olts/?include_topology=true`, `/api/olts/{id}/topology/`) with short TTLs and runtime-triggered invalidation.
+- Topology-heavy API reads use a hybrid model:
+  - `GET /api/olts/` is a direct PostgreSQL read and reuses denormalized `cached_*` counters for OLT summaries.
+  - `GET /api/olts/?include_topology=true` and `GET /api/olts/{id}/topology/` reuse per-OLT Redis structure cache entries for static inventory only, then overlay live `ONU` + active `ONULog` data from PostgreSQL.
+  - full-tree power is intentionally not loaded during topology reads; scoped power endpoints read persisted `ONUPowerSample` snapshots on demand.
 - Frontend enforces stale-data gray state using per-OLT `polling_interval_seconds` and synchronizes health colors between topology and settings views.
 - Stale tolerance enforces a 10-minute minimum window so short polling intervals don't cause premature gray state.

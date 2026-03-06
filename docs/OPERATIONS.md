@@ -45,12 +45,13 @@ Development default app login (from `docker/dev.env` bootstrap):
 
 Backend collection contract:
 - `ENABLE_SCHEDULER=1` must stay enabled in runtime env so discovery, polling, collector checks, power collection, and history pruning run without any frontend session.
-- Collections are shared backend state for all users; frontend reads snapshots and does not need to trigger manual collection for normal topology usage.
-- Recommended topology cache TTL for fast first load is `300s` (`OLT_TOPOLOGY_LIST_CACHE_TTL` and `OLT_TOPOLOGY_DETAIL_CACHE_TTL`).
+- Collections are shared backend state for all users; frontend reads live API responses backed by current DB/Zabbix data and does not need to trigger manual collection for normal topology usage.
+- Redis remains part of the default stack because topology structure cache is enabled for slow-changing inventory. Runtime status, Power Report, Alarm History, and scoped power snapshot reads do not require Redis to return current data.
 - Zabbix integration requires:
   - `ZABBIX_API_URL`
   - either `ZABBIX_API_TOKEN` or (`ZABBIX_USERNAME` + `ZABBIX_PASSWORD`)
   - optional `ZABBIX_HOST_NAME_BY_OLT_JSON` for OLT->host alias mapping.
+  - optional `TOPOLOGY_STRUCTURE_CACHE_TTL` (default `43200`) for per-OLT topology structure cache lifetime in Redis.
   - optional `ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS` (default `512`) to cap immediate `task.create` executions; explicit manual refresh paths can bypass via `--force-upstream`.
   - optional `ZABBIX_AVAILABILITY_INTERVAL_SECONDS` (default `30`) used by host macro `{$VARUNA.AVAILABILITY_INTERVAL}` for SNMP sentinel polling cadence.
   - optional `ZABBIX_AVAILABILITY_STALE_SECONDS` (default `45`) for sentinel freshness threshold in Varuna reachability checks.
@@ -108,6 +109,7 @@ Template import workflow:
   - `OLT Huawei Unified`
   - `OLT Fiberhome Unified`
   - `OLT ZTE C300`
+  - `OLT ZTE C600`
   - `OLT VSOL GPON 8P`
 - Varuna controls Zabbix collection cadence through host macros pushed on OLT create/update:
   - `{$VARUNA.DISCOVERY_INTERVAL}`
@@ -120,10 +122,13 @@ Template import workflow:
   - `{$VARUNA.SNMP_COMMUNITY}`
 - Sentinel SNMP availability lives in shared template `Varuna SNMP Availability` (`varunaSnmpAvailability`, `sysName.0`) driven by `{$VARUNA.AVAILABILITY_INTERVAL}` for fast reachability flips.
 - Power preprocessors in both templates discard sentinel optical values (`0 dBm` and `-40 dBm`) before history write, so frontend no longer needs client-side sentinel filtering.
-- ZTE C300 note:
+- ZTE C300/C600 note:
   - power preprocessors use vendor-specific raw conversion formulas (ONU Rx register conversion + OLT Rx thousandths conversion) instead of generic `/10` or `/100` scaling.
   - invalid raw sentinel readings (`-80000`, `65535`, empty/non-numeric) are normalized to an out-of-range fallback (`-80`) to avoid `Not supported` item state storms on hosts with many offline ONUs.
   - Varuna backend power normalization discards out-of-range values, so UI/history stays clean while Zabbix items remain supported.
+  - `OLT ZTE C600` uses a different status code map from `OLT ZTE C300`; live validation on `192.168.7.151` (`sysName=ZTE-PONTAL`) confirmed `3/4 -> online`, `2 -> link_loss`, `5 -> dying_gasp`, `7 -> offline`, with `1 -> link_loss` retained as a compatible LOS-class fallback.
+  - The C600 ONU name OID is still `1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`; if the OLT returns `""`, treat the ONU as nameless rather than substituting numeric placeholders.
+  - C600 serial payloads may include numeric prefixes such as `1,<serial>`; template preprocessing should strip the prefix before Varuna discovery/polling runs.
 - Template default macro values are bootstrap-only (`5m`, `1m`, `5m`, `30s`, `7d`) and are overridden per OLT by Varuna settings.
 - Varuna ONU LLD rules in both Huawei and Fiberhome templates are configured with immediate lost-resource cleanup (`Delete lost resources = Immediately`) so stale ONU item prototypes are removed as soon as discovery no longer returns them.
 - On OLT create/update, Varuna also synchronizes Zabbix host runtime fields:
@@ -447,7 +452,7 @@ backend/venv/bin/python backend/manage.py ensure_auth_user \
 
 Use `--force-password` to update an existing user's password. Environment variable fallbacks: `VARUNA_AUTH_USERNAME`, `VARUNA_AUTH_PASSWORD`, `VARUNA_AUTH_ROLE`.
 
-Roles: `admin` (full access), `operator` (full access), `viewer` (read-only).
+Roles: `admin` (full access, including Settings and OLT maintenance), `operator` (no Settings tab, but can edit PON descriptions and trigger scoped topology status/power refresh), `viewer` (read-only).
 
 ## Manual Jobs
 Run discovery for all eligible OLTs:
@@ -508,11 +513,6 @@ Monitor scheduler logs:
 ```bash
 docker compose -f docker-compose.dev.yml logs -f backend | grep scheduler
 ```
-
-Topology API cache tuning (env):
-- `OLT_LIST_CACHE_TTL`: base `/api/olts/` list cache.
-- `OLT_TOPOLOGY_LIST_CACHE_TTL`: `/api/olts/?include_topology=true` cache.
-- `OLT_TOPOLOGY_DETAIL_CACHE_TTL`: `/api/olts/{id}/topology/` cache.
 
 Manual one-off collection (e.g. from host cron or debugging):
 ```bash

@@ -4,15 +4,19 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from topology.models import OLTPON, OLT, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
-from topology.services.cache_service import cache_service
+from topology.services.history_service import get_latest_power_snapshot_map
 from topology.services.power_values import normalize_power_value
 
 
-def _cached_or_fallback(instance, cached_attr: str, fallback_fn):
-    value = getattr(instance, cached_attr, None)
-    if value is None:
-        return int(fallback_fn())
-    return int(value)
+def _live_count(fallback_fn):
+    return int(fallback_fn())
+
+
+def _cached_count(obj, attr_name, fallback_fn):
+    cached_value = getattr(obj, attr_name, None)
+    if cached_value is not None:
+        return int(cached_value)
+    return _live_count(fallback_fn)
 
 
 class VendorProfileSerializer(serializers.ModelSerializer):
@@ -86,47 +90,21 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         if prefetched is not None:
             return prefetched[0] if prefetched else None
 
-        cache_key = '_active_log_cache'
-        if not hasattr(self, cache_key):
-            setattr(self, cache_key, {})
-        cache = getattr(self, cache_key)
-        if obj.id in cache:
-            return cache[obj.id]
-
         log = ONULog.objects.filter(
             onu=obj,
             offline_until__isnull=True,
         ).order_by('-offline_since').first()
-        cache[obj.id] = log
         return log
 
     def _get_power(self, obj):
         power_map = self.context.get('power_map') if isinstance(self.context, dict) else None
         if isinstance(power_map, dict) and obj.id in power_map:
             return power_map[obj.id] or {}
-
-        cache_key = '_power_cache'
-        if not hasattr(self, cache_key):
-            setattr(self, cache_key, {})
-        cache = getattr(self, cache_key)
-        if obj.id in cache:
-            return cache[obj.id]
-        power = cache_service.get_onu_power(obj.olt_id, obj.id) or {}
-        cache[obj.id] = power
-        return power
+        return get_latest_power_snapshot_map([obj.id]).get(obj.id) or {}
 
     def _supports_olt_rx_power(self, obj):
-        cache_key = '_supports_olt_rx_power_cache'
-        if not hasattr(self, cache_key):
-            setattr(self, cache_key, {})
-        cache = getattr(self, cache_key)
-        olt_id = int(obj.olt_id)
-        if olt_id in cache:
-            return cache[olt_id]
         power_cfg = ((obj.olt.vendor_profile.oid_templates or {}).get('power', {}))
-        supports = bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
-        cache[olt_id] = supports
-        return supports
+        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
 
     @staticmethod
     def _as_iso(value):
@@ -214,23 +192,17 @@ class PONNestedSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_onu_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_onu_count',
+        return _live_count(
             lambda: obj.onus.filter(is_active=True).count(),
         )
 
     def get_online_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_online_count',
+        return _live_count(
             lambda: obj.onus.filter(is_active=True, status=ONU.STATUS_ONLINE).count(),
         )
 
     def get_offline_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_offline_count',
+        return _live_count(
             lambda: obj.onus.filter(is_active=True).exclude(status=ONU.STATUS_ONLINE).count(),
         )
 
@@ -264,23 +236,17 @@ class SlotNestedSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_pon_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_pon_count',
+        return _live_count(
             lambda: obj.pons.filter(is_active=True).count(),
         )
 
     def get_onu_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_onu_count',
+        return _live_count(
             lambda: ONU.objects.filter(pon_ref__slot=obj, is_active=True).count(),
         )
 
     def get_online_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_online_count',
+        return _live_count(
             lambda: ONU.objects.filter(
                 pon_ref__slot=obj,
                 is_active=True,
@@ -289,9 +255,7 @@ class SlotNestedSerializer(serializers.ModelSerializer):
         )
 
     def get_offline_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_offline_count',
+        return _live_count(
             lambda: ONU.objects.filter(pon_ref__slot=obj, is_active=True).exclude(
                 status=ONU.STATUS_ONLINE
             ).count(),
@@ -366,30 +330,22 @@ class OLTTopologySerializer(serializers.ModelSerializer):
         return (obj.vendor_profile.vendor or '').upper()
 
     def get_slot_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_slot_count',
+        return _live_count(
             lambda: obj.slots.filter(is_active=True).count(),
         )
 
     def get_pon_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_pon_count',
+        return _live_count(
             lambda: OLTPON.objects.filter(olt=obj, is_active=True).count(),
         )
 
     def get_onu_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_onu_count',
+        return _live_count(
             lambda: ONU.objects.filter(olt=obj, is_active=True).count(),
         )
 
     def get_online_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_online_count',
+        return _live_count(
             lambda: ONU.objects.filter(
                 olt=obj,
                 is_active=True,
@@ -398,9 +354,7 @@ class OLTTopologySerializer(serializers.ModelSerializer):
         )
 
     def get_offline_count(self, obj):
-        return _cached_or_fallback(
-            obj,
-            'cached_offline_count',
+        return _live_count(
             lambda: ONU.objects.filter(olt=obj, is_active=True).exclude(
                 status=ONU.STATUS_ONLINE
             ).count(),
@@ -505,28 +459,28 @@ class OLTSerializer(serializers.ModelSerializer):
         return (obj.vendor_profile.vendor or '').upper()
 
     def get_slot_count(self, obj):
-        return _cached_or_fallback(
+        return _cached_count(
             obj,
             'cached_slot_count',
             lambda: OLTSlot.objects.filter(olt=obj, is_active=True).count(),
         )
 
     def get_pon_count(self, obj):
-        return _cached_or_fallback(
+        return _cached_count(
             obj,
             'cached_pon_count',
             lambda: OLTPON.objects.filter(olt=obj, is_active=True).count(),
         )
 
     def get_onu_count(self, obj):
-        return _cached_or_fallback(
+        return _cached_count(
             obj,
             'cached_onu_count',
             lambda: ONU.objects.filter(olt=obj, is_active=True).count(),
         )
 
     def get_online_count(self, obj):
-        return _cached_or_fallback(
+        return _cached_count(
             obj,
             'cached_online_count',
             lambda: ONU.objects.filter(
@@ -537,7 +491,7 @@ class OLTSerializer(serializers.ModelSerializer):
         )
 
     def get_offline_count(self, obj):
-        return _cached_or_fallback(
+        return _cached_count(
             obj,
             'cached_offline_count',
             lambda: ONU.objects.filter(olt=obj, is_active=True).exclude(
@@ -832,7 +786,7 @@ class OLTPONSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id', 'olt', 'olt_name', 'slot', 'slot_id', 'slot_key',
-            'pon_id', 'pon_key', 'pon_index', 'rack_id', 'shelf_id',
+            'pon_id', 'pon_key', 'pon_index', 'name', 'rack_id', 'shelf_id',
             'port_id', 'is_active', 'last_discovered_at', 'created_at',
         ]
 

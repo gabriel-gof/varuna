@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Network,
   Settings as SettingsIcon,
@@ -20,9 +20,6 @@ import './i18n'
 import { LoginPage } from './components/LoginPage'
 import { VarunaIcon } from './components/VarunaIcon'
 import { NetworkTopology } from './components/NetworkTopology'
-import { SettingsPanel } from './components/SettingsPanel'
-import { PowerReport } from './components/PowerReport'
-import { AlarmHistory } from './components/AlarmHistory'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api, { updatePonDescription } from './services/api'
 import { InlineEditableText } from './components/InlineEditableText'
@@ -30,6 +27,16 @@ import { classifyOnu, getOnuStats } from './utils/stats'
 import { deriveOltHealthState } from './utils/oltHealth'
 import { getPowerColor, powerColorClass } from './utils/powerThresholds'
 import { getApiErrorMessage } from './utils/apiErrorMessages'
+
+const SettingsPanel = lazy(() =>
+  import('./components/SettingsPanel').then((module) => ({ default: module.SettingsPanel }))
+)
+const PowerReport = lazy(() =>
+  import('./components/PowerReport').then((module) => ({ default: module.PowerReport }))
+)
+const AlarmHistory = lazy(() =>
+  import('./components/AlarmHistory').then((module) => ({ default: module.AlarmHistory }))
+)
 
 const normalizeList = (data) => {
   if (Array.isArray(data)) return data
@@ -95,75 +102,6 @@ const getOnuPowerSnapshot = (onu) => {
   return { onuRx, oltRx, readAt }
 }
 
-const hasPowerSnapshot = (snapshot) => {
-  if (!snapshot) return false
-  return snapshot.onuRx !== null || snapshot.oltRx !== null || Boolean(snapshot.readAt)
-}
-
-const shouldCarryForwardPower = (previousOlt, nextOlt) => {
-  const previousPowerMs = parseTimestampMs(previousOlt?.last_power_at)
-  if (!previousPowerMs) return false
-
-  const nextPowerMs = parseTimestampMs(nextOlt?.last_power_at)
-  if (!nextPowerMs) return true
-  return nextPowerMs <= previousPowerMs
-}
-
-const buildOltPowerSnapshotMap = (olt) => {
-  const byOnuId = new Map()
-
-  asList(olt?.slots).forEach((slot) => {
-    asList(slot?.pons).forEach((pon) => {
-      asList(pon?.onus).forEach((onu) => {
-        if (!onu?.id) return
-        const snapshot = getOnuPowerSnapshot(onu)
-        if (!hasPowerSnapshot(snapshot)) return
-        byOnuId.set(String(onu.id), snapshot)
-      })
-    })
-  })
-
-  return byOnuId
-}
-
-const mergeOltPowerSnapshots = (previousOlt, nextOlt) => {
-  if (!previousOlt || !shouldCarryForwardPower(previousOlt, nextOlt)) return nextOlt
-
-  const previousSnapshotByOnu = buildOltPowerSnapshotMap(previousOlt)
-  if (!previousSnapshotByOnu.size) return nextOlt
-
-  const slots = asList(nextOlt?.slots).map((slot) => ({
-    ...slot,
-    pons: asList(slot?.pons).map((pon) => ({
-      ...pon,
-      onus: asList(pon?.onus).map((onu) => {
-        const currentSnapshot = getOnuPowerSnapshot(onu)
-        if (hasPowerSnapshot(currentSnapshot)) return onu
-
-        const previousSnapshot = previousSnapshotByOnu.get(String(onu?.id))
-        if (!previousSnapshot) return onu
-
-        return {
-          ...onu,
-          onu_rx_power: previousSnapshot.onuRx,
-          olt_rx_power: previousSnapshot.oltRx,
-          power_read_at: previousSnapshot.readAt
-        }
-      })
-    }))
-  }))
-
-  return {
-    ...nextOlt,
-    slots
-  }
-}
-
-const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
-  const previousByOltId = new Map(asList(previousOlts).map((olt) => [String(olt?.id), olt]))
-  return asList(nextOlts).map((nextOlt) => mergeOltPowerSnapshots(previousByOltId.get(String(nextOlt?.id)), nextOlt))
-}
-
 const arePonStatsEqual = (left = {}, right = {}) => {
   return (
     Number(left.total || 0) === Number(right.total || 0) &&
@@ -212,23 +150,8 @@ const enrichTopologyWithPonStats = (olts) => {
   })
 }
 
-const mergeBaseOltsPreservingTopology = (previousOlts, nextBaseOlts) => {
-  const previousByOltId = new Map(asList(previousOlts).map((olt) => [String(olt?.id), olt]))
-  return asList(nextBaseOlts).map((nextOlt) => {
-    const previousOlt = previousByOltId.get(String(nextOlt?.id))
-    if (!previousOlt) return nextOlt
-    const previousSlots = asList(previousOlt?.slots)
-    if (!previousSlots.length) return nextOlt
-    return {
-      ...nextOlt,
-      slots: previousSlots
-    }
-  })
-}
-
 const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
-const TOPOLOGY_REFRESH_MIN_INTERVAL_MS = 30_000
 const TOPOLOGY_REFRESH_DEFAULT_INTERVAL_MS = 30_000
 const TOPOLOGY_REFRESH_RECOVERY_INTERVAL_MS = 5_000
 const SEARCH_HIGHLIGHT_STYLE = {
@@ -355,6 +278,93 @@ const patchPonStatusRows = (olts, target, rows) => {
   return changed ? nextOlts : olts
 }
 
+const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
+  const previousPowerByOnuId = new Map()
+
+  asList(previousOlts).forEach((olt) => {
+    asList(olt?.slots).forEach((slot) => {
+      asList(slot?.pons).forEach((pon) => {
+        asList(pon?.onus).forEach((onu) => {
+          const onuId = onu?.id
+          if (onuId == null) return
+
+          const snapshot = {
+            onu_rx_power: onu?.onu_rx_power ?? null,
+            olt_rx_power: onu?.olt_rx_power ?? null,
+            power_read_at: onu?.power_read_at ?? null
+          }
+          const hasSnapshot =
+            snapshot.onu_rx_power !== null ||
+            snapshot.olt_rx_power !== null ||
+            Boolean(snapshot.power_read_at)
+
+          if (hasSnapshot) {
+            previousPowerByOnuId.set(String(onuId), snapshot)
+          }
+        })
+      })
+    })
+  })
+
+  if (!previousPowerByOnuId.size) return nextOlts
+
+  let changed = false
+
+  const mergedOlts = asList(nextOlts).map((olt) => {
+    let oltChanged = false
+
+    const nextSlots = asList(olt?.slots).map((slot) => {
+      let slotChanged = false
+
+      const nextPons = asList(slot?.pons).map((pon) => {
+        let ponChanged = false
+
+        const nextOnus = asList(pon?.onus).map((onu) => {
+          const previousSnapshot = previousPowerByOnuId.get(String(onu?.id))
+          if (!previousSnapshot) return onu
+
+          const hasCurrentSnapshot =
+            onu?.onu_rx_power !== null && onu?.onu_rx_power !== undefined ||
+            onu?.olt_rx_power !== null && onu?.olt_rx_power !== undefined ||
+            Boolean(onu?.power_read_at)
+
+          if (hasCurrentSnapshot) return onu
+
+          changed = true
+          oltChanged = true
+          slotChanged = true
+          ponChanged = true
+
+          return {
+            ...onu,
+            ...previousSnapshot
+          }
+        })
+
+        if (!ponChanged) return pon
+        return {
+          ...pon,
+          onus: nextOnus
+        }
+      })
+
+      if (!slotChanged) return slot
+      return {
+        ...slot,
+        pons: nextPons
+      }
+    })
+
+    if (!oltChanged) return olt
+    return {
+      ...olt,
+      slots: nextSlots
+    }
+  })
+
+  return changed ? mergedOlts : nextOlts
+}
+
 const formatDisconnectionWindow = (startValue, endValue, language) => {
   const anchorValue = endValue || startValue
   if (!anchorValue) return '—'
@@ -475,12 +485,24 @@ const SegmentedControl = ({ options, value, onChange, compact = false }) => (
   </div>
 )
 
+const LazyPanelFallback = () => (
+  <div className="flex w-full items-center justify-center py-20 text-slate-400 dark:text-slate-500">
+    <RotateCw className="h-4 w-4 animate-spin" strokeWidth={2.5} />
+  </div>
+)
+
 const App = () => {
   const { t, i18n } = useTranslation()
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth_token'))
   const [authUser, setAuthUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
-  const canManageSettings = Boolean(authUser?.can_modify_settings)
+  const authRole = String(authUser?.role || '').toLowerCase()
+  const canManageSettings = Boolean(
+    authUser?.can_modify_settings ?? (authRole === 'admin')
+  )
+  const canOperateTopology = Boolean(
+    authUser?.can_operate_topology ?? (authRole === 'admin' || authRole === 'operator')
+  )
 
   useEffect(() => {
     if (!authToken) {
@@ -615,6 +637,7 @@ const App = () => {
   const [settingsActionMessage, setSettingsActionMessage] = useState(null)
   const [settingsActionBusy, setSettingsActionBusy] = useState({})
   const [isRefreshingPonPanel, setIsRefreshingPonPanel] = useState(false)
+  const [isLoadingPonPowerSnapshot, setIsLoadingPonPowerSnapshot] = useState(false)
   const [refreshCooldownActive, setRefreshCooldownActive] = useState(false)
   const refreshCooldownTimerRef = useRef(null)
   const [ponPanelError, setPonPanelError] = useState('')
@@ -624,7 +647,6 @@ const App = () => {
   const [healthTick, setHealthTick] = useState(() => Date.now())
   const oltsRef = useRef([])
   const selectedPonMissingCyclesRef = useRef(0)
-  const selectedPonDataRef = useRef(null)
   const wasAlarmEnabledRef = useRef(false)
   const mainLayoutRef = useRef(null)
   const lastResumeRefreshAtRef = useRef(0)
@@ -633,8 +655,7 @@ const App = () => {
   const previousBodyUserSelectRef = useRef('')
   const previousHtmlCursorRef = useRef('')
   const fetchOltsInflightRef = useRef({})
-  const topologySnapshotLoadedRef = useRef(false)
-  const lastTopologyFetchAtRef = useRef(0)
+  const powerSnapshotLoadKeyRef = useRef('')
 
   useEffect(() => {
     try {
@@ -655,30 +676,27 @@ const App = () => {
 
   const fetchOlts = useCallback(async ({ surfaceError = false, includeTopology = true } = {}) => {
     const requestKey = includeTopology ? 'topology' : 'base'
-    // Deduplication per request shape: if a fetch is already in flight, reuse its promise
     if (fetchOltsInflightRef.current[requestKey]) return fetchOltsInflightRef.current[requestKey]
     const run = async () => {
-      const isInitialLoad = !oltsRef.current.length
-      if (isInitialLoad) setLoading(true)
-      if (isInitialLoad || surfaceError) setError(null)
+      const hasCurrentTopology = oltsRef.current.some((olt) => asList(olt?.slots).length > 0)
+      const shouldBlockRender = includeTopology ? !hasCurrentTopology : !oltsRef.current.length
+      if (shouldBlockRender) setLoading(true)
+      if (shouldBlockRender || surfaceError) setError(null)
       try {
         if (!includeTopology) {
           const res = await api.get('/olts/')
-          const nextOlts = normalizeList(res.data)
-          setOlts((previousOlts) => mergeBaseOltsPreservingTopology(previousOlts, nextOlts))
+          setOlts(normalizeList(res.data))
           return { ok: true, includeTopology: false }
         }
 
         const res = await api.get('/olts/', { params: { include_topology: 'true' } })
         const nextOlts = enrichTopologyWithPonStats(normalizeList(res.data))
-        topologySnapshotLoadedRef.current = true
-        lastTopologyFetchAtRef.current = Date.now()
-        setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, nextOlts))
+        setOlts((previous) => mergeTopologyPowerSnapshots(previous, nextOlts))
         return { ok: true, includeTopology: true }
       } catch (err) {
         if (!includeTopology) {
           const message = getApiErrorMessage(err, t('Failed to load OLT data'), t)
-          if (isInitialLoad || surfaceError) {
+          if (shouldBlockRender || surfaceError) {
             setError(message)
           }
           return { ok: false, message }
@@ -697,19 +715,17 @@ const App = () => {
               }
             })
           )
-          topologySnapshotLoadedRef.current = true
-          lastTopologyFetchAtRef.current = Date.now()
-          setOlts((previousOlts) => mergeTopologyPowerSnapshots(previousOlts, enrichTopologyWithPonStats(enriched)))
+          setOlts((previous) => mergeTopologyPowerSnapshots(previous, enrichTopologyWithPonStats(enriched)))
           return { ok: true, usedFallback: true, includeTopology: true }
         } catch (fallbackErr) {
           const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, t('Failed to load OLT data'), t), t)
-          if (isInitialLoad || surfaceError) {
+          if (shouldBlockRender || surfaceError) {
             setError(message)
           }
           return { ok: false, message }
         }
       } finally {
-        if (isInitialLoad) setLoading(false)
+        if (shouldBlockRender) setLoading(false)
         delete fetchOltsInflightRef.current[requestKey]
       }
     }
@@ -736,24 +752,10 @@ const App = () => {
 
   useEffect(() => {
     if (!authToken) return
-    const isTopologyNav = activeNav === 'topology'
-    const includeTopology = isTopologyNav && !topologySnapshotLoadedRef.current
-    fetchOlts({ includeTopology })
-
-    let topologyDeferredTimer = null
-    if (isTopologyNav && topologySnapshotLoadedRef.current) {
-      // Render topology instantly from cached in-memory tree, then refresh full topology in background.
-      const now = Date.now()
-      const needsFreshTopology = now - (lastTopologyFetchAtRef.current || 0) >= TOPOLOGY_REFRESH_MIN_INTERVAL_MS
-      if (needsFreshTopology) {
-        topologyDeferredTimer = setTimeout(() => {
-          void fetchOlts({ includeTopology: true })
-        }, 450)
-      }
-    }
+    void fetchOlts({ includeTopology: activeNav === 'topology' })
 
     if (canManageSettings) {
-      fetchVendorProfiles()
+      void fetchVendorProfiles()
     } else {
       setVendorProfiles([])
     }
@@ -767,30 +769,8 @@ const App = () => {
     }, refreshIntervalMs)
     return () => {
       clearInterval(interval)
-      if (topologyDeferredTimer) clearTimeout(topologyDeferredTimer)
     }
   }, [activeNav, authToken, canManageSettings, fetchOlts, fetchVendorProfiles, hasGrayOlt])
-
-  useEffect(() => {
-    if (topologySnapshotLoadedRef.current) return
-    const hasAnyTopologySlots = olts.some((olt) => asList(olt?.slots).length > 0)
-    if (hasAnyTopologySlots) {
-      topologySnapshotLoadedRef.current = true
-    }
-  }, [olts])
-
-  useEffect(() => {
-    if (!authToken) return
-    if (activeNav === 'topology') return
-    if (topologySnapshotLoadedRef.current) return
-    if (!olts.length) return
-
-    const timer = setTimeout(() => {
-      if (topologySnapshotLoadedRef.current) return
-      void fetchOlts({ includeTopology: true, surfaceError: false })
-    }, 350)
-    return () => clearTimeout(timer)
-  }, [activeNav, authToken, fetchOlts, olts.length])
 
   useEffect(() => {
     oltsRef.current = olts
@@ -980,26 +960,10 @@ const App = () => {
     return findPonById(olts, selectedPonId)
   }, [olts, selectedPonId])
 
-  const selectedPonData = useMemo(() => {
-    if (rawSelectedPonData) return rawSelectedPonData
-    if (!selectedPonId) return null
-    const cached = selectedPonDataRef.current
-    if (!cached) return null
-    return String(cached?.pon?.id) === String(selectedPonId) ? cached : null
-  }, [rawSelectedPonData, selectedPonId])
-
-  useEffect(() => {
-    if (rawSelectedPonData) {
-      selectedPonDataRef.current = rawSelectedPonData
-      return
-    }
-    if (!selectedPonId) {
-      selectedPonDataRef.current = null
-    }
-  }, [rawSelectedPonData, selectedPonId])
+  const selectedPonData = rawSelectedPonData
 
 
-  const collectPowerForSelectedPon = useCallback(async () => {
+  const collectPowerForSelectedPon = useCallback(async ({ refresh = true } = {}) => {
     const oltId = toIntOrNull(selectedPonData?.olt?.id)
     const slotNumber = toIntOrNull(selectedPonData?.slot?.slot_number ?? selectedPonData?.slot?.slot_id)
     const ponNumber = toIntOrNull(selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id)
@@ -1014,7 +978,7 @@ const App = () => {
         olt_id: oltId,
         slot_id: slotNumber,
         pon_id: ponNumber,
-        refresh: true
+        refresh
       },
       { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
     )
@@ -1048,7 +1012,7 @@ const App = () => {
   }, [selectedPonData, t])
 
   const handleRefreshPonPanel = useCallback(async () => {
-    if (isRefreshingPonPanel || refreshCooldownActive) return
+    if (!canOperateTopology || isRefreshingPonPanel || refreshCooldownActive) return
 
     setPonPanelError('')
     setIsRefreshingPonPanel(true)
@@ -1087,7 +1051,7 @@ const App = () => {
       clearTimeout(refreshCooldownTimerRef.current)
       refreshCooldownTimerRef.current = setTimeout(() => setRefreshCooldownActive(false), 5000)
     }
-  }, [activeTab, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, refreshCooldownActive, showPonPanelError, t])
+  }, [activeTab, canOperateTopology, collectPowerForSelectedPon, collectStatusForSelectedPon, fetchOlts, isRefreshingPonPanel, refreshCooldownActive, showPonPanelError, t])
 
   useEffect(() => {
     if (activeNav !== 'topology') return
@@ -1283,7 +1247,7 @@ const App = () => {
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
   const currentSortLabel = activeSortOptions.find((option) => option.id === currentSortMode)?.label || activeSortOptions[0]?.label || t('ONU ID')
-  const isSidebarRefreshBusy = isRefreshingPonPanel || refreshCooldownActive
+  const isSidebarRefreshBusy = isRefreshingPonPanel || isLoadingPonPowerSnapshot || refreshCooldownActive
   const setCurrentSortMode = (mode) => {
     if (activeTab === 'power') {
       setPowerSortMode(mode)
@@ -1330,7 +1294,7 @@ const App = () => {
       return [...baseRows].sort((a, b) => a.onuNumber - b.onuNumber)
     }
 
-    const offlineStatuses = ['link_loss', 'dying_gasp', 'unknown', 'offline']
+    const offlineStatuses = ['link_loss', 'dying_gasp', 'unknown']
     let orderedStatuses = ['online', ...offlineStatuses]
 
     if (statusSortMode === 'offline') {
@@ -1452,6 +1416,61 @@ const App = () => {
     return health?.state === 'gray'
   }, [selectedPonData, oltHealthById])
 
+  const selectedPonOnuSignature = useMemo(() => {
+    return selectedOnus.map((onu) => String(onu?.id ?? '')).join(',')
+  }, [selectedOnus])
+
+  const hasSelectedPonPowerSnapshot = useMemo(() => {
+    return selectedOnus.some((onu) => (
+      (onu?.onu_rx_power !== null && onu?.onu_rx_power !== undefined) ||
+      (onu?.olt_rx_power !== null && onu?.olt_rx_power !== undefined) ||
+      Boolean(onu?.power_read_at)
+    ))
+  }, [selectedOnus])
+
+  useEffect(() => {
+    if (activeNav !== 'topology' || activeTab !== 'power') return
+    if (!selectedPonId || !selectedPonData?.olt?.id) return
+
+    const loadKey = `${selectedPonId}:${selectedPonOnuSignature}`
+    if (hasSelectedPonPowerSnapshot) {
+      powerSnapshotLoadKeyRef.current = loadKey
+      return
+    }
+    if (powerSnapshotLoadKeyRef.current === loadKey) return
+
+    powerSnapshotLoadKeyRef.current = loadKey
+    let cancelled = false
+    setIsLoadingPonPowerSnapshot(true)
+    setPonPanelError('')
+
+    const loadSnapshot = async () => {
+      try {
+        const result = await collectPowerForSelectedPon({ refresh: false })
+        if (cancelled) return
+        if (!result?.ok) {
+          powerSnapshotLoadKeyRef.current = ''
+          showPonPanelError(result?.message || t('Failed to load power data'))
+        }
+      } catch (err) {
+        if (cancelled) return
+        powerSnapshotLoadKeyRef.current = ''
+        showPonPanelError(getApiErrorMessage(err, t('Failed to load power data'), t))
+      } finally {
+        if (!cancelled) {
+          setIsLoadingPonPowerSnapshot(false)
+        }
+      }
+    }
+
+    void loadSnapshot()
+
+    return () => {
+      cancelled = true
+      setIsLoadingPonPowerSnapshot(false)
+    }
+  }, [activeNav, activeTab, selectedPonData, selectedPonId, selectedPonOnuSignature, hasSelectedPonPowerSnapshot, collectPowerForSelectedPon, showPonPanelError, t])
+
   const GRAY_STATUS_STYLE = 'bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200 dark:bg-slate-700/50 dark:text-slate-400 dark:ring-slate-500/40'
 
   const statusStyle = (statusKey) => {
@@ -1468,9 +1487,6 @@ const App = () => {
     if (statusKey === 'unknown') {
       return 'bg-purple-50 text-purple-600 ring-1 ring-inset ring-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:ring-purple-400/30'
     }
-    if (statusKey === 'offline') {
-      return 'bg-rose-50 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
-    }
     return 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-slate-700/50 dark:text-slate-200 dark:ring-slate-500/40'
   }
 
@@ -1480,7 +1496,6 @@ const App = () => {
     if (statusKey === 'dying_gasp') return 'bg-blue-500'
     if (statusKey === 'link_loss') return 'bg-rose-500'
     if (statusKey === 'unknown') return 'bg-purple-500'
-    if (statusKey === 'offline') return 'bg-rose-500'
     return 'bg-slate-400'
   }
 
@@ -1489,7 +1504,7 @@ const App = () => {
     if (statusKey === 'online') return 'text-emerald-600 dark:text-emerald-300'
     if (statusKey === 'dying_gasp') return 'text-blue-600 dark:text-blue-300'
     if (statusKey === 'unknown') return 'text-purple-600 dark:text-purple-300'
-    if (statusKey === 'link_loss' || statusKey === 'offline') return 'text-rose-500 dark:text-rose-400'
+    if (statusKey === 'link_loss') return 'text-rose-500 dark:text-rose-400'
     return 'text-slate-500 dark:text-slate-400'
   }
 
@@ -1661,26 +1676,32 @@ const App = () => {
           `}
         >
           {activeNav === 'settings' && canManageSettings ? (
-            <SettingsPanel
-              olts={olts}
-              vendorProfiles={vendorProfiles}
-              loading={loading}
-              vendorLoading={vendorLoading}
-              actionError={settingsActionError}
-              actionMessage={settingsActionMessage}
-              onCreateOlt={createOlt}
-              onUpdateOlt={updateOlt}
-              onDeleteOlt={deleteOlt}
-              onRunDiscovery={runDiscovery}
-              onRunPolling={runPolling}
-              onRefreshPower={refreshPower}
-              actionBusy={settingsActionBusy}
-              oltHealthById={oltHealthById}
-            />
+            <Suspense fallback={<LazyPanelFallback />}>
+              <SettingsPanel
+                olts={olts}
+                vendorProfiles={vendorProfiles}
+                loading={loading}
+                vendorLoading={vendorLoading}
+                actionError={settingsActionError}
+                actionMessage={settingsActionMessage}
+                onCreateOlt={createOlt}
+                onUpdateOlt={updateOlt}
+                onDeleteOlt={deleteOlt}
+                onRunDiscovery={runDiscovery}
+                onRunPolling={runPolling}
+                onRefreshPower={refreshPower}
+                actionBusy={settingsActionBusy}
+                oltHealthById={oltHealthById}
+              />
+            </Suspense>
           ) : activeNav === 'power-report' ? (
-            <PowerReport />
+            <Suspense fallback={<LazyPanelFallback />}>
+              <PowerReport />
+            </Suspense>
           ) : activeNav === 'alarm-history' ? (
-            <AlarmHistory />
+            <Suspense fallback={<LazyPanelFallback />}>
+              <AlarmHistory />
+            </Suspense>
           ) : (
             <NetworkTopology
               olts={olts}
@@ -1749,6 +1770,7 @@ const App = () => {
           >
             {selectedPonId && (() => {
               const handleDescriptionSave = async (newValue) => {
+                if (!canOperateTopology) return
                 const pon = selectedPonData?.pon
                 const dbId = pon?.db_id ?? pon?.id
                 if (!dbId || typeof dbId !== 'number') return
@@ -1775,7 +1797,7 @@ const App = () => {
               }
               const renderDescriptionField = () => {
                 const description = selectedPonData?.pon?.description || ''
-                if (!canManageSettings) {
+                if (!canOperateTopology) {
                   return (
                     <span
                       className={`text-[12px] font-semibold leading-none ${
@@ -1927,30 +1949,32 @@ const App = () => {
                         </DropdownMenu.Portal>
                       </DropdownMenu.Root>
 
-                      <button
-                        onClick={handleRefreshPonPanel}
-                        disabled={isSidebarRefreshBusy}
-                        className="shrink-0 h-7 w-7 flex items-center justify-center rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-[0.97] disabled:cursor-not-allowed"
-                        aria-label={t('Refresh')}
-                        title={refreshCooldownActive ? t('Cooldown') : t('Refresh')}
-                      >
-                        {refreshCooldownActive ? (
-                          <svg className="w-4 h-4" viewBox="0 0 16 16">
-                            <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-slate-200 dark:text-slate-700" />
-                            <circle
-                              cx="8" cy="8" r="6.5"
-                              fill="none"
-                              strokeWidth="1.8"
-                              strokeLinecap="round"
-                              strokeDasharray={`${2 * Math.PI * 6.5}`}
-                              className="origin-center -rotate-90 text-emerald-500 dark:text-emerald-400"
-                              style={{ animation: 'cooldown-ring 5s linear forwards', stroke: 'currentColor' }}
-                            />
-                          </svg>
-                        ) : (
-                          <RotateCw className={`w-4 h-4 ${isRefreshingPonPanel ? 'animate-spin' : ''}`} strokeWidth={2.5} />
-                        )}
-                      </button>
+                      {canOperateTopology && (
+                        <button
+                          onClick={handleRefreshPonPanel}
+                          disabled={isSidebarRefreshBusy}
+                          className="shrink-0 h-7 w-7 flex items-center justify-center rounded-md border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm transition-all active:scale-[0.97] disabled:cursor-not-allowed"
+                          aria-label={t('Refresh')}
+                          title={refreshCooldownActive ? t('Cooldown') : t('Refresh')}
+                        >
+                          {refreshCooldownActive ? (
+                            <svg className="w-4 h-4" viewBox="0 0 16 16">
+                              <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-slate-200 dark:text-slate-700" />
+                              <circle
+                                cx="8" cy="8" r="6.5"
+                                fill="none"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeDasharray={`${2 * Math.PI * 6.5}`}
+                                className="origin-center -rotate-90 text-emerald-500 dark:text-emerald-400"
+                                style={{ animation: 'cooldown-ring 5s linear forwards', stroke: 'currentColor' }}
+                              />
+                            </svg>
+                          ) : (
+                            <RotateCw className={`w-4 h-4 ${isRefreshingPonPanel ? 'animate-spin' : ''}`} strokeWidth={2.5} />
+                          )}
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -1962,7 +1986,7 @@ const App = () => {
 
                   {activeTab === 'status' ? (
                     <div className="relative flex flex-col w-full max-h-full min-h-0">
-                    {isRefreshingPonPanel && (
+                    {(isRefreshingPonPanel || isLoadingPonPowerSnapshot) && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
                         <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
                       </div>
@@ -2006,9 +2030,7 @@ const App = () => {
                                   ? t('Dying Gasp')
                                   : statusKey === 'link_loss'
                                     ? t('Link Loss')
-                                    : statusKey === 'unknown'
-                                      ? t('Unknown')
-                                      : t('Offline')
+                                    : t('Unknown')
                               const rawClientName = String(onu.client_name || onu.name || '').trim()
                               const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                               const { serialValue, hasSerial } = getDisplaySerial(onu)
@@ -2117,15 +2139,13 @@ const App = () => {
                     <div className="flex lg:hidden flex-col w-full max-h-full rounded-xl border border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
                       <div className="overflow-y-auto min-h-0 custom-scrollbar p-2 space-y-1.5">
                         {statusRows.map(({ onu, statusKey }) => {
-                          const statusLabel = statusKey === 'online'
-                            ? t('Online')
-                            : statusKey === 'dying_gasp'
-                              ? t('Dying Gasp')
-                              : statusKey === 'link_loss'
-                                ? t('Link Loss')
-                                : statusKey === 'unknown'
-                                  ? t('Unknown')
-                                  : t('Offline')
+                              const statusLabel = statusKey === 'online'
+                                ? t('Online')
+                                : statusKey === 'dying_gasp'
+                                  ? t('Dying Gasp')
+                                  : statusKey === 'link_loss'
+                                    ? t('Link Loss')
+                                    : t('Unknown')
                           const rawClientName = String(onu.client_name || onu.name || '').trim()
                           const clientLabel = rawClientName || MISSING_VALUE_PLACEHOLDER
                           const { serialValue, hasSerial } = getDisplaySerial(onu)
@@ -2219,7 +2239,7 @@ const App = () => {
 
                   ) : (
                     <div className="relative flex flex-col w-full max-h-full min-h-0">
-                    {isRefreshingPonPanel && (
+                    {(isRefreshingPonPanel || isLoadingPonPowerSnapshot) && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
                         <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
                       </div>

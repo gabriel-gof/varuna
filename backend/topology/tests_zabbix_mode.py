@@ -7,9 +7,11 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from topology.api.views import OLTViewSet, ONUViewSet
-from topology.models import OLT, ONU, ONULog, ONUPowerSample, VendorProfile
+from topology.api.auth_views import me_view
+from topology.api.views import OLTViewSet, OLTPONViewSet, ONUViewSet
+from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, ONUPowerSample, UserProfile, VendorProfile
 from topology.services.cache_service import cache_service
+from topology.services.history_service import persist_power_samples
 from topology.services.maintenance_runtime import collect_power_for_olt, has_usable_status_snapshot
 from topology.services.power_service import power_service
 from topology.services.zabbix_service import (
@@ -86,6 +88,45 @@ class ZabbixModeTests(TestCase):
             is_active=True,
         )
 
+    def _create_topology_onu(
+        self,
+        *,
+        slot_id: int = 1,
+        pon_id: int = 1,
+        onu_id: int = 1,
+        snmp_index: str = "11.1",
+        serial: str = "ABCD00000001",
+        name: str = "cliente-topologia",
+        status: str = ONU.STATUS_ONLINE,
+    ):
+        slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=slot_id,
+            slot_key=str(slot_id),
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=slot,
+            pon_id=pon_id,
+            pon_key=f"{slot_id}/{pon_id}",
+            is_active=True,
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=slot_id,
+            pon_id=pon_id,
+            onu_id=onu_id,
+            snmp_index=snmp_index,
+            serial=serial,
+            name=name,
+            status=status,
+            is_active=True,
+        )
+        return slot, pon, onu
+
     def test_has_usable_status_snapshot_requires_fresh_reachable_data(self):
         ONU.objects.create(
             olt=self.olt,
@@ -108,33 +149,569 @@ class ZabbixModeTests(TestCase):
         self.assertFalse(has_usable_status_snapshot(self.olt))
 
         self.olt.snmp_reachable = True
+        self.olt.last_poll_at = timezone.now() - timedelta(minutes=8)
+        self.olt.save(update_fields=["snmp_reachable", "last_poll_at"])
+        self.assertTrue(has_usable_status_snapshot(self.olt))
+
+        self.olt.snmp_reachable = True
         self.olt.last_poll_at = timezone.now() - timedelta(minutes=20)
         self.olt.save(update_fields=["snmp_reachable", "last_poll_at"])
         self.assertFalse(has_usable_status_snapshot(self.olt))
 
-    def test_overlay_runtime_onu_payload_keeps_timestamp_when_cache_window_is_blank(self):
-        payload = {
-            "status": ONU.STATUS_OFFLINE,
-            "disconnect_reason": ONULog.REASON_LINK_LOSS,
-            "offline_since": "2026-03-02T18:00:00+00:00",
-            "disconnect_window_start": "2026-03-02T18:00:00+00:00",
-            "disconnect_window_end": "2026-03-02T18:00:00+00:00",
-        }
-        OLTViewSet._overlay_runtime_onu_payload(
-            payload,
-            status_payload={
-                "status": ONU.STATUS_OFFLINE,
-                "disconnect_reason": "",
-                "offline_since": "",
-                "disconnect_window_start": "",
-                "disconnect_window_end": "",
-            },
-            power_payload={},
+    def test_seeded_zte_c600_profile_has_expected_status_map(self):
+        profile = VendorProfile.objects.get(vendor__iexact="zte", model_name__iexact="C600")
+        zabbix_cfg = (profile.oid_templates or {}).get("zabbix", {})
+        status_map = (profile.oid_templates or {}).get("status", {}).get("status_map", {})
+
+        self.assertEqual(zabbix_cfg.get("host_template_name"), "OLT ZTE C600")
+        self.assertEqual(status_map.get("1"), {"status": "offline", "reason": "link_loss"})
+        self.assertEqual(status_map.get("2"), {"status": "offline", "reason": "link_loss"})
+        self.assertEqual(status_map.get("3"), {"status": "online"})
+        self.assertEqual(status_map.get("4"), {"status": "online"})
+        self.assertEqual(status_map.get("5"), {"status": "offline", "reason": "dying_gasp"})
+        self.assertEqual(status_map.get("6"), {"status": "offline", "reason": "unknown"})
+        self.assertEqual(status_map.get("7"), {"status": "offline", "reason": "unknown"})
+
+    def test_me_view_exposes_admin_only_settings_and_operator_topology_permissions(self):
+        admin_user = User.objects.create_user(username="admin-role", password="admin-role")
+        UserProfile.objects.create(user=admin_user, role=UserProfile.ROLE_ADMIN)
+        operator_user = User.objects.create_user(username="operator-role", password="operator-role")
+        UserProfile.objects.create(user=operator_user, role=UserProfile.ROLE_OPERATOR)
+
+        admin_request = self.api_factory.get("/api/auth/me/")
+        force_authenticate(admin_request, user=admin_user)
+        admin_response = me_view(admin_request)
+
+        operator_request = self.api_factory.get("/api/auth/me/")
+        force_authenticate(operator_request, user=operator_user)
+        operator_response = me_view(operator_request)
+
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertTrue(admin_response.data.get("can_modify_settings"))
+        self.assertTrue(admin_response.data.get("can_operate_topology"))
+
+        self.assertEqual(operator_response.status_code, 200)
+        self.assertEqual(operator_response.data.get("role"), UserProfile.ROLE_OPERATOR)
+        self.assertFalse(operator_response.data.get("can_modify_settings"))
+        self.assertTrue(operator_response.data.get("can_operate_topology"))
+
+    def test_operator_can_update_pon_description(self):
+        operator_user = User.objects.create_user(username="operator-pon", password="operator-pon")
+        UserProfile.objects.create(user=operator_user, role=UserProfile.ROLE_OPERATOR)
+
+        slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            slot_key="1",
+            is_active=True,
         )
-        self.assertEqual(payload["disconnect_reason"], ONULog.REASON_LINK_LOSS)
-        self.assertEqual(payload["offline_since"], "2026-03-02T18:00:00+00:00")
-        self.assertEqual(payload["disconnect_window_start"], "2026-03-02T18:00:00+00:00")
-        self.assertEqual(payload["disconnect_window_end"], "2026-03-02T18:00:00+00:00")
+        pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=slot,
+            pon_id=1,
+            pon_key="1/1",
+            description="before",
+            is_active=True,
+        )
+
+        request = self.api_factory.patch(
+            f"/api/pons/{pon.id}/",
+            {"description": "after", "name": "renamed"},
+            format="json",
+        )
+        force_authenticate(request, user=operator_user)
+        response = OLTPONViewSet.as_view({"patch": "partial_update"})(request, pk=str(pon.id))
+
+        self.assertEqual(response.status_code, 200)
+        pon.refresh_from_db()
+        self.assertEqual(pon.name, "")
+        self.assertEqual(pon.description, "after")
+
+    @patch("topology.api.views.persist_power_samples", return_value=1)
+    @patch("topology.api.views.power_service.refresh_for_onus")
+    @patch.object(ONUViewSet, "_has_usable_status_snapshot", return_value=True)
+    @patch.object(ONUViewSet, "_run_scoped_status_refresh")
+    def test_operator_can_refresh_scoped_status_and_power(
+        self,
+        run_scoped_status_refresh_mock,
+        has_usable_status_snapshot_mock,
+        refresh_for_onus_mock,
+        persist_power_samples_mock,
+    ):
+        operator_user = User.objects.create_user(username="operator-refresh", password="operator-refresh")
+        UserProfile.objects.create(user=operator_user, role=UserProfile.ROLE_OPERATOR)
+
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=3,
+            snmp_index="11.3",
+            serial="ABCD12345678",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        refresh_for_onus_mock.return_value = {
+            onu.id: {
+                "onu_id": onu.id,
+                "slot_id": onu.slot_id,
+                "pon_id": onu.pon_id,
+                "onu_number": onu.onu_id,
+                "onu_rx_power": -19.5,
+                "olt_rx_power": -23.1,
+                "power_read_at": timezone.now().isoformat(),
+            }
+        }
+
+        status_request = self.api_factory.post(
+            "/api/onu/batch-status/",
+            {
+                "olt_id": self.olt.id,
+                "slot_id": onu.slot_id,
+                "pon_id": onu.pon_id,
+                "refresh": True,
+            },
+            format="json",
+        )
+        force_authenticate(status_request, user=operator_user)
+        status_response = ONUViewSet.as_view({"post": "batch_status"})(status_request)
+
+        power_request = self.api_factory.post(
+            "/api/onu/batch-power/",
+            {
+                "olt_id": self.olt.id,
+                "slot_id": onu.slot_id,
+                "pon_id": onu.pon_id,
+                "refresh": True,
+            },
+            format="json",
+        )
+        force_authenticate(power_request, user=operator_user)
+        power_response = ONUViewSet.as_view({"post": "batch_power"})(power_request)
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(power_response.status_code, 200)
+        run_scoped_status_refresh_mock.assert_called_once()
+        has_usable_status_snapshot_mock.assert_called()
+        refresh_for_onus_mock.assert_called_once()
+        self.assertTrue(refresh_for_onus_mock.call_args.kwargs.get("refresh_upstream"))
+        self.assertTrue(refresh_for_onus_mock.call_args.kwargs.get("force_upstream"))
+        persist_power_samples_mock.assert_called_once()
+
+    def test_viewer_cannot_update_pon_description_or_refresh_topology_actions(self):
+        viewer_user = User.objects.create_user(username="viewer-role", password="viewer-role")
+        UserProfile.objects.create(user=viewer_user, role=UserProfile.ROLE_VIEWER)
+
+        slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            slot_key="1",
+            is_active=True,
+        )
+        pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=slot,
+            pon_id=1,
+            pon_key="1/1",
+            description="before",
+            is_active=True,
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index="11.1",
+            serial="ABCD00000001",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        patch_request = self.api_factory.patch(
+            f"/api/pons/{pon.id}/",
+            {"description": "forbidden"},
+            format="json",
+        )
+        force_authenticate(patch_request, user=viewer_user)
+        patch_response = OLTPONViewSet.as_view({"patch": "partial_update"})(patch_request, pk=str(pon.id))
+
+        refresh_request = self.api_factory.post(
+            "/api/onu/batch-status/",
+            {
+                "olt_id": self.olt.id,
+                "slot_id": 1,
+                "pon_id": 1,
+                "refresh": True,
+            },
+            format="json",
+        )
+        force_authenticate(refresh_request, user=viewer_user)
+        refresh_response = ONUViewSet.as_view({"post": "batch_status"})(refresh_request)
+
+        power_request = self.api_factory.get(f"/api/onu/{onu.id}/power/?refresh=true")
+        force_authenticate(power_request, user=viewer_user)
+        power_response = ONUViewSet.as_view({"get": "power"})(power_request, pk=str(onu.id))
+
+        self.assertEqual(patch_response.status_code, 403)
+        self.assertEqual(refresh_response.status_code, 403)
+        self.assertEqual(power_response.status_code, 403)
+
+    def test_olt_list_include_topology_uses_cached_structure_and_live_status(self):
+        _, _, onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=19,
+            snmp_index="28.19",
+            serial="TPLG7E769D78",
+            name="cliente-original",
+            status=ONU.STATUS_ONLINE,
+        )
+
+        first_request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(first_request, user=self.user)
+        first_response = OLTViewSet.as_view({"get": "list"})(first_request)
+
+        self.assertEqual(first_response.status_code, 200)
+        cached_structure = cache_service.get_topology_structure(self.olt.id)
+        self.assertIsNotNone(cached_structure)
+        cached_structure["slots"]["2"]["pons"]["2/8"]["description"] = "descricao-cache"
+        cached_structure["slots"]["2"]["pons"]["2/8"]["onus"][0]["name"] = "cliente-cache"
+        cached_structure["slots"]["2"]["pons"]["2/8"]["onus"][0]["client_name"] = "cliente-cache"
+        cache_service.set_topology_structure(self.olt.id, cached_structure, ttl=3600)
+
+        offline_since = timezone.now() - timedelta(minutes=3)
+        ONU.objects.filter(id=onu.id).update(status=ONU.STATUS_OFFLINE)
+        ONULog.objects.create(
+            onu=onu,
+            offline_since=offline_since,
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+            disconnect_window_start=offline_since,
+            disconnect_window_end=offline_since,
+        )
+
+        second_request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(second_request, user=self.user)
+        second_response = OLTViewSet.as_view({"get": "list"})(second_request)
+
+        self.assertEqual(second_response.status_code, 200)
+        rows = second_response.data.get("results") if isinstance(second_response.data, dict) else second_response.data
+        olt_row = next((row for row in (rows or []) if row.get("id") == self.olt.id), None)
+        self.assertIsNotNone(olt_row)
+        onu_row = olt_row["slots"][0]["pons"][0]["onus"][0]
+        self.assertEqual(onu_row.get("name"), "cliente-cache")
+        self.assertEqual(olt_row["slots"][0]["pons"][0].get("description"), "descricao-cache")
+        self.assertEqual(onu_row.get("status"), ONU.STATUS_OFFLINE)
+        self.assertEqual(onu_row.get("disconnect_reason"), ONULog.REASON_LINK_LOSS)
+        self.assertIsNone(onu_row.get("onu_rx_power"))
+        self.assertIsNone(onu_row.get("olt_rx_power"))
+        self.assertIsNone(onu_row.get("power_read_at"))
+
+    def test_olt_list_include_topology_ignores_runtime_power_cache(self):
+        self.vendor.oid_templates = {
+            **(self.vendor.oid_templates or {}),
+            "power": {"olt_rx_oid": "1.2.3"},
+        }
+        self.vendor.save(update_fields=["oid_templates"])
+        _, _, onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=22,
+            snmp_index="28.22",
+            serial="TPLG89441338",
+        )
+        cache_service.set_many_onu_power(
+            self.olt.id,
+            {
+                onu.id: {
+                    "onu_id": onu.id,
+                    "slot_id": onu.slot_id,
+                    "pon_id": onu.pon_id,
+                    "onu_number": onu.onu_id,
+                    "onu_rx_power": -19.4,
+                    "olt_rx_power": -23.3,
+                    "power_read_at": timezone.now().isoformat(),
+                }
+            },
+            ttl=3600,
+        )
+
+        request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(request, user=self.user)
+        response = OLTViewSet.as_view({"get": "list"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") if isinstance(response.data, dict) else response.data
+        olt_row = next((row for row in (rows or []) if row.get("id") == self.olt.id), None)
+        self.assertIsNotNone(olt_row)
+        onu_row = olt_row["slots"][0]["pons"][0]["onus"][0]
+        self.assertIsNone(onu_row.get("onu_rx_power"))
+        self.assertIsNone(onu_row.get("olt_rx_power"))
+        self.assertIsNone(onu_row.get("power_read_at"))
+
+    def test_olt_topology_detail_uses_cached_structure_and_live_status(self):
+        _, _, onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=20,
+            snmp_index="28.20",
+            serial="TPLG2D2F2938",
+            name="cliente-topologia",
+            status=ONU.STATUS_ONLINE,
+        )
+
+        first_request = self.api_factory.get(f"/api/olts/{self.olt.id}/topology/")
+        force_authenticate(first_request, user=self.user)
+        first_response = OLTViewSet.as_view({"get": "topology"})(first_request, pk=str(self.olt.id))
+        self.assertEqual(first_response.status_code, 200)
+
+        cached_structure = cache_service.get_topology_structure(self.olt.id)
+        self.assertIsNotNone(cached_structure)
+        cached_structure["slots"]["2"]["pons"]["2/8"]["onus"][0]["serial"] = "SERIAL-CACHE"
+        cached_structure["slots"]["2"]["pons"]["2/8"]["onus"][0]["serial_number"] = "SERIAL-CACHE"
+        cache_service.set_topology_structure(self.olt.id, cached_structure, ttl=3600)
+
+        offline_since = timezone.now() - timedelta(minutes=2)
+        ONU.objects.filter(id=onu.id).update(status=ONU.STATUS_OFFLINE)
+        ONULog.objects.create(
+            onu=onu,
+            offline_since=offline_since,
+            disconnect_reason=ONULog.REASON_DYING_GASP,
+            disconnect_window_start=offline_since,
+            disconnect_window_end=offline_since,
+        )
+
+        second_request = self.api_factory.get(f"/api/olts/{self.olt.id}/topology/")
+        force_authenticate(second_request, user=self.user)
+        second_response = OLTViewSet.as_view({"get": "topology"})(second_request, pk=str(self.olt.id))
+
+        self.assertEqual(second_response.status_code, 200)
+        onu_row = second_response.data["slots"]["2"]["pons"]["2/8"]["onus"][0]
+        self.assertEqual(onu_row.get("serial"), "SERIAL-CACHE")
+        self.assertEqual(onu_row.get("status"), ONU.STATUS_OFFLINE)
+        self.assertEqual(onu_row.get("disconnect_reason"), ONULog.REASON_DYING_GASP)
+        self.assertIsNone(onu_row.get("onu_rx_power"))
+        self.assertIsNone(onu_row.get("olt_rx_power"))
+        self.assertIsNone(onu_row.get("power_read_at"))
+
+    def test_olt_topology_detail_leaves_power_empty_until_scoped_snapshot_load(self):
+        self.vendor.oid_templates = {
+            **(self.vendor.oid_templates or {}),
+            "power": {"olt_rx_oid": "1.2.3"},
+        }
+        self.vendor.save(update_fields=["oid_templates"])
+        slot, pon, onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=21,
+            snmp_index="28.21",
+            serial="FHTT6A0F1A28",
+        )
+        read_at = timezone.now() - timedelta(minutes=1)
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=onu,
+            slot_id=slot.slot_id,
+            pon_id=pon.pon_id,
+            onu_number=onu.onu_id,
+            onu_rx_power=-20.4,
+            olt_rx_power=-23.8,
+            read_at=read_at,
+            source=ONUPowerSample.SOURCE_SCOPED,
+        )
+
+        request = self.api_factory.get(f"/api/olts/{self.olt.id}/topology/")
+        force_authenticate(request, user=self.user)
+        response = OLTViewSet.as_view({"get": "topology"})(request, pk=str(self.olt.id))
+
+        self.assertEqual(response.status_code, 200)
+        onu_row = response.data["slots"]["2"]["pons"]["2/8"]["onus"][0]
+        self.assertIsNone(onu_row.get("onu_rx_power"))
+        self.assertIsNone(onu_row.get("olt_rx_power"))
+        self.assertIsNone(onu_row.get("power_read_at"))
+
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_invalidates_topology_structure_cache(self, fetch_discovery_rows_mock):
+        self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=30,
+            snmp_index="28.30",
+            serial="TPLGDISC0030",
+            name="cliente-antigo",
+        )
+        warm_request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(warm_request, user=self.user)
+        warm_response = OLTViewSet.as_view({"get": "list"})(warm_request)
+        self.assertEqual(warm_response.status_code, 200)
+        self.assertIsNotNone(cache_service.get_topology_structure(self.olt.id))
+
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "2",
+                    "{#PON}": "8",
+                    "{#ONU_ID}": "30",
+                    "{#PON_ID}": "28",
+                    "{#SNMPINDEX}": "28.30",
+                    "{#SERIAL}": "TPLGDISC0030",
+                    "{#ONU_NAME}": "cliente-novo",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        self.assertIsNone(cache_service.get_topology_structure(self.olt.id))
+
+        refresh_request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(refresh_request, user=self.user)
+        refresh_response = OLTViewSet.as_view({"get": "list"})(refresh_request)
+
+        self.assertEqual(refresh_response.status_code, 200)
+        rows = refresh_response.data.get("results") if isinstance(refresh_response.data, dict) else refresh_response.data
+        olt_row = next((row for row in (rows or []) if row.get("id") == self.olt.id), None)
+        self.assertEqual(olt_row["slots"][0]["pons"][0]["onus"][0].get("name"), "cliente-novo")
+        self.assertIsNotNone(cache_service.get_topology_structure(self.olt.id))
+
+    @patch("topology.api.views.zabbix_service.sync_olt_host_runtime", return_value=True)
+    def test_olt_update_invalidates_topology_structure_cache(self, _sync_runtime_mock):
+        self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=31,
+            snmp_index="28.31",
+            serial="TPLGUPDT0031",
+        )
+        warm_request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(warm_request, user=self.user)
+        warm_response = OLTViewSet.as_view({"get": "list"})(warm_request)
+        self.assertEqual(warm_response.status_code, 200)
+        self.assertIsNotNone(cache_service.get_topology_structure(self.olt.id))
+
+        admin_user = User.objects.create_superuser(username="admin-cache", password="admin-cache", email="admin@example.com")
+        update_request = self.api_factory.patch(
+            f"/api/olts/{self.olt.id}/",
+            {"name": "OLT-ZABBIX-TEST-UPDATED"},
+            format="json",
+        )
+        force_authenticate(update_request, user=admin_user)
+        update_response = OLTViewSet.as_view({"patch": "partial_update"})(update_request, pk=str(self.olt.id))
+
+        self.assertEqual(update_response.status_code, 200)
+        self.assertIsNone(cache_service.get_topology_structure(self.olt.id))
+
+    def test_pon_description_update_invalidates_topology_structure_cache(self):
+        slot, pon, _ = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=32,
+            snmp_index="28.32",
+            serial="TPLGPON0032",
+        )
+        warm_request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(warm_request, user=self.user)
+        warm_response = OLTViewSet.as_view({"get": "list"})(warm_request)
+        self.assertEqual(warm_response.status_code, 200)
+        self.assertIsNotNone(cache_service.get_topology_structure(self.olt.id))
+
+        operator_user = User.objects.create_user(username="operator-cache", password="operator-cache")
+        UserProfile.objects.create(user=operator_user, role=UserProfile.ROLE_OPERATOR)
+        update_request = self.api_factory.patch(
+            f"/api/pons/{pon.id}/",
+            {"description": "descricao-nova"},
+            format="json",
+        )
+        force_authenticate(update_request, user=operator_user)
+        update_response = OLTPONViewSet.as_view({"patch": "partial_update"})(update_request, pk=str(pon.id))
+
+        self.assertEqual(update_response.status_code, 200)
+        self.assertIsNone(cache_service.get_topology_structure(self.olt.id))
+
+    def test_onu_power_snapshot_reads_latest_persisted_sample_without_refresh(self):
+        _, _, onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=40,
+            snmp_index="28.40",
+            serial="TPLGPOW0040",
+        )
+        read_at = timezone.now() - timedelta(minutes=1)
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=onu,
+            slot_id=onu.slot_id,
+            pon_id=onu.pon_id,
+            onu_number=onu.onu_id,
+            onu_rx_power=-19.7,
+            olt_rx_power=-23.9,
+            read_at=read_at,
+            source=ONUPowerSample.SOURCE_SCHEDULER,
+        )
+
+        request = self.api_factory.get(f"/api/onu/{onu.id}/power/")
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "power"})(request, pk=str(onu.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("onu_rx_power"), -19.7)
+        self.assertEqual(response.data.get("olt_rx_power"), -23.9)
+        self.assertEqual(response.data.get("power_read_at"), read_at.isoformat())
+
+    def test_batch_power_without_refresh_reads_latest_persisted_sample(self):
+        slot, pon, onu_a = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=41,
+            snmp_index="28.41",
+            serial="TPLGPOW0041",
+        )
+        onu_b = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=slot.slot_id,
+            pon_id=pon.pon_id,
+            onu_id=42,
+            snmp_index="28.42",
+            serial="TPLGPOW0042",
+            name="cliente-power-b",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        read_at = timezone.now() - timedelta(minutes=1)
+        ONUPowerSample.objects.create(
+            olt=self.olt,
+            onu=onu_a,
+            slot_id=onu_a.slot_id,
+            pon_id=onu_a.pon_id,
+            onu_number=onu_a.onu_id,
+            onu_rx_power=-18.8,
+            olt_rx_power=-22.4,
+            read_at=read_at,
+            source=ONUPowerSample.SOURCE_SCHEDULER,
+        )
+
+        request = self.api_factory.post(
+            "/api/onu/batch-power/",
+            {"olt_id": self.olt.id, "slot_id": 2, "pon_id": 8, "refresh": False},
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"post": "batch_power"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") or []
+        row_a = next((row for row in rows if int(row.get("onu_id") or 0) == int(onu_a.id)), None)
+        row_b = next((row for row in rows if int(row.get("onu_id") or 0) == int(onu_b.id)), None)
+        self.assertIsNotNone(row_a)
+        self.assertIsNotNone(row_b)
+        self.assertEqual(row_a.get("onu_rx_power"), -18.8)
+        self.assertEqual(row_a.get("olt_rx_power"), -22.4)
+        self.assertEqual(row_a.get("power_read_at"), read_at.isoformat())
+        self.assertIsNone(row_b.get("onu_rx_power"))
+        self.assertIsNone(row_b.get("olt_rx_power"))
+        self.assertIsNone(row_b.get("power_read_at"))
 
     @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
     def test_discover_onus_uses_zabbix_rows(self, fetch_discovery_rows_mock):
@@ -166,6 +743,44 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(_normalize_serial("TPLG-D22D7400,"), "TPLGD22D7400")
         self.assertEqual(_normalize_serial("thiago.sodre100, TPLG-D22D7400"), "TPLGD22D7400")
         self.assertEqual(_normalize_serial("TPLG-D22D7400, thiago.sodre100"), "TPLGD22D7400")
+        self.assertEqual(_normalize_serial("1,DD72E68F39E5"), "DD72E68F39E5")
+        self.assertEqual(_normalize_serial("1"), "")
+
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_clears_placeholder_name_when_c600_name_oid_is_blank(
+        self,
+        fetch_discovery_rows_mock,
+    ):
+        ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=3,
+            snmp_index="11.3",
+            serial="",
+            name="1",
+            is_active=True,
+        )
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "1",
+                    "{#PON}": "2",
+                    "{#ONU_ID}": "3",
+                    "{#PON_ID}": "11",
+                    "{#SNMPINDEX}": "11.3",
+                    "{#SERIAL}": "1,DD72E68F39E5",
+                    "{#ONU_NAME}": "",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        onu = ONU.objects.get(olt=self.olt, slot_id=1, pon_id=2, onu_id=3)
+        self.assertEqual(onu.serial, "DD72E68F39E5")
+        self.assertEqual(onu.name, "")
 
     @override_settings(
         ZABBIX_DISCOVERY_REFRESH_WAIT_SECONDS=2,
@@ -227,6 +842,94 @@ class ZabbixModeTests(TestCase):
 
         self.olt.refresh_from_db()
         self.assertLessEqual(self.olt.next_poll_at, timezone.now())
+
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_reactivates_existing_slot_and_pon(self, fetch_discovery_rows_mock):
+        slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            slot_key="1",
+            is_active=False,
+        )
+        pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=slot,
+            pon_id=2,
+            pon_key="1/2",
+            description="keep me",
+            is_active=False,
+        )
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "1",
+                    "{#PON}": "2",
+                    "{#ONU_ID}": "3",
+                    "{#PON_ID}": "11",
+                    "{#SNMPINDEX}": "11.3",
+                    "{#SERIAL}": "ABCD12345678",
+                    "{#ONU_NAME}": "client-1",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        slot.refresh_from_db()
+        pon.refresh_from_db()
+        self.assertTrue(slot.is_active)
+        self.assertTrue(pon.is_active)
+        self.assertEqual(pon.description, "keep me")
+        self.assertEqual(OLTSlot.objects.filter(olt=self.olt, slot_key="1").count(), 1)
+        self.assertEqual(OLTPON.objects.filter(olt=self.olt, slot=slot, pon_id=2).count(), 1)
+
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_recreated_pon_inherits_manual_description(self, fetch_discovery_rows_mock):
+        old_slot = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            rack_id=1,
+            shelf_id=1,
+            slot_key="1/1",
+            is_active=True,
+        )
+        old_pon = OLTPON.objects.create(
+            olt=self.olt,
+            slot=old_slot,
+            pon_id=2,
+            pon_index=11,
+            pon_key="1/2",
+            description="preserve me",
+            is_active=True,
+        )
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "1",
+                    "{#PON}": "2",
+                    "{#ONU_ID}": "3",
+                    "{#PON_ID}": "11",
+                    "{#SNMPINDEX}": "11.3",
+                    "{#SERIAL}": "ABCD12345678",
+                    "{#ONU_NAME}": "client-1",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        old_slot.refresh_from_db()
+        old_pon.refresh_from_db()
+        new_slot = OLTSlot.objects.get(olt=self.olt, slot_key="1")
+        new_pon = OLTPON.objects.get(olt=self.olt, slot=new_slot, pon_id=2)
+
+        self.assertFalse(old_slot.is_active)
+        self.assertFalse(old_pon.is_active)
+        self.assertTrue(new_slot.is_active)
+        self.assertTrue(new_pon.is_active)
+        self.assertEqual(new_pon.description, "preserve me")
 
     @patch("topology.management.commands.run_scheduler.call_command")
     def test_scheduler_tick_runs_discovery_before_polling(self, call_command_mock):
@@ -520,7 +1223,6 @@ class ZabbixModeTests(TestCase):
         self.assertFalse(ONULog.objects.filter(onu=onu, offline_until__isnull=True).exists())
 
     @override_settings(ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS=0)
-    @patch("topology.management.commands.poll_onu_status.cache_service.invalidate_topology_api_cache")
     @patch("topology.management.commands.poll_onu_status.zabbix_service.check_olt_reachability")
     @patch("topology.management.commands.poll_onu_status.zabbix_service.execute_items_now_by_keys")
     @patch("topology.management.commands.poll_onu_status.zabbix_service.get_hostid")
@@ -531,7 +1233,6 @@ class ZabbixModeTests(TestCase):
         get_hostid_mock,
         execute_now_mock,
         check_reachability_mock,
-        invalidate_topology_cache_mock,
     ):
         onu = ONU.objects.create(
             olt=self.olt,
@@ -575,7 +1276,6 @@ class ZabbixModeTests(TestCase):
         self.assertEqual((self.olt.last_snmp_error or "").strip(), "")
         execute_now_mock.assert_called_once()
         check_reachability_mock.assert_called_once()
-        invalidate_topology_cache_mock.assert_called_once_with(self.olt.id)
 
     @patch("topology.services.power_service.zabbix_service.fetch_power_by_index")
     def test_power_service_uses_zabbix_items(self, fetch_power_mock):
@@ -828,6 +1528,33 @@ class ZabbixModeTests(TestCase):
         self.assertIsNone(row.get("olt_rx_power"))
         self.assertIsNone(row.get("power_read_at"))
 
+    def test_persist_power_samples_returns_inserted_row_count(self):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=99,
+            snmp_index="11.99",
+            serial="ABCD99999999",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        read_at = timezone.now().isoformat()
+        result_map = {
+            onu.id: {
+                "onu_rx_power": -18.7,
+                "olt_rx_power": -22.9,
+                "power_read_at": read_at,
+            }
+        }
+
+        first_inserted = persist_power_samples([onu], result_map, max_age_minutes=180)
+        second_inserted = persist_power_samples([onu], result_map, max_age_minutes=180)
+
+        self.assertEqual(first_inserted, 1)
+        self.assertEqual(second_inserted, 0)
+        self.assertEqual(ONUPowerSample.objects.filter(onu=onu).count(), 1)
+
     def test_discovery_rows_can_be_loaded_from_lld_history(self):
         service = ZabbixService()
         with (
@@ -1077,6 +1804,69 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row.get("{#SERIAL}"), "MONU0085F6D1")
+
+    def test_discovery_rows_fallback_to_status_items_zte_c600_comma_prefixed_serial(self):
+        zte_templates = _zabbix_vendor_templates()
+        zte_templates["indexing"] = {
+            "format": "pon_onu",
+            "pon_encoding": "0x11rrsspp",
+            "slot_from": "shelf",
+            "pon_from": "port",
+        }
+        vendor = VendorProfile.objects.create(
+            vendor="zte",
+            model_name="C600-ZABBIX-TEST-COMMA",
+            description="Zabbix mode test vendor zte c600 comma-prefixed serial",
+            oid_templates=zte_templates,
+            supports_onu_discovery=True,
+            supports_onu_status=True,
+            supports_power_monitoring=True,
+            supports_disconnect_reason=False,
+            default_thresholds={},
+            is_active=True,
+        )
+        olt = OLT.objects.create(
+            name="OLT-ZTE-C600-ZABBIX-TEST-COMMA",
+            vendor_profile=vendor,
+            protocol="snmp",
+            ip_address="10.0.0.26",
+            snmp_port=161,
+            snmp_community="public",
+            snmp_version="v2c",
+            discovery_enabled=True,
+            polling_enabled=True,
+            discovery_interval_minutes=60,
+            polling_interval_seconds=300,
+            power_interval_seconds=300,
+            is_active=True,
+        )
+        service = ZabbixService()
+        with (
+            patch.object(service, "get_hostid", return_value="10087"),
+            patch.object(service, "get_single_item", return_value=None),
+            patch.object(service, "get_discovery_rule", return_value=None),
+            patch.object(
+                service,
+                "get_items_by_key_prefix",
+                return_value=[
+                    {
+                        "key_": "onuStatusValue[285278727.10]",
+                        "name": "ONU 2/7/10 1,DD72E68F39E5: Status",
+                        "lastclock": "1710000005",
+                    }
+                ],
+            ),
+        ):
+            rows, _ = service.fetch_discovery_rows(olt, "onuDiscovery")
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.get("{#SNMPINDEX}"), "285278727.10")
+        self.assertEqual(row.get("{#SLOT}"), "2")
+        self.assertEqual(row.get("{#PON}"), "7")
+        self.assertEqual(row.get("{#ONU_ID}"), "10")
+        self.assertFalse(row.get("{#ONU_NAME}"))
+        self.assertEqual(row.get("{#SERIAL}"), "DD72E68F39E5")
 
     def test_discovery_rows_fallback_to_status_items_fiberhome_without_pon_prefix(self):
         vendor = VendorProfile.objects.create(
@@ -1754,6 +2544,45 @@ class ZabbixModeTests(TestCase):
         self.assertIn(self.olt.name, names)
         self.assertIn(f"GabSA-{self.olt.name}", names)
 
+    def test_template_name_candidates_use_explicit_profile_names_without_zte_c300_fallback(self):
+        vendor = VendorProfile.objects.create(
+            vendor="zte",
+            model_name="C600-TEST",
+            description="ZTE C600 explicit template name test",
+            oid_templates={
+                "zabbix": {
+                    "host_template_name": "OLT ZTE C600",
+                    "host_template_names": ["OLT ZTE C600"],
+                }
+            },
+            supports_onu_discovery=True,
+            supports_onu_status=True,
+            supports_power_monitoring=True,
+            supports_disconnect_reason=True,
+            default_thresholds={},
+            is_active=True,
+        )
+        olt = OLT.objects.create(
+            name="OLT-ZTE-C600-TEMPLATE",
+            vendor_profile=vendor,
+            protocol="snmp",
+            ip_address="10.0.0.11",
+            snmp_port=161,
+            snmp_community="public",
+            snmp_version="v2c",
+            discovery_enabled=True,
+            polling_enabled=True,
+            discovery_interval_minutes=60,
+            polling_interval_seconds=300,
+            power_interval_seconds=300,
+            is_active=True,
+        )
+
+        service = ZabbixService()
+        candidates = service._template_name_candidates_for_olt(olt)
+
+        self.assertEqual(candidates, ["OLT ZTE C600"])
+
     @override_settings(
         ZABBIX_HOST_GROUP_NAME="OLT",
         ZABBIX_HOST_GROUP_LEGACY_NAMES=("OLT", "OLTs"),
@@ -2368,6 +3197,46 @@ class ZabbixModeTests(TestCase):
             source=ONUPowerSample.SOURCE_MANUAL,
         )
         cache_service.delete(cache_service.get_onu_power_key(onu.olt_id, onu.id))
+
+        request = self.api_factory.get("/api/onu/power-report/")
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "power_report"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") or []
+        row = next((item for item in rows if item.get("id") == onu.id), None)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row.get("onu_rx_power"))
+        self.assertIsNone(row.get("olt_rx_power"))
+        self.assertIsNone(row.get("power_read_at"))
+
+    def test_power_report_ignores_runtime_cache_without_persisted_sample(self):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=303,
+            snmp_index="11.303",
+            serial="ABCD01020303",
+            name="cliente-power-cache-ignore",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        cache_service.set_many_onu_power(
+            self.olt.id,
+            {
+                onu.id: {
+                    "onu_id": onu.id,
+                    "slot_id": onu.slot_id,
+                    "pon_id": onu.pon_id,
+                    "onu_number": onu.onu_id,
+                    "onu_rx_power": -18.5,
+                    "olt_rx_power": -22.8,
+                    "power_read_at": timezone.now().isoformat(),
+                }
+            },
+            ttl=3600,
+        )
 
         request = self.api_factory.get("/api/onu/power-report/")
         force_authenticate(request, user=self.user)

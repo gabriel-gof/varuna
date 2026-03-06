@@ -185,6 +185,34 @@ class CacheService:
     def get_onu_power_key(olt_id: int, onu_id: int) -> str:
         return f"varuna:onu:{olt_id}:{onu_id}:power"
 
+    @staticmethod
+    def get_topology_structure_key(olt_id: int) -> str:
+        return f"varuna:topology:structure:{olt_id}"
+
+    def get_topology_structure(self, olt_id: int) -> Optional[Dict[str, Any]]:
+        return self.get(self.get_topology_structure_key(olt_id))
+
+    def get_many_topology_structures(self, olt_ids: Iterable[int]) -> Dict[int, Dict[str, Any]]:
+        normalized_ids = []
+        for raw in olt_ids:
+            try:
+                normalized_ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+
+        keys = [self.get_topology_structure_key(olt_id) for olt_id in normalized_ids]
+        by_key = self.get_many(keys)
+        result: Dict[int, Dict[str, Any]] = {}
+        for olt_id in normalized_ids:
+            key = self.get_topology_structure_key(olt_id)
+            if key in by_key:
+                result[olt_id] = by_key[key]
+        return result
+
+    def set_topology_structure(self, olt_id: int, structure: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+        effective_ttl = int(ttl or getattr(settings, 'TOPOLOGY_STRUCTURE_CACHE_TTL', 43200) or 43200)
+        return self.set(self.get_topology_structure_key(olt_id), structure, ttl=effective_ttl)
+
     @classmethod
     def get_api_olts_key(cls, *, include_topology: bool, query_signature: str = '') -> str:
         mode = 'topology' if include_topology else 'base'
@@ -226,6 +254,15 @@ class CacheService:
         deleted = self._delete_by_patterns(patterns)
         if deleted:
             logger.info("API topology cache invalidated (olt=%s, keys=%s)", olt_id, deleted)
+
+    def invalidate_topology_structure_cache(self, olt_id: int | None = None):
+        if not self.redis_client:
+            return
+
+        patterns = ['varuna:topology:structure:*'] if olt_id is None else [self.get_topology_structure_key(int(olt_id))]
+        deleted = self._delete_by_patterns(patterns)
+        if deleted:
+            logger.info("Topology structure cache invalidated (olt=%s, keys=%s)", olt_id, deleted)
     
     def invalidate_olt_cache(self, olt_id: int):
         """
@@ -239,6 +276,7 @@ class CacheService:
             f"varuna:onu:{olt_id}:*",
             "varuna:api:olts:*",
             f"varuna:api:olt:{olt_id}:*",
+            self.get_topology_structure_key(olt_id),
         ]
         deleted = self._delete_by_patterns(patterns)
         if deleted:
