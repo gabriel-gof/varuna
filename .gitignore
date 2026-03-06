@@ -35,6 +35,8 @@ artifacts/
 # Environment files
 .env
 .env.*
+docker/prod.*.env
+docker/infra.shared.env
 
 # Secrets
 olt-zte-cedrentials
