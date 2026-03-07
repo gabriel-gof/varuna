@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Search, X } from 'lucide-react'
 
 import api from '../services/api'
+import { getApiErrorMessage } from '../utils/apiErrorMessages'
 import { getPowerColor, powerColorClass } from '../utils/powerThresholds'
 
 const toDateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -24,7 +25,16 @@ const formatTimestamp = (value) => {
   return `${d}/${m}/${y} ${h}:${min}`
 }
 
-const formatDuration = (startValue, endValue) => {
+const formatDuration = (startValue, endValue, explicitSeconds = null) => {
+  if (Number.isFinite(explicitSeconds) && explicitSeconds > 0) {
+    const totalSeconds = Math.floor(explicitSeconds)
+    const mins = Math.floor(totalSeconds / 60)
+    const hours = Math.floor(mins / 60)
+    const days = Math.floor(hours / 24)
+    if (days > 0) return `${days}d ${hours % 24}h`
+    if (hours > 0) return `${hours}h ${mins % 60}m`
+    return `${mins}m`
+  }
   if (!startValue || !endValue) return '—'
   const start = new Date(startValue)
   const end = new Date(endValue)
@@ -44,9 +54,13 @@ const formatDuration = (startValue, endValue) => {
 const normalizeAlarm = (alarm) => ({
   id: alarm?.id,
   type: alarm?.event_type || 'unknown',
+  label: alarm?.event_label || null,
+  code: alarm?.event_code ?? null,
+  severity: Number.isFinite(Number(alarm?.severity)) ? Number(alarm.severity) : null,
   start: alarm?.start_at || null,
   end: alarm?.end_at || null,
   status: alarm?.status || 'resolved',
+  durationSeconds: Number.isFinite(Number(alarm?.duration_seconds)) ? Number(alarm.duration_seconds) : null,
 })
 
 const normalizePowerPoint = (point) => {
@@ -80,7 +94,7 @@ const buildLastNDays = (n) => {
 
 
 export const AlarmHistory = () => {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
 
   const [activeTab, setActiveTab] = useState('status')
   const [detailLoading, setDetailLoading] = useState(false)
@@ -191,11 +205,11 @@ export const AlarmHistory = () => {
 
         setAlarms(nextAlarms)
         setPowerHistory(nextPower)
-      } catch {
+      } catch (error) {
         if (cancelled) return
         setAlarms([])
         setPowerHistory([])
-        setDetailError(t('Failed to load OLT data'))
+        setDetailError(getApiErrorMessage(error, t('Failed to load OLT data'), t))
       } finally {
         if (!cancelled) setDetailLoading(false)
       }
@@ -205,19 +219,34 @@ export const AlarmHistory = () => {
     return () => { cancelled = true }
   }, [selectedClient, t])
 
-  const eventTypeStyle = (type) => {
+  const eventTypeStyle = (type, severity = null) => {
     if (type === 'dying_gasp') return 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/30'
     if (type === 'link_loss') return 'bg-rose-50 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
+    if (severity !== null && severity >= 3) return 'bg-rose-50 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-400/30'
+    if (severity !== null && severity >= 2) return 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-400/30'
     return 'bg-purple-50 text-purple-600 ring-1 ring-inset ring-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:ring-purple-400/30'
   }
 
-  const eventTypeDot = (type) => {
+  const eventTypeDot = (type, severity = null) => {
     if (type === 'dying_gasp') return 'bg-blue-500'
     if (type === 'link_loss') return 'bg-rose-500'
+    if (severity !== null && severity >= 3) return 'bg-rose-500'
+    if (severity !== null && severity >= 2) return 'bg-amber-500'
     return 'bg-purple-500'
   }
 
-  const eventTypeLabel = (type) => {
+  const eventTypeLabel = (alarm) => {
+    if (alarm?.label) {
+      const rawLabel = String(alarm.label).trim()
+      const normalizedLabel = rawLabel.toUpperCase().replace(/\s+/g, '_')
+      const isPortuguese = String(i18n.resolvedLanguage || i18n.language || '').toLowerCase().startsWith('pt')
+      if (isPortuguese) {
+        if (normalizedLabel === 'DYING_GASP') return t('Dying Gasp')
+        if (normalizedLabel === 'LINK_LOSS') return t('Link Loss')
+      }
+      return rawLabel
+    }
+    const type = alarm?.type
     if (type === 'dying_gasp') return t('Dying Gasp')
     if (type === 'link_loss') return t('Link Loss')
     return t('Unknown')
@@ -382,7 +411,7 @@ export const AlarmHistory = () => {
               <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-y border-slate-200/80 dark:border-slate-700/50">
                 <table className="w-full table-fixed text-left border-collapse">
                   <colgroup>
-                    <col style={{ width: '110px' }} />
+                    <col style={{ width: '176px' }} />
                     <col />
                     <col />
                     <col style={{ width: '72px' }} />
@@ -400,7 +429,7 @@ export const AlarmHistory = () => {
               <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
                 <table className="w-full table-fixed text-left border-collapse">
                   <colgroup>
-                    <col style={{ width: '110px' }} />
+                    <col style={{ width: '176px' }} />
                     <col />
                     <col />
                     <col style={{ width: '72px' }} />
@@ -414,16 +443,16 @@ export const AlarmHistory = () => {
                       </tr>
                     )}
                     {alarms.map((alarm, idx) => (
-                      <tr key={alarm.id} className={`h-9 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'} hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors`}>
-                        <td className="px-3 py-0 align-middle">
-                          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase whitespace-nowrap ${eventTypeStyle(alarm.type)}`}>
-                            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${eventTypeDot(alarm.type)}`} />
-                            {eventTypeLabel(alarm.type)}
+                    <tr key={alarm.id} className={`h-9 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'} hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors`}>
+                      <td className="px-3 py-0 align-middle">
+                          <span title={alarm.code ? `${eventTypeLabel(alarm)} (${alarm.code})` : eventTypeLabel(alarm)} className={`inline-flex max-w-[160px] items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase whitespace-nowrap ${eventTypeStyle(alarm.type, alarm.severity)}`}>
+                            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${eventTypeDot(alarm.type, alarm.severity)}`} />
+                            <span className="truncate">{eventTypeLabel(alarm)}</span>
                           </span>
                         </td>
                         <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start)}</td>
                         <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end)}</td>
-                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end)}</td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end, alarm.durationSeconds)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -506,7 +535,7 @@ export const AlarmHistory = () => {
                 {/* Column headers — pinned */}
                 <div className="shrink-0 bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-700/50">
                   <table className="w-full table-fixed text-left border-collapse">
-                    <colgroup><col style={{ width: '108px' }} /><col /><col /><col style={{ width: '72px' }} /></colgroup>
+                    <colgroup><col style={{ width: '132px' }} /><col /><col /><col style={{ width: '72px' }} /></colgroup>
                     <thead>
                       <tr>
                         <th className="px-2 py-2 text-[9px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Event')}</th>
@@ -521,7 +550,7 @@ export const AlarmHistory = () => {
                 {/* Rows — scrollable */}
                 <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
                   <table className="w-full table-fixed text-left border-collapse">
-                    <colgroup><col style={{ width: '108px' }} /><col /><col /><col style={{ width: '72px' }} /></colgroup>
+                    <colgroup><col style={{ width: '132px' }} /><col /><col /><col style={{ width: '72px' }} /></colgroup>
                     <tbody>
                       {detailLoading && alarms.length === 0 ? (
                         <tr><td colSpan={4} className="px-3 py-10 text-center text-[11px] font-semibold text-slate-400">{t('Loading live data')}</td></tr>
@@ -530,14 +559,14 @@ export const AlarmHistory = () => {
                       ) : alarms.map((alarm, idx) => (
                         <tr key={alarm.id} className={`h-8 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'}`}>
                           <td className="px-2 py-0 align-middle">
-                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase whitespace-nowrap ${eventTypeStyle(alarm.type)}`}>
-                              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${eventTypeDot(alarm.type)}`} />
-                              {eventTypeLabel(alarm.type)}
+                            <span title={alarm.code ? `${eventTypeLabel(alarm)} (${alarm.code})` : eventTypeLabel(alarm)} className={`inline-flex max-w-[126px] items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase whitespace-nowrap ${eventTypeStyle(alarm.type, alarm.severity)}`}>
+                              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${eventTypeDot(alarm.type, alarm.severity)}`} />
+                              <span className="truncate">{eventTypeLabel(alarm)}</span>
                             </span>
                           </td>
                           <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start)}</td>
                           <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end)}</td>
-                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end)}</td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end, alarm.durationSeconds)}</td>
                         </tr>
                       ))}
                     </tbody>

@@ -1,0 +1,350 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<zabbix_export>
+    <version>6.0</version>
+    <date>2022-05-11T21:40:47Z</date>
+    <groups>
+        <group>
+            <uuid>1f50f41a2fc74525964cee26bacb3350</uuid>
+            <name>Template ZTE</name>
+        </group>
+    </groups>
+    <templates>
+        <template>
+            <uuid>7a7d7662684e41478d326b9e11fc1d15</uuid>
+            <template>Template ZTE C600 Gpon Full - Bee Solutions</template>
+            <name>Template ZTE C600 Gpon Full - Bee Solutions</name>
+            <groups>
+                <group>
+                    <name>Template ZTE</name>
+                </group>
+            </groups>
+            <items>
+                <item>
+                    <uuid>969eea6da8c94ebf8708d9d62fa2a615</uuid>
+                    <name>Uptime</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>1.3.6.1.2.1.1.3.0</snmp_oid>
+                    <key>1.3.6.1.2.1.1.3.0</key>
+                    <units>uptime</units>
+                    <preprocessing>
+                        <step>
+                            <type>MULTIPLIER</type>
+                            <parameters>
+                                <parameter>0.01</parameter>
+                            </parameters>
+                        </step>
+                    </preprocessing>
+                    <tags>
+                        <tag>
+                            <tag>Uptime</tag>
+                        </tag>
+                    </tags>
+                </item>
+                <item>
+                    <uuid>e452844db7d246f19b0bbfee88eb32c8</uuid>
+                    <name>Uso de Memoria SNMP</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>1.3.6.1.4.1.3902.3.6002.2.1.1.6.1.1.1.0</snmp_oid>
+                    <key>1.3.6.1.4.1.3902.3.6002.2.1.1.6.1.1.1.0</key>
+                    <units>%</units>
+                    <tags>
+                        <tag>
+                            <tag>Uso de Memoria</tag>
+                        </tag>
+                    </tags>
+                </item>
+                <item>
+                    <uuid>b67720ca15b3497a9a9da7cf96235506</uuid>
+                    <name>Uso de CPU SNMP</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>1.3.6.1.4.1.3902.3.6002.2.1.1.8.1.1.1.0</snmp_oid>
+                    <key>1.3.6.1.4.1.3902.3.6002.2.1.1.8.1.1.1.0</key>
+                    <units>%</units>
+                    <tags>
+                        <tag>
+                            <tag>Uso de CPU</tag>
+                        </tag>
+                    </tags>
+                </item>
+            </items>
+            <discovery_rules>
+                <discovery_rule>
+                    <uuid>91a44183680049c189056b71859caa15</uuid>
+                    <name>Descobertas de Sinal</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>discovery[{#PORTA},1.3.6.1.4.1.3902.1082.30.40.2.4.1.3,{#INTDESC},1.3.6.1.2.1.31.1.1.1.1]</snmp_oid>
+                    <key>descobertas.atenuacao.gpon.b</key>
+                    <delay>1d</delay>
+                    <filter>
+                        <conditions>
+                            <condition>
+                                <macro>{#PORTA}</macro>
+                                <value>285278977</value>
+                                <operator>NOT_MATCHES_REGEX</operator>
+                                <formulaid>A</formulaid>
+                            </condition>
+                        </conditions>
+                    </filter>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>a757bd0fddad4ba5909be3687cf6eb64</uuid>
+                            <name>Interface {#INTDESC}</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.4.1.3902.1082.30.40.2.4.1.3.{#SNMPINDEX}</snmp_oid>
+                            <key>Sinal[{#SNMPINDEX}]</key>
+                            <value_type>FLOAT</value_type>
+                            <preprocessing>
+                                <step>
+                                    <type>MULTIPLIER</type>
+                                    <parameters>
+                                        <parameter>0.001</parameter>
+                                    </parameters>
+                                </step>
+                            </preprocessing>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>Sinal Optico</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                    </item_prototypes>
+                </discovery_rule>
+                <discovery_rule>
+                    <uuid>c6b4926730f846aab3ac83541d89e53e</uuid>
+                    <name>Descobertas de Card</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>discovery[{#OLTCARD},1.3.6.1.4.1.3902.1082.10.1.2.4.1.4.1.1]</snmp_oid>
+                    <key>descobertas.card.gpon.b</key>
+                    <delay>1d</delay>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>e42b13962dc5467f9b48c39c6b3871ee</uuid>
+                            <name>Card {#SNMPINDEX}</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.4.1.3902.1082.10.1.2.4.1.4.1.1.{#SNMPINDEX}</snmp_oid>
+                            <key>Card[{#SNMPINDEX}]</key>
+                            <delay>5m</delay>
+                            <trends>0</trends>
+                            <value_type>TEXT</value_type>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>Cards</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                    </item_prototypes>
+                </discovery_rule>
+                <discovery_rule>
+                    <uuid>0d72016423c84ba5b1bda9af793c9f97</uuid>
+                    <name>Descobertas de CPU</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>discovery[{#OLTCPU},1.3.6.1.4.1.3902.1082.10.1.2.4.1.40.1.1]</snmp_oid>
+                    <key>descobertas.cpu.gpon.b</key>
+                    <delay>1d</delay>
+                    <status>DISABLED</status>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>067aa4ce708145e9aeeb611504a647e7</uuid>
+                            <name>CPU Card [{#SNMPINDEX}]</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.4.1.3902.1082.10.1.2.4.1.40.1.1.{#SNMPINDEX}</snmp_oid>
+                            <key>CPU.Card[{#SNMPINDEX}]</key>
+                            <value_type>FLOAT</value_type>
+                            <units>%</units>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>Uso de CPU</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                    </item_prototypes>
+                </discovery_rule>
+                <discovery_rule>
+                    <uuid>0a2884ef53e14146b4cc4bda75c8529a</uuid>
+                    <name>Descobertas de Interfaces Geral</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>discovery[{#OLTGPON},1.3.6.1.2.1.31.1.1.1.1]</snmp_oid>
+                    <key>descobertas.interfaces.geral.zte.b</key>
+                    <delay>1d</delay>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>d97e3e51fa3746b7af492804b0b94a3a</uuid>
+                            <name>Interface {#OLTGPON}</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}</snmp_oid>
+                            <key>Interace.Status.zte[{#SNMPINDEX} - &quot;{#OLTGPON}&quot;]</key>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>Interface Status</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                    </item_prototypes>
+                </discovery_rule>
+                <discovery_rule>
+                    <uuid>ca8d062818a8403baabbda612d143350</uuid>
+                    <name>Descobertas de Interfaces Ethernet 64Bits</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>discovery[{#OLTGI},1.3.6.1.2.1.31.1.1.1.1]</snmp_oid>
+                    <key>descobertas.interfaces.gi.b</key>
+                    <delay>1d</delay>
+                    <filter>
+                        <conditions>
+                            <condition>
+                                <macro>{#OLTGI}</macro>
+                                <value>gei</value>
+                                <formulaid>A</formulaid>
+                            </condition>
+                        </conditions>
+                    </filter>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>9a99c682e5a84a78ae75ca90d6ac3121</uuid>
+                            <name>Interface {#OLTGI}: Bits received</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.2.1.31.1.1.1.6.{#SNMPINDEX}</snmp_oid>
+                            <key>net.if.in[ifHCInOctets.{#SNMPINDEX}]</key>
+                            <units>bps</units>
+                            <preprocessing>
+                                <step>
+                                    <type>CHANGE_PER_SECOND</type>
+                                    <parameters>
+                                        <parameter/>
+                                    </parameters>
+                                </step>
+                                <step>
+                                    <type>MULTIPLIER</type>
+                                    <parameters>
+                                        <parameter>8</parameter>
+                                    </parameters>
+                                </step>
+                            </preprocessing>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>Interfaces Ethernet</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>291e3ca9bc584234b415af93fa21d016</uuid>
+                            <name>Interface {#OLTGI}: Bits sent</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.2.1.31.1.1.1.10.{#SNMPINDEX}</snmp_oid>
+                            <key>net.if.out[ifHCOutOctets.{#SNMPINDEX}]</key>
+                            <units>bps</units>
+                            <preprocessing>
+                                <step>
+                                    <type>CHANGE_PER_SECOND</type>
+                                    <parameters>
+                                        <parameter/>
+                                    </parameters>
+                                </step>
+                                <step>
+                                    <type>MULTIPLIER</type>
+                                    <parameters>
+                                        <parameter>8</parameter>
+                                    </parameters>
+                                </step>
+                            </preprocessing>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>Interfaces Ethernet</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                    </item_prototypes>
+                </discovery_rule>
+                <discovery_rule>
+                    <uuid>170262271f1b4d1a839fc39aac079328</uuid>
+                    <name>Descobertas de Interfaces GPON</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>discovery[{#OLTGPON},1.3.6.1.2.1.31.1.1.1.1]</snmp_oid>
+                    <key>descobertas.interfaces.gpon.b</key>
+                    <delay>1d</delay>
+                    <filter>
+                        <conditions>
+                            <condition>
+                                <macro>{#OLTGPON}</macro>
+                                <value>gpon_olt</value>
+                                <formulaid>A</formulaid>
+                            </condition>
+                        </conditions>
+                    </filter>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>26a05f24da464e5eb82647cc1d70c0ba</uuid>
+                            <name>Autorizadas Ramal {#OLTGPON}</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.4.1.3902.1082.500.10.2.2.3.1.14.{#SNMPINDEX}</snmp_oid>
+                            <key>chave.gpon.zte.autorizadas.b.[{#OLTGPON}]</key>
+                            <delay>5m</delay>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>ONUs Autorizadas</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>743cb7ab464a4317ad8d43f4622f1af8</uuid>
+                            <name>Onlines Ramal {#OLTGPON}</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.4.1.3902.1082.500.10.2.2.3.1.15.{#SNMPINDEX}</snmp_oid>
+                            <key>chave.gpon.zte.onlines.b.[{#OLTGPON}]</key>
+                            <delay>5m</delay>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>ONUs ON</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>f256eb48587141549348389c0fdd18a1</uuid>
+                            <name>Offlines Ramal {#OLTGPON}</name>
+                            <type>EXTERNAL</type>
+                            <key>ponzte620[&quot;{$SNMP_COMMUNITY}&quot;,&quot;{HOST.CONN}&quot;,&quot;{#SNMPINDEX}&quot;,&quot;7&quot;]</key>
+                            <delay>5m</delay>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>ONUs OFF</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                    </item_prototypes>
+                </discovery_rule>
+                <discovery_rule>
+                    <uuid>2f82c145bd4046298917b21409145622</uuid>
+                    <name>Descobertas de Memoria</name>
+                    <type>SNMP_AGENT</type>
+                    <snmp_oid>discovery[{#OLTCARD},1.3.6.1.4.1.3902.1082.10.1.2.4.1.11.1.1]</snmp_oid>
+                    <key>descobertas.memoria.gpon.b</key>
+                    <delay>1d</delay>
+                    <status>DISABLED</status>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>d525f19b7df84f4ca258896397d44a18</uuid>
+                            <name>Memoria Card [{#SNMPINDEX}]</name>
+                            <type>SNMP_AGENT</type>
+                            <snmp_oid>1.3.6.1.4.1.3902.1082.10.1.2.4.1.11.1.1.{#SNMPINDEX}</snmp_oid>
+                            <key>Memoria.Card[{#SNMPINDEX}]</key>
+                            <tags>
+                                <tag>
+                                    <tag>Application</tag>
+                                    <value>Uso de Memoria</value>
+                                </tag>
+                            </tags>
+                        </item_prototype>
+                    </item_prototypes>
+                </discovery_rule>
+            </discovery_rules>
+        </template>
+    </templates>
+</zabbix_export>

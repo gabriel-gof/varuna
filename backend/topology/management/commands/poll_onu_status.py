@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from topology.models import OLT, ONU, ONULog
-from topology.services.cache_service import cache_service
+from topology.services.maintenance_runtime import get_status_snapshot_max_age_seconds
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.topology_counter_service import topology_counter_service
 from topology.services.zabbix_service import zabbix_service
@@ -25,14 +25,6 @@ def _normalize_snmp_index(value) -> Optional[str]:
     if not normalized:
         return None
     return normalized
-
-
-def _iso_or_empty(value) -> str:
-    if not value:
-        return ""
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value).strip()
 
 
 def _to_int_or_none(value) -> Optional[int]:
@@ -224,13 +216,7 @@ class Command(BaseCommand):
             self.stdout.write(f"OLT {olt.id}: missing zabbix status item key pattern.")
             return
 
-        stale_margin_seconds = int(
-            getattr(settings, "ZABBIX_STATUS_STALE_MARGIN_SECONDS", 90) or 90
-        )
-        stale_status_max_age_seconds = max(
-            int(olt.polling_interval_seconds or 0) * 3 + stale_margin_seconds,
-            stale_margin_seconds + 300,
-        )
+        stale_status_max_age_seconds = get_status_snapshot_max_age_seconds(olt)
 
         refresh_upstream_max_items = int(
             getattr(settings, "ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS", 512) or 512
@@ -376,9 +362,6 @@ class Command(BaseCommand):
 
         now = timezone.now()
         now_epoch = int(now.timestamp())
-        configured_ttl = int(getattr(settings, "STATUS_CACHE_TTL", 180) or 180)
-        interval_ttl = int((olt.polling_interval_seconds or 0) * 2)
-        ttl = max(configured_ttl, interval_ttl, 300)
 
         if not status_by_index:
             requested_count = len(onu_index_map)
@@ -390,7 +373,6 @@ class Command(BaseCommand):
                         f"(requested={requested_count}, collector=zabbix)"
                     ),
                 )
-                cache_service.invalidate_topology_api_cache(olt.id)
             self.stdout.write(f"OLT {olt.id}: no status data returned.")
             return
 
@@ -417,7 +399,6 @@ class Command(BaseCommand):
                         f"(requested={requested_count}, collector=zabbix)"
                     ),
                 )
-                cache_service.invalidate_topology_api_cache(olt.id)
             self.stdout.write(f"OLT {olt.id}: only stale status data returned.")
             return
 
@@ -481,7 +462,6 @@ class Command(BaseCommand):
         logs_to_close: List[ONULog] = []
         logs_to_log_update: List[ONULog] = []
         new_logs: List[ONULog] = []
-        cache_batch: Dict[int, Dict] = {}
         disconnect_window_margin_seconds = int(
             getattr(settings, "ZABBIX_DISCONNECT_WINDOW_MARGIN_SECONDS", 90) or 90
         )
@@ -502,39 +482,6 @@ class Command(BaseCommand):
                     ONU.STATUS_OFFLINE,
                     ONU.STATUS_UNKNOWN,
                 } else ONU.STATUS_UNKNOWN
-                open_log = open_logs_by_onu.get(onu.id)
-                disconnect_reason = ""
-                offline_since = ""
-                disconnect_window_start = ""
-                disconnect_window_end = ""
-                if current_status == ONU.STATUS_OFFLINE:
-                    disconnect_reason = (
-                        open_log.disconnect_reason
-                        if open_log and open_log.disconnect_reason
-                        else ONULog.REASON_UNKNOWN
-                    )
-                    if open_log and open_log.offline_since:
-                        offline_since = open_log.offline_since.isoformat()
-                    window_anchor = (
-                        open_log.disconnect_window_end
-                        or open_log.disconnect_window_start
-                        or open_log.offline_since
-                    ) if open_log else None
-                    disconnect_window_start = _iso_or_empty(
-                        (open_log.disconnect_window_start or window_anchor) if open_log else None
-                    )
-                    disconnect_window_end = _iso_or_empty(
-                        (open_log.disconnect_window_end or window_anchor) if open_log else None
-                    )
-                elif current_status == ONU.STATUS_UNKNOWN:
-                    disconnect_reason = ONULog.REASON_UNKNOWN
-                cache_batch[onu.id] = {
-                    "status": current_status,
-                    "disconnect_reason": disconnect_reason,
-                    "offline_since": offline_since,
-                    "disconnect_window_start": disconnect_window_start,
-                    "disconnect_window_end": disconnect_window_end,
-                }
                 missing_preserved += 1
                 continue
 
@@ -614,32 +561,9 @@ class Command(BaseCommand):
                 onu.status = new_status
                 onus_to_update.append(onu)
 
-            offline_since = ""
-            disconnect_window_start = ""
-            disconnect_window_end = ""
-            if new_status == ONU.STATUS_OFFLINE and active_log:
-                offline_since = active_log.offline_since.isoformat()
-                window_anchor = (
-                    active_log.disconnect_window_end
-                    or active_log.disconnect_window_start
-                    or active_log.offline_since
-                )
-                disconnect_window_start = _iso_or_empty(active_log.disconnect_window_start or window_anchor)
-                disconnect_window_end = _iso_or_empty(active_log.disconnect_window_end or window_anchor)
-
-            cache_batch[onu.id] = {
-                "status": new_status,
-                "disconnect_reason": reason,
-                "offline_since": offline_since,
-                "disconnect_window_start": disconnect_window_start,
-                "disconnect_window_end": disconnect_window_end,
-            }
-
             updated += 1
 
         if not dry_run:
-            if cache_batch:
-                cache_service.set_many_onu_status(olt.id, cache_batch, ttl=ttl)
             with transaction.atomic():
                 if new_logs:
                     ONULog.objects.bulk_create(new_logs)
@@ -658,7 +582,6 @@ class Command(BaseCommand):
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:
                 logger.exception("OLT %s polling: failed to refresh cached topology counters.", olt.id)
-            cache_service.invalidate_topology_api_cache(olt.id)
 
         self.stdout.write(
             f"OLT {olt.id}: polled {updated} ONUs "

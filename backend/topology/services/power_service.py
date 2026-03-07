@@ -12,7 +12,6 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from django.conf import settings
 
 from topology.models import ONU
-from topology.services.cache_service import cache_service
 from topology.services.power_values import normalize_power_value
 from topology.services.zabbix_service import zabbix_service
 
@@ -84,7 +83,6 @@ class PowerService:
         if not base_onus:
             return {}
 
-        base_ttl = int(getattr(settings, "POWER_CACHE_TTL", 60))
         stale_margin_seconds = int(getattr(settings, "ZABBIX_POWER_STALE_MARGIN_SECONDS", 90) or 90)
         refresh_upstream_max_items = int(
             getattr(settings, "ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS", 512) or 512
@@ -140,8 +138,6 @@ class PowerService:
         for olt_onus in grouped.values():
             olt = olt_onus[0].olt
             metrics = counters_by_olt.get(olt.id, {})
-            interval_ttl = int(getattr(olt, "power_interval_seconds", 0) or 0) * 2
-            ttl = max(base_ttl, interval_ttl, 300)
             refresh_requested_epoch: Optional[int] = None
             refresh_clock_grace_seconds = int(
                 getattr(settings, "ZABBIX_REFRESH_CLOCK_GRACE_SECONDS", 15) or 15
@@ -157,8 +153,6 @@ class PowerService:
                 int(getattr(olt, "power_interval_seconds", 0) or 0) * 3 + stale_margin_seconds,
                 stale_margin_seconds + 300,
             )
-            power_cache_batch: Dict[int, Dict] = {}
-            cached_power_by_onu = cache_service.get_many_onu_power(olt.id, [onu.id for onu in olt_onus])
 
             onu_pattern, olt_pattern = self._resolve_zabbix_power_patterns(olt)
             if not onu_pattern:
@@ -280,37 +274,7 @@ class PowerService:
                     "olt_rx_power": olt_rx,
                     "power_read_at": read_at,
                 }
-                if read_at is not None:
-                    power_cache_batch[onu.id] = payload
                 results[onu.id] = payload
-
-            if force_refresh:
-                for onu in olt_onus:
-                    if refresh_upstream:
-                        continue
-                    current = results.get(onu.id) or {}
-                    if current.get("power_read_at") is not None:
-                        continue
-                    cached = cached_power_by_onu.get(onu.id) or {}
-                    cached_onu_rx = normalize_power_value(cached.get("onu_rx_power"))
-                    cached_olt_rx = normalize_power_value(cached.get("olt_rx_power"))
-                    cached_read_at = cached.get("power_read_at")
-                    if cached_onu_rx is None and cached_olt_rx is None:
-                        continue
-                    cached_payload = {
-                        "onu_id": onu.id,
-                        "slot_id": onu.slot_id,
-                        "pon_id": onu.pon_id,
-                        "onu_number": onu.onu_id,
-                        "onu_rx_power": cached_onu_rx,
-                        "olt_rx_power": cached_olt_rx,
-                        "power_read_at": cached_read_at,
-                    }
-                    results[onu.id] = cached_payload
-                    power_cache_batch[onu.id] = cached_payload
-
-            if power_cache_batch:
-                cache_service.set_many_onu_power(olt.id, power_cache_batch, ttl=ttl)
 
             logger.info(
                 "Power refresh OLT %s: queried online ONUs (active=%s, online=%s, skipped_offline=%s, skipped_unknown=%s).",

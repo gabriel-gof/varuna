@@ -150,7 +150,7 @@ backend/venv/bin/python backend/manage.py ensure_auth_user --username admin --pa
 
 The command also reads `VARUNA_AUTH_USERNAME`, `VARUNA_AUTH_PASSWORD`, `VARUNA_AUTH_ROLE` environment variables as defaults. Use `--force-password` to update an existing user's password.
 
-Roles: `admin` (full access), `operator` (full access), `viewer` (read-only, no settings changes or maintenance actions).
+Roles: `admin` (full access, including Settings and OLT maintenance), `operator` (no Settings tab, but can edit PON descriptions and trigger scoped topology status/power refresh), `viewer` (read-only, no settings changes or live topology actions).
 
 ## Main API Endpoints
 - `GET /api/olts/`
@@ -189,7 +189,7 @@ Zabbix template files in repo root:
 - `snmp-avail-template.yaml`
 - `huawei-template.yaml`
 - `fiberhome-template.yaml`
-- `zte-template.yaml`
+- `zte-template.yaml` (`OLT ZTE C300` and `OLT ZTE C600`)
 - `vsol-like-template.yaml`
 
 ## Validation

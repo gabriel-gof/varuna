@@ -55,6 +55,8 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Topology list/detail payloads expose SNMP health metadata used by frontend gray-state logic (`snmp_reachable`, `last_snmp_check_at`, `snmp_failure_count`, `last_snmp_error`).
 - ONU batch status/power endpoints default to snapshot mode (`refresh=false` unless explicitly provided), so opening/refreshing topology panels does not implicitly trigger upstream collection.
 - `snmp_check` endpoint name is kept for compatibility, but behavior is Zabbix-only.
+- Topology color contract is strict: any ONU that is not `online` counts as offline for PON/slot/OLT color decisions, even when its operator-facing bucket is `unknown`.
+- The purple `unknown` counter is informational only; it does not suppress red/yellow escalation when a whole PON is down.
 
 ## Core Data/Behavior Rules
 - `ONU` is scoped to `OLT`; SNMP index uniqueness is `(olt, snmp_index)`.

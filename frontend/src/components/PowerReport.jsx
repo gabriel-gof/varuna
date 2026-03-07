@@ -10,7 +10,6 @@ const INITIAL_VISIBLE_ROWS = 300
 const LOAD_MORE_ROWS = 300
 const DEFAULT_SIGNAL_FILTER = ['good', 'critical', 'warning']
 const DEFAULT_SORT_MODE = 'worst_onu_rx'
-let powerReportRowsCache = []
 
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
 const formatPowerValue = (value) => {
@@ -90,9 +89,9 @@ export const PowerReport = () => {
     try { localStorage.setItem('varuna.powerReport.sortMode', sortMode) } catch {}
   }, [sortMode])
 
-  const [rows, setRows] = useState(() => asList(powerReportRowsCache))
+  const [rows, setRows] = useState([])
   const [visibleRowsLimit, setVisibleRowsLimit] = useState(INITIAL_VISIBLE_ROWS)
-  const [loading, setLoading] = useState(() => asList(powerReportRowsCache).length === 0)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   // Cascading OLT → Slot → PON filter state (restored from localStorage)
@@ -107,8 +106,7 @@ export const PowerReport = () => {
   })
 
   const fetchRows = useCallback(async ({ background = false } = {}) => {
-    const shouldBlockRender = !background && asList(powerReportRowsCache).length === 0
-    if (shouldBlockRender) {
+    if (!background) {
       setLoading(true)
       setError('')
     }
@@ -116,20 +114,19 @@ export const PowerReport = () => {
       const response = await api.get('/onu/power-report/')
       const payload = response?.data
       const nextRows = asList(payload?.results ?? payload).map(normalizeRow)
-      powerReportRowsCache = nextRows
       setRows(nextRows)
       setError('')
     } catch {
-      if (shouldBlockRender) {
+      if (!background) {
         setError(t('Failed to load OLT data'))
       }
     } finally {
-      if (shouldBlockRender) setLoading(false)
+      if (!background) setLoading(false)
     }
   }, [t])
 
   useEffect(() => {
-    void fetchRows({ background: asList(powerReportRowsCache).length > 0 })
+    void fetchRows()
   }, [fetchRows])
 
   useEffect(() => {

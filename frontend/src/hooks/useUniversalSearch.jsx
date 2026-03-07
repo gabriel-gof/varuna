@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
 
+import { classifyOnu } from '../utils/stats'
+
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
 
 export const normalizeSearch = (value) => String(value || '').toLowerCase().trim()
@@ -15,9 +17,10 @@ const scoreSearchMatch = (rawValue, term) => {
 }
 
 const SEARCH_STATUS_WEIGHT = {
-  online: 3,
-  offline: 2,
-  unknown: 1
+  online: 4,
+  link_loss: 3,
+  dying_gasp: 3,
+  unknown: 2
 }
 
 const getSearchStatusWeight = (status) => SEARCH_STATUS_WEIGHT[normalizeSearch(status)] || 0
@@ -120,7 +123,7 @@ export const useUniversalSearch = (olts) => {
               ponId: pon.id,
               ponNumber,
               onuId,
-              status: onu?.status,
+              status: classifyOnu(onu).status,
               powerReadAt: onu?.power_read_at,
               powerReadAtMs: toEpochMillis(onu?.power_read_at),
               matchType: serialScore > loginScore ? 'serial' : 'login',

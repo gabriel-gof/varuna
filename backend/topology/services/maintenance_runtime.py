@@ -21,19 +21,23 @@ def _emit_progress(callback: Optional[Callable[[int, str], None]], percent: int,
     callback(percent, detail)
 
 
+def get_status_snapshot_max_age_seconds(olt: OLT) -> int:
+    stale_margin_seconds = int(
+        getattr(settings, "ZABBIX_STATUS_STALE_MARGIN_SECONDS", 90) or 90
+    )
+    return max(
+        int(getattr(olt, "polling_interval_seconds", 0) or 0) * 3 + stale_margin_seconds,
+        stale_margin_seconds + 300,
+    )
+
+
 def has_usable_status_snapshot(olt: OLT) -> bool:
     if not olt.last_poll_at:
         return False
     if olt.snmp_reachable is False:
         return False
 
-    stale_margin_seconds = int(
-        getattr(settings, "ZABBIX_STATUS_STALE_MARGIN_SECONDS", 90) or 90
-    )
-    stale_status_max_age_seconds = max(
-        int(getattr(olt, "polling_interval_seconds", 0) or 0) + stale_margin_seconds,
-        stale_margin_seconds + 300,
-    )
+    stale_status_max_age_seconds = get_status_snapshot_max_age_seconds(olt)
     status_age_seconds = max(0, int((timezone.now() - olt.last_poll_at).total_seconds()))
     if status_age_seconds > stale_status_max_age_seconds:
         return False
@@ -129,7 +133,6 @@ def collect_power_for_olt(
         .select_related('olt', 'olt__vendor_profile')
         .order_by('slot_id', 'pon_id', 'onu_id')
     )
-    refresh_started_at = timezone.now()
     result_map = power_service.refresh_for_onus(
         onus,
         force_refresh=force_refresh,

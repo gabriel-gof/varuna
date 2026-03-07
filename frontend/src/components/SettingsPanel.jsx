@@ -8,6 +8,7 @@ import { HEALTH_STYLES } from '../utils/healthStyles'
 const MAX_OLT_NAME = 12
 const EXPANDED_OLTS_STORAGE_KEY = 'varuna.settings.expandedOltIds'
 const OLD_SELECTED_OLT_STORAGE_KEY = 'varuna.settings.selectedOltId'
+const isFiberhomeVendor = (vendor) => String(vendor || '').toUpperCase() === 'FIBERHOME'
 
 const buildInitialForm = (vendorProfiles = []) => {
   const firstVendor = vendorProfiles[0]?.vendor || ''
@@ -23,6 +24,12 @@ const buildInitialForm = (vendorProfiles = []) => {
     polling_interval: '5m',
     power_interval: '1d',
     history_days: '7d',
+    unm_enabled: false,
+    unm_host: '',
+    unm_port: '3306',
+    unm_username: 'unm2000',
+    unm_password: '',
+    unm_mneid: '',
   }
 }
 
@@ -39,6 +46,12 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     polling_interval: formatDuration(olt.polling_interval_seconds || 300),
     power_interval: formatDuration(olt.power_interval_seconds || 300),
     history_days: `${olt.history_days || 7}d`,
+    unm_enabled: Boolean(olt.unm_enabled),
+    unm_host: olt.unm_host || '',
+    unm_port: String(olt.unm_port || 3306),
+    unm_username: olt.unm_username || '',
+    unm_password: '',
+    unm_mneid: olt.unm_mneid ? String(olt.unm_mneid) : '',
   }
 }
 
@@ -108,6 +121,9 @@ const isFormDirty = (editForm, olt, vendorProfiles) => {
   if (!editForm || !olt) return false
   const original = buildEditForm(olt, vendorProfiles)
   return Object.keys(original).some((key) => {
+    if (key === 'unm_password') {
+      return String(editForm[key] || '') !== ''
+    }
     // For duration fields, compare resolved seconds instead of raw strings
     if (['discovery_interval', 'polling_interval', 'power_interval'].includes(key)) {
       return parseDuration(editForm[key]) !== parseDuration(original[key])
@@ -200,6 +216,24 @@ const SectionLabel = ({ children }) => (
   <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-300 dark:text-slate-600 select-none">{children}</span>
 )
 
+const UnmToggle = ({ enabled, onChange }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={enabled}
+    onClick={onChange}
+    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 ${
+      enabled
+        ? 'bg-emerald-500'
+        : 'bg-slate-200 dark:bg-slate-700'
+    }`}
+  >
+    <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+      enabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+    }`} />
+  </button>
+)
+
 const getOltHealth = (olt, oltHealthById) => {
   const derived = oltHealthById?.[String(olt.id)] || oltHealthById?.[olt.id]
   if (derived?.state && HEALTH_STYLES[derived.state]) return HEALTH_STYLES[derived.state]
@@ -215,6 +249,8 @@ const getModelDisplayLabel = ({ vendor, model_name }, language, t) => {
   }
   return model_name || ''
 }
+
+const hasDisplayValue = (value) => value !== null && value !== undefined && String(value).trim() !== ''
 
 /* ─── OLT Card header ─── */
 
@@ -670,10 +706,12 @@ export const SettingsPanel = ({
   const handleVendorChange = (nextVendor) => {
     if (nextVendor === form.vendor) return
     const nextModel = (vendorProfiles || []).find((item) => item.vendor === nextVendor)
+    const isFiberhome = isFiberhomeVendor(nextVendor)
     setForm((prev) => ({
       ...prev,
       vendor: nextVendor,
-      vendor_profile: nextModel?.id ? String(nextModel.id) : ''
+      vendor_profile: nextModel?.id ? String(nextModel.id) : '',
+      ...(!isFiberhome && { unm_enabled: false }),
     }))
   }
 
@@ -681,12 +719,14 @@ export const SettingsPanel = ({
     setEditForms((prev) => {
       const cardForm = prev[oltId]
       if (!cardForm || nextVendor === cardForm.vendor) return prev
+      const isFiberhome = isFiberhomeVendor(nextVendor)
       const nextModel = (vendorProfiles || []).find((item) => item.vendor === nextVendor)
-      return { ...prev, [oltId]: { ...cardForm, vendor: nextVendor, vendor_profile: nextModel?.id ? String(nextModel.id) : '' } }
+      return { ...prev, [oltId]: { ...cardForm, vendor: nextVendor, vendor_profile: nextModel?.id ? String(nextModel.id) : '', ...(!isFiberhome && { unm_enabled: false }) } }
     })
   }
 
   const handleCreate = async () => {
+    const unmEnabled = Boolean(form.unm_enabled)
     const payload = {
       name: String(form.name || '').trim().slice(0, MAX_OLT_NAME),
       ip_address: String(form.ip_address || '').trim(),
@@ -701,6 +741,12 @@ export const SettingsPanel = ({
       polling_interval_seconds: parseDuration(form.polling_interval) || 300,
       power_interval_seconds: parseDuration(form.power_interval) || 86400,
       history_days: parseHistoryDays(form.history_days, 7),
+      unm_enabled: unmEnabled,
+      unm_host: String(form.unm_host || '').trim() || null,
+      unm_port: Number(form.unm_port || 3306),
+      unm_username: String(form.unm_username || '').trim(),
+      unm_password: String(form.unm_password || ''),
+      unm_mneid: String(form.unm_mneid || '').trim() ? Number(form.unm_mneid) : null,
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -724,6 +770,7 @@ export const SettingsPanel = ({
   const handleUpdate = async (oltId) => {
     const cardEditForm = editForms[oltId]
     if (!oltId || !cardEditForm) return
+    const unmEnabled = Boolean(cardEditForm.unm_enabled)
 
     const payload = {
       name: String(cardEditForm.name || '').trim().slice(0, MAX_OLT_NAME),
@@ -735,6 +782,12 @@ export const SettingsPanel = ({
       polling_interval_seconds: parseDuration(cardEditForm.polling_interval) || 300,
       power_interval_seconds: parseDuration(cardEditForm.power_interval) || 86400,
       history_days: parseHistoryDays(cardEditForm.history_days, 7),
+      unm_enabled: unmEnabled,
+      unm_host: String(cardEditForm.unm_host || '').trim() || null,
+      unm_port: Number(cardEditForm.unm_port || 3306),
+      unm_username: String(cardEditForm.unm_username || '').trim(),
+      unm_password: String(cardEditForm.unm_password || ''),
+      unm_mneid: String(cardEditForm.unm_mneid || '').trim() ? Number(cardEditForm.unm_mneid) : null,
     }
 
     if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
@@ -950,6 +1003,96 @@ export const SettingsPanel = ({
                                   />
                                </div>
                             </div>
+
+                        {/* UNM Integration — FiberHome only */}
+                        {isFiberhomeVendor(form.vendor) && (
+                        <div className="w-full max-w-xl mt-5">
+                          <div className={`rounded-lg transition-colors duration-200 ${
+                            form.unm_enabled
+                              ? 'border border-emerald-200/60 bg-emerald-50/30 dark:border-emerald-500/20 dark:bg-emerald-500/5'
+                              : 'bg-slate-50/80 dark:bg-slate-800/20'
+                          }`}>
+                            <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+                              <div className="flex items-center gap-2">
+                                <SectionLabel>{t('UNM integration')}</SectionLabel>
+                              </div>
+                              <UnmToggle
+                                enabled={form.unm_enabled}
+                                onChange={() => setField('unm_enabled', !form.unm_enabled)}
+                              />
+                            </div>
+
+                            <div
+                              className={`grid transition-all duration-200 ease-in-out ${
+                                form.unm_enabled
+                                  ? 'grid-rows-[1fr] opacity-100'
+                                  : 'grid-rows-[0fr] opacity-0'
+                              }`}
+                              {...(!form.unm_enabled && { inert: '' })}
+                            >
+                              <div className="overflow-hidden">
+                                <div className="px-3.5 pb-3 pt-0.5 space-y-2.5">
+                                  <div className="grid grid-cols-3 gap-x-3 gap-y-2.5">
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Host')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={form.unm_host}
+                                        onChange={(e) => setField('unm_host', e.target.value)}
+                                        placeholder="192.168.30.101"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Port')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center px-1"
+                                        type="number"
+                                        min={1}
+                                        max={65535}
+                                        value={form.unm_port}
+                                        onChange={(e) => setField('unm_port', e.target.value)}
+                                        placeholder="3306"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('MNEID')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={form.unm_mneid}
+                                        onChange={(e) => setField('unm_mneid', e.target.value)}
+                                        placeholder="13172740"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-x-3">
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Username')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={form.unm_username}
+                                        onChange={(e) => setField('unm_username', e.target.value)}
+                                        placeholder="unm2000"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Password')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        type="password"
+                                        autoComplete="off"
+                                        value={form.unm_password}
+                                        onChange={(e) => setField('unm_password', e.target.value)}
+                                        placeholder="••••••••"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        )}
                         </div>
                     )}
 
@@ -1254,6 +1397,104 @@ export const SettingsPanel = ({
                            </div>
 
                         </div>
+
+                        {/* UNM Integration — FiberHome only */}
+                        {isFiberhomeVendor(cardEditForm.vendor) && (
+                        <div className="w-full max-w-xl mt-5">
+                          <div className={`rounded-lg transition-colors duration-200 ${
+                            cardEditForm.unm_enabled
+                              ? 'border border-emerald-200/60 bg-emerald-50/30 dark:border-emerald-500/20 dark:bg-emerald-500/5'
+                              : 'bg-slate-50/80 dark:bg-slate-800/20'
+                          }`}>
+                            <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+                              <div className="flex items-center gap-2">
+                                <SectionLabel>{t('UNM integration')}</SectionLabel>
+                                {cardEditForm.unm_enabled && hasDisplayValue(olt.unm_mneid) && (
+                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                )}
+                              </div>
+                              <UnmToggle
+                                enabled={cardEditForm.unm_enabled}
+                                onChange={() => setEditField(oltId, 'unm_enabled', !cardEditForm.unm_enabled)}
+                              />
+                            </div>
+
+                            <div
+                              className={`grid transition-all duration-200 ease-in-out ${
+                                cardEditForm.unm_enabled
+                                  ? 'grid-rows-[1fr] opacity-100'
+                                  : 'grid-rows-[0fr] opacity-0'
+                              }`}
+                              {...(!cardEditForm.unm_enabled && { inert: '' })}
+                            >
+                              <div className="overflow-hidden">
+                                <div className="px-3.5 pb-3 pt-0.5 space-y-2.5">
+                                  <div className="grid grid-cols-3 gap-x-3 gap-y-2.5">
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Host')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={cardEditForm.unm_host}
+                                        onChange={(e) => setEditField(oltId, 'unm_host', e.target.value)}
+                                        placeholder="192.168.30.101"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Port')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center px-1"
+                                        type="number"
+                                        min={1}
+                                        max={65535}
+                                        value={cardEditForm.unm_port}
+                                        onChange={(e) => setEditField(oltId, 'unm_port', e.target.value)}
+                                        placeholder="3306"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('MNEID')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={cardEditForm.unm_mneid}
+                                        onChange={(e) => setEditField(oltId, 'unm_mneid', e.target.value)}
+                                        placeholder="13172740"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-x-3">
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Username')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={cardEditForm.unm_username}
+                                        onChange={(e) => setEditField(oltId, 'unm_username', e.target.value)}
+                                        placeholder="unm2000"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                      <FieldLabel>{t('Password')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        type="password"
+                                        autoComplete="off"
+                                        value={cardEditForm.unm_password}
+                                        onChange={(e) => setEditField(oltId, 'unm_password', e.target.value)}
+                                        placeholder="••••••••"
+                                      />
+                                      {olt.unm_password_configured && (
+                                        <span className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 text-center">
+                                          {t('Leave blank to keep current password')}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        )}
                       </div>
                     )}
 

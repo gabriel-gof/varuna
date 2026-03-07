@@ -32,6 +32,7 @@ from topology.services.olt_health_service import mark_olt_reachable, mark_olt_un
 from topology.services.power_values import normalize_power_value
 from topology.services.power_service import power_service
 from topology.services.topology_service import TopologyService
+from topology.services.unm_service import UNMServiceError, unm_service
 from topology.services.vendor_profile import map_disconnect_reason, map_status_code
 from topology.services.zabbix_service import zabbix_service
 
@@ -146,6 +147,11 @@ class OLTViewSet(viewsets.ModelViewSet):
             'snmp_port',
             'snmp_community',
             'snmp_version',
+            'unm_enabled',
+            'unm_host',
+            'unm_port',
+            'unm_username',
+            'unm_mneid',
             'discovery_interval_minutes',
             'polling_interval_seconds',
             'power_interval_seconds',
@@ -1258,7 +1264,8 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         }
         power_history = []
 
-        if status_pattern and onu.snmp_index:
+        zabbix_payload = None
+        if onu.snmp_index and (status_pattern or onu_rx_pattern or olt_rx_pattern):
             try:
                 status_time_from = int(alarm_cutoff.timestamp())
                 status_time_till = int(alarm_end.timestamp())
@@ -1267,8 +1274,8 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 zabbix_payload = zabbix_service.fetch_onu_item_timelines(
                     onu.olt,
                     index=str(onu.snmp_index),
-                    status_item_key_pattern=status_pattern,
-                    reason_item_key_pattern=reason_pattern,
+                    status_item_key_pattern=status_pattern if not onu.olt.unm_enabled else '',
+                    reason_item_key_pattern=reason_pattern if not onu.olt.unm_enabled else '',
                     onu_rx_item_key_pattern=onu_rx_pattern,
                     olt_rx_item_key_pattern=olt_rx_pattern,
                     status_time_from=status_time_from,
@@ -1278,36 +1285,55 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                     status_limit=max(alarm_limit * 20, 5000),
                     power_limit=max(max_power_points * 10, 2000),
                 )
-                if zabbix_payload and zabbix_payload.get('status_samples'):
-                    alarms, stats = self._build_zabbix_alarm_rows(
-                        onu=onu,
-                        status_samples=zabbix_payload.get('status_samples') or [],
-                        previous_status_sample=zabbix_payload.get('status_previous'),
-                        reason_samples=zabbix_payload.get('reason_samples') or [],
-                        alarm_cutoff=alarm_cutoff,
-                        alarm_end=alarm_end,
-                        alarm_limit=alarm_limit,
-                        status_map=status_map_cfg,
-                        disconnect_reason_map=disconnect_reason_map,
-                    )
-                    merge_window_seconds = max(
-                        5,
-                        min(
-                            60,
-                            int((onu.olt.power_interval_seconds or 300) * 0.2),
-                        ),
-                    )
-                    power_history = self._build_zabbix_power_history(
-                        onu_rx_samples=zabbix_payload.get('onu_rx_samples') or [],
-                        olt_rx_samples=zabbix_payload.get('olt_rx_samples') or [],
-                        max_power_points=max_power_points,
-                        merge_window_seconds=merge_window_seconds,
-                    )
-                    data_source = 'zabbix'
             except Exception:
-                logger.exception("Failed to build alarm-history from Zabbix for onu_id=%s", onu.id)
+                logger.exception("Failed to build alarm-history timelines from Zabbix for onu_id=%s", onu.id)
+                zabbix_payload = None
 
-        if data_source != 'zabbix':
+        if onu.olt.unm_enabled:
+            try:
+                alarms = unm_service.fetch_onu_alarm_history(
+                    olt=onu.olt,
+                    onu=onu,
+                    alarm_cutoff=alarm_cutoff,
+                    alarm_end=alarm_end,
+                    alarm_limit=alarm_limit,
+                )
+            except UNMServiceError as exc:
+                return Response(
+                    {'detail': str(exc)},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            except Exception:
+                logger.exception("Failed to build alarm-history from UNM for onu_id=%s", onu.id)
+                return Response(
+                    {'detail': 'UNM query failed.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+            data_source = 'unm'
+            for alarm in alarms:
+                event_bucket = alarm.get('event_type')
+                if event_bucket not in ('link_loss', 'dying_gasp'):
+                    event_bucket = 'unknown'
+                status_value = alarm.get('status') or 'resolved'
+                stats['total'] += 1
+                stats[event_bucket] += 1
+                if status_value in ('active', 'resolved'):
+                    stats[status_value] += 1
+        elif zabbix_payload and zabbix_payload.get('status_samples'):
+            alarms, stats = self._build_zabbix_alarm_rows(
+                onu=onu,
+                status_samples=zabbix_payload.get('status_samples') or [],
+                previous_status_sample=zabbix_payload.get('status_previous'),
+                reason_samples=zabbix_payload.get('reason_samples') or [],
+                alarm_cutoff=alarm_cutoff,
+                alarm_end=alarm_end,
+                alarm_limit=alarm_limit,
+                status_map=status_map_cfg,
+                disconnect_reason_map=disconnect_reason_map,
+            )
+            data_source = 'zabbix'
+        else:
             alarm_logs = list(
                 ONULog.objects.filter(
                     onu_id=onu.id,
@@ -1349,7 +1375,24 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                         ),
                     }
                 )
-
+        if zabbix_payload and (
+            (zabbix_payload.get('onu_rx_samples') or [])
+            or (zabbix_payload.get('olt_rx_samples') or [])
+        ):
+            merge_window_seconds = max(
+                5,
+                min(
+                    60,
+                    int((onu.olt.power_interval_seconds or 300) * 0.2),
+                ),
+            )
+            power_history = self._build_zabbix_power_history(
+                onu_rx_samples=zabbix_payload.get('onu_rx_samples') or [],
+                olt_rx_samples=zabbix_payload.get('olt_rx_samples') or [],
+                max_power_points=max_power_points,
+                merge_window_seconds=merge_window_seconds,
+            )
+        else:
             power_samples = list(
                 ONUPowerSample.objects.filter(
                     onu_id=onu.id,

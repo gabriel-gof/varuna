@@ -7,7 +7,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from topology.api.auth_utils import can_modify_settings, resolve_user_role
+from topology.api.auth_utils import can_modify_settings, can_operate_topology, resolve_user_role
 
 
 @api_view(['POST'])
@@ -37,6 +37,7 @@ def login_view(request):
             'username': user.username,
             'role': resolve_user_role(user),
             'can_modify_settings': can_modify_settings(user),
+            'can_operate_topology': can_operate_topology(user),
         },
     })
 
@@ -58,6 +59,7 @@ def me_view(request):
         'username': request.user.username,
         'role': role,
         'can_modify_settings': can_modify_settings(request.user),
+        'can_operate_topology': can_operate_topology(request.user),
     })
 
 

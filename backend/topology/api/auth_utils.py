@@ -25,3 +25,11 @@ def resolve_user_role(user) -> str:
 def can_modify_settings(user) -> bool:
     role = resolve_user_role(user)
     return role == UserProfile.ROLE_ADMIN
+
+
+def can_operate_topology(user) -> bool:
+    role = resolve_user_role(user)
+    return role in {
+        UserProfile.ROLE_ADMIN,
+        UserProfile.ROLE_OPERATOR,
+    }

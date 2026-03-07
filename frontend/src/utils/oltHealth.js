@@ -11,25 +11,20 @@ const getPonSignalCounts = (pon) => {
   const onus = asList(pon?.onus).filter(Boolean)
   if (onus.length > 0) {
     let online = 0
-    let knownOffline = 0
-    let unknown = 0
+    let offline = 0
     for (const onu of onus) {
       const state = classifyOnu(onu).status
       if (state === 'online') {
         online += 1
-      } else if (state === 'unknown') {
-        unknown += 1
       } else {
-        knownOffline += 1
+        offline += 1
       }
     }
     const total = onus.length
     return {
       total,
       online,
-      knownOffline,
-      unknown,
-      offline: knownOffline + unknown,
+      offline,
     }
   }
 
@@ -38,8 +33,6 @@ const getPonSignalCounts = (pon) => {
   return {
     total: online + offline,
     online,
-    knownOffline: offline,
-    unknown: 0,
     offline,
   }
 }
@@ -71,20 +64,20 @@ const isStatusStale = (olt, nowMs = Date.now()) => {
   return nowMs - lastPollMs > staleWindowMs
 }
 
-const getPonHealthState = (pon) => {
-  const { total, knownOffline } = getPonSignalCounts(pon)
+export const getPonHealthColorState = (pon) => {
+  const { total, offline } = getPonSignalCounts(pon)
 
   if (total <= 0) return 'green'
-  if (knownOffline >= total) return 'red'
-  if (knownOffline > 0) return 'yellow'
+  if (offline >= total) return 'red'
+  if (offline > 0) return 'yellow'
   return 'green'
 }
 
-const getSlotHealthState = (slot) => {
+export const getSlotHealthColorState = (slot) => {
   const activePons = asList(slot?.pons).filter(isActiveEntity)
   if (!activePons.length) return 'green'
 
-  const ponStates = activePons.map((pon) => getPonHealthState(pon))
+  const ponStates = activePons.map((pon) => getPonHealthColorState(pon))
   const hasRed = ponStates.some((state) => state === 'red')
   const allRed = ponStates.every((state) => state === 'red')
 
@@ -110,7 +103,7 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   const hasTopologyTree = Object.prototype.hasOwnProperty.call(olt || {}, 'slots')
   const activeSlots = asList(olt?.slots).filter(isActiveEntity)
   if (activeSlots.length > 0) {
-    const slotStates = activeSlots.map((slot) => getSlotHealthState(slot))
+    const slotStates = activeSlots.map((slot) => getSlotHealthColorState(slot))
     const hasRed = slotStates.some((state) => state === 'red')
     const allRed = slotStates.every((state) => state === 'red')
 

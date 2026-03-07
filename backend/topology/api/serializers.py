@@ -379,6 +379,14 @@ class OLTSerializer(serializers.ModelSerializer):
     MAX_POWER_INTERVAL_SECONDS = 7 * 24 * 60 * 60
 
     name = serializers.CharField(max_length=100, trim_whitespace=True)
+    unm_password = serializers.CharField(
+        max_length=255,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+        write_only=True,
+    )
+    unm_password_configured = serializers.SerializerMethodField()
     vendor_profile = serializers.PrimaryKeyRelatedField(
         queryset=VendorProfile.objects.filter(is_active=True)
     )
@@ -406,6 +414,13 @@ class OLTSerializer(serializers.ModelSerializer):
             'snmp_port',
             'snmp_community',
             'snmp_version',
+            'unm_enabled',
+            'unm_host',
+            'unm_port',
+            'unm_username',
+            'unm_password',
+            'unm_password_configured',
+            'unm_mneid',
             'snmp_reachable',
             'last_snmp_check_at',
             'last_snmp_error',
@@ -503,6 +518,9 @@ class OLTSerializer(serializers.ModelSerializer):
         power_cfg = ((obj.vendor_profile.oid_templates or {}).get('power', {}))
         return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
 
+    def get_unm_password_configured(self, obj):
+        return bool(str(obj.unm_password or '').strip())
+
     def validate_name(self, value):
         name = str(value or '').strip()
         if not name:
@@ -541,6 +559,28 @@ class OLTSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Only SNMP v2c is currently supported.')
         return version
 
+    def validate_unm_port(self, value):
+        if value in (None, ''):
+            return 3306
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('UNM port must be an integer.')
+        if port < 1 or port > 65535:
+            raise serializers.ValidationError('UNM port must be between 1 and 65535.')
+        return port
+
+    def validate_unm_mneid(self, value):
+        if value in (None, ''):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('UNM MNEID must be a positive integer.')
+        if parsed <= 0:
+            raise serializers.ValidationError('UNM MNEID must be a positive integer.')
+        return parsed
+
     def validate_history_days(self, value):
         if not (7 <= value <= 30):
             raise serializers.ValidationError('history_days must be between 7 and 30.')
@@ -550,6 +590,33 @@ class OLTSerializer(serializers.ModelSerializer):
         attrs = super().validate(attrs)
         if not self.instance:
             attrs = self._apply_vendor_defaults(attrs)
+
+        instance = self.instance
+        unm_enabled = bool(attrs.get('unm_enabled', getattr(instance, 'unm_enabled', False)))
+        incoming_unm_password = attrs.get('unm_password', serializers.empty)
+        if incoming_unm_password is serializers.empty:
+            effective_unm_password = str(getattr(instance, 'unm_password', '') or '')
+        elif instance is not None and not str(incoming_unm_password or '').strip():
+            effective_unm_password = str(getattr(instance, 'unm_password', '') or '')
+        else:
+            effective_unm_password = str(incoming_unm_password or '')
+
+        effective_unm_host = attrs.get('unm_host', getattr(instance, 'unm_host', None))
+        effective_unm_username = attrs.get('unm_username', getattr(instance, 'unm_username', ''))
+        effective_unm_mneid = attrs.get('unm_mneid', getattr(instance, 'unm_mneid', None))
+
+        if unm_enabled:
+            validation_errors = {}
+            if not str(effective_unm_host or '').strip():
+                validation_errors['unm_host'] = 'UNM host is required when UNM is enabled.'
+            if not str(effective_unm_username or '').strip():
+                validation_errors['unm_username'] = 'UNM username is required when UNM is enabled.'
+            if not str(effective_unm_password or '').strip():
+                validation_errors['unm_password'] = 'UNM password is required when UNM is enabled.'
+            if effective_unm_mneid in (None, ''):
+                validation_errors['unm_mneid'] = 'UNM MNEID is required when UNM is enabled.'
+            if validation_errors:
+                raise serializers.ValidationError(validation_errors)
 
         discovery_interval = attrs.get(
             'discovery_interval_minutes',
@@ -570,6 +637,20 @@ class OLTSerializer(serializers.ModelSerializer):
             power_interval=power_interval,
         )
         return attrs
+
+    def create(self, validated_data):
+        unm_password = validated_data.pop('unm_password', '')
+        validated_data['unm_password'] = str(unm_password or '')
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        incoming_unm_password = validated_data.pop('unm_password', serializers.empty)
+        if incoming_unm_password is not serializers.empty:
+            if str(incoming_unm_password or '').strip():
+                validated_data['unm_password'] = str(incoming_unm_password)
+            else:
+                validated_data['unm_password'] = str(instance.unm_password or '')
+        return super().update(instance, validated_data)
 
     def _validate_interval_ranges(self, discovery_interval, polling_interval, power_interval):
         if discovery_interval is None or int(discovery_interval) <= 0:

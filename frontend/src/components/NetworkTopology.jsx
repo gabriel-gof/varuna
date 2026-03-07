@@ -3,6 +3,7 @@ import { ChevronDown, Server, Cable, Search, Filter, CircuitBoard, Bell, Sigma, 
 import { useTranslation } from 'react-i18next'
 import { getOnuStats } from '../utils/stats'
 import { resolveHealthStyle } from '../utils/healthStyles'
+import { getPonHealthColorState, getSlotHealthColorState } from '../utils/oltHealth'
 import { useUniversalSearch, normalizeSearch, renderHighlightedText } from '../hooks/useUniversalSearch'
 
 const pad2 = (value) => String(value).padStart(2, '0')
@@ -45,32 +46,18 @@ const getPonHealthState = (pon, selectedReasons) => {
     }
   }
 
-  const total = asCount(stats.total)
-  const totalOffline = asCount(stats.offline)
-  const unknownCount = asCount(stats.unknown)
-  const knownOffline = Math.max(totalOffline - unknownCount, 0)
   const offlineCount = getSelectedOfflineCount(stats, selectedReasons)
-  const isRed = total > 0 && knownOffline >= total
-  const isYellow = total > 0 && !isRed && knownOffline > 0
+  const state = getPonHealthColorState(pon)
 
   return {
-    state: isRed ? 'red' : isYellow ? 'yellow' : 'green',
+    state,
     stats,
     selectedOfflineCount: offlineCount
   }
 }
 
 const getSlotHealthState = (slot, selectedReasons) => {
-  const activePons = asList(slot?.pons).filter(isActiveEntity)
-  if (!activePons.length) return 'green'
-
-  const ponStates = activePons.map((pon) => getPonHealthState(pon, selectedReasons).state)
-  const hasRed = ponStates.some((state) => state === 'red')
-  const allRed = ponStates.every((state) => state === 'red')
-
-  if (allRed) return 'red'
-  if (hasRed) return 'yellow'
-  return 'green'
+  return getSlotHealthColorState(slot)
 }
 
 const aggregateStats = (entity, level) => {

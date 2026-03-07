@@ -55,6 +55,12 @@ class OLT(models.Model):
     snmp_port = models.IntegerField(default=161, verbose_name='Porta SNMP')
     snmp_community = models.CharField(max_length=100, verbose_name='Comunidade SNMP')
     snmp_version = models.CharField(max_length=10, default='v2c', choices=[('v2c', 'v2c'), ('v3', 'v3')], verbose_name='Versão SNMP')
+    unm_enabled = models.BooleanField(default=False, verbose_name='Integração UNM Ativada')
+    unm_host = models.GenericIPAddressField(null=True, blank=True, verbose_name='Host do UNM')
+    unm_port = models.PositiveIntegerField(default=3306, verbose_name='Porta do UNM')
+    unm_username = models.CharField(max_length=100, blank=True, default='', verbose_name='Usuário do UNM')
+    unm_password = models.CharField(max_length=255, blank=True, default='', verbose_name='Senha do UNM')
+    unm_mneid = models.BigIntegerField(null=True, blank=True, verbose_name='UNM MNEID')
     
     discovery_enabled = models.BooleanField(default=True, verbose_name='Descoberta Ativada')
     discovery_interval_minutes = models.IntegerField(
@@ -470,6 +476,9 @@ class UserProfile(models.Model):
         return f"{self.user.username} ({self.get_role_display()})"
     
     def can_modify_settings(self):
+        return self.role == self.ROLE_ADMIN
+
+    def can_operate_topology(self):
         return self.role in [self.ROLE_ADMIN, self.ROLE_OPERATOR]
     
     class Meta:

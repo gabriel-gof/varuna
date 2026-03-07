@@ -43,6 +43,7 @@ GENERIC_ONU_STATUS_ITEM_RE = re.compile(
     re.IGNORECASE,
 )
 GENERIC_SERIAL_TOKEN_RE = re.compile(r"^[A-Z]{4}[A-Z0-9-]{4,28}$")
+GENERIC_DIGIT_SERIAL_TOKEN_RE = re.compile(r"^(?=(?:.*\d){4,})[A-Z0-9-]{8,32}$")
 
 VARUNA_DISCOVERY_INTERVAL_MACRO = "{$VARUNA.DISCOVERY_INTERVAL}"
 VARUNA_STATUS_INTERVAL_MACRO = "{$VARUNA.STATUS_INTERVAL}"
@@ -72,6 +73,23 @@ MODEL_TAG_ALIASES = {
 
 class ZabbixAPIError(RuntimeError):
     pass
+
+
+def _is_generic_serial_token(value: str) -> bool:
+    return bool(
+        GENERIC_SERIAL_TOKEN_RE.fullmatch(value)
+        or GENERIC_DIGIT_SERIAL_TOKEN_RE.fullmatch(value)
+    )
+
+
+def _looks_like_hex_serial_token(value: str) -> bool:
+    normalized = str(value or "").strip().upper()
+    if not normalized:
+        return False
+    compact = normalized.replace(" ", "")
+    if normalized.startswith("0X"):
+        compact = normalized[2:].replace(" ", "")
+    return bool(re.fullmatch(r"[0-9A-F]{10,64}", compact) and len(compact) % 2 == 0)
 
 
 def _to_float_or_none(value) -> Optional[float]:
@@ -537,7 +555,10 @@ class ZabbixService:
             raw_single = templates_cfg.get("host_template_name")
             if raw_single:
                 explicit_names.append(str(raw_single).strip())
+        explicit_names = ZabbixService._dedupe_values(explicit_names)
         candidates.extend(explicit_names)
+        if explicit_names:
+            return candidates
 
         vendor = str(getattr(getattr(olt, "vendor_profile", None), "vendor", "") or "").strip()
         vendor_lc = vendor.lower()
@@ -1508,13 +1529,14 @@ class ZabbixService:
         if "," in token:
             parts = [part.strip().strip(",;:") for part in token.split(",") if part.strip()]
             for part in parts:
-                if GENERIC_SERIAL_TOKEN_RE.fullmatch(part):
+                if _is_generic_serial_token(part):
                     return part.replace("-", "")
-            if parts:
-                token = parts[0]
-        if GENERIC_SERIAL_TOKEN_RE.fullmatch(token):
+            token = parts[0] if parts else token
+        if _is_generic_serial_token(token):
             return token.replace("-", "")
-        return token
+        if _looks_like_hex_serial_token(token):
+            return token
+        return ""
 
     @staticmethod
     def _split_status_item_body_name_serial(body: str) -> Tuple[str, str]:

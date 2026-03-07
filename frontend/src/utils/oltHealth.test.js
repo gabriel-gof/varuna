@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { deriveOltHealthState } from './oltHealth.js'
+import { deriveOltHealthState, getPonHealthColorState } from './oltHealth.js'
 
 const NOW_MS = Date.parse('2026-02-24T18:00:00.000Z')
 
@@ -103,7 +103,20 @@ test('deriveOltHealthState keeps OLT gray when polling timestamp is absent even 
   assert.equal(state.reason, 'status_stale')
 })
 
-test('deriveOltHealthState keeps OLT green when ONUs are only unknown', () => {
+test('getPonHealthColorState treats unknown ONUs as offline for color decisions', () => {
+  assert.equal(
+    getPonHealthColorState({
+      is_active: true,
+      onus: [
+        { status: 'unknown', disconnect_reason: '' },
+        { status: 'offline', disconnect_reason: 'unknown' },
+      ],
+    }),
+    'red',
+  )
+})
+
+test('deriveOltHealthState marks OLT red when ONUs are only unknown', () => {
   const state = deriveOltHealthState(
     {
       snmp_reachable: true,
@@ -127,8 +140,8 @@ test('deriveOltHealthState keeps OLT green when ONUs are only unknown', () => {
     },
     NOW_MS,
   )
-  assert.equal(state.state, 'green')
-  assert.equal(state.reason, 'no_slot_red')
+  assert.equal(state.state, 'red')
+  assert.equal(state.reason, 'all_slots_red')
 })
 
 test('deriveOltHealthState keeps OLT green when at least one ONU is online', () => {

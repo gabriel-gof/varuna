@@ -43,7 +43,11 @@ zabbix_export:
 
                   function normalizeSerial(raw) {
                       var serialLike = /^[A-Z]{4}[A-Z0-9-]{4,28}$/;
+                      var digitMixedSerialLike = /^(?=(?:.*\d){4,})[A-Z0-9-]{8,32}$/;
                       var sentinel = ['N/A', 'NA', 'NONE', 'NULL', '--', '-'];
+                      function isSerialLike(value) {
+                          return serialLike.test(value) || digitMixedSerialLike.test(value);
+                      }
                       var input = String(raw || '').trim().toUpperCase();
                       if (!input) {
                           return '';
@@ -54,13 +58,19 @@ zabbix_export:
                           return part.length > 0;
                       });
                       for (var i = 0; i < parts.length; i += 1) {
-                          if (serialLike.test(parts[i])) {
+                          if (isSerialLike(parts[i])) {
                               return parts[i].replace(/-/g, '');
                           }
                       }
                       var serial = parts.length > 0 ? parts[0] : input.replace(/^[\[\(\{]+|[\]\)\},;:]+$/g, '');
                       if (!serial || sentinel.indexOf(serial) >= 0) {
                           return '';
+                      }
+                      if (/^\d+$/.test(serial)) {
+                          return '';
+                      }
+                      if (isSerialLike(serial)) {
+                          return serial.replace(/-/g, '');
                       }
                       return serial;
                   }
@@ -234,6 +244,277 @@ zabbix_export:
 
                       // ZTE C300 usually reports thousandths of dBm here.
                       // Keep compatibility if the device already returns dBm.
+                      var n = (raw < -100 || raw > 100) ? (raw / 1000.0) : raw;
+
+                      if (raw === -80000) {
+                          return INVALID_POWER;
+                      }
+
+                      if (!isFinite(n) || n <= -40 || n >= 0) {
+                          return INVALID_POWER;
+                      }
+
+                      if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
+                          return INVALID_POWER;
+                      }
+
+                      return Math.round(n * 100) / 100;
+                  error_handler: DISCARD_VALUE
+              tags:
+                - tag: collector
+                  value: varuna
+                - tag: metric
+                  value: olt_rx_power
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
+    - uuid: cd43b0eaa1f24acda88a32ce5443b1f2
+      template: 'OLT ZTE C600'
+      name: 'OLT ZTE C600'
+      description: |
+        Minimal template for Varuna collection.
+        Scope:
+        - ONU discovery
+        - ONU status (C600 live-validated status map)
+        - ONU RX and OLT RX power (direct SNMP per ONU)
+      groups:
+        - name: Templates/OLT
+      macros:
+        - macro: '{$VARUNA.DISCOVERY_INTERVAL}'
+          value: 5m
+        - macro: '{$VARUNA.STATUS_INTERVAL}'
+          value: 1m
+        - macro: '{$VARUNA.POWER_INTERVAL}'
+          value: 5m
+        - macro: '{$VARUNA.HISTORY_DAYS}'
+          value: 7d
+      discovery_rules:
+        - uuid: 8963730687dd405fab328d4298e7ea95
+          name: 'ONU Discovery'
+          type: SNMP_AGENT
+          snmp_oid: 'discovery[{#ONU_NAME},1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2,{#SERIAL},1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.18]'
+          key: onuDiscovery
+          delay: '{$VARUNA.DISCOVERY_INTERVAL}'
+          lifetime_type: DELETE_IMMEDIATELY
+          lifetime: '0'
+          description: 'Builds ONU LLD rows from ZTE C600/C620 0x11rrsspp index encoding.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var rows = JSON.parse(value);
+                  var output = [];
+
+                  function normalizeSerial(raw) {
+                      var serialLike = /^[A-Z]{4}[A-Z0-9-]{4,28}$/;
+                      var digitMixedSerialLike = /^(?=(?:.*\d){4,})[A-Z0-9-]{8,32}$/;
+                      var sentinel = ['N/A', 'NA', 'NONE', 'NULL', '--', '-'];
+                      function isSerialLike(value) {
+                          return serialLike.test(value) || digitMixedSerialLike.test(value);
+                      }
+                      var input = String(raw || '').trim().toUpperCase();
+                      if (!input) {
+                          return '';
+                      }
+                      var parts = input.split(',').map(function(part) {
+                          return String(part || '').trim().replace(/^[\[\(\{]+|[\]\)\},;:]+$/g, '');
+                      }).filter(function(part) {
+                          return part.length > 0;
+                      });
+                      for (var i = 0; i < parts.length; i += 1) {
+                          if (isSerialLike(parts[i])) {
+                              return parts[i].replace(/-/g, '');
+                          }
+                      }
+                      var serial = parts.length > 0 ? parts[0] : input.replace(/^[\[\(\{]+|[\]\)\},;:]+$/g, '');
+                      if (!serial || sentinel.indexOf(serial) >= 0) {
+                          return '';
+                      }
+                      if (/^\d+$/.test(serial)) {
+                          return '';
+                      }
+                      if (isSerialLike(serial)) {
+                          return serial.replace(/-/g, '');
+                      }
+                      return serial;
+                  }
+
+                  rows.forEach(function(row) {
+                      var indexStr = String(row['{#SNMPINDEX}'] || '').trim();
+                      if (!indexStr) {
+                          return;
+                      }
+
+                      var parts = indexStr.split('.');
+                      if (parts.length < 2) {
+                          return;
+                      }
+
+                      var ponNumeric = parseInt(parts[0], 10);
+                      var onuId = parseInt(parts[parts.length - 1], 10);
+                      if (!isFinite(ponNumeric) || !isFinite(onuId) || onuId <= 0) {
+                          return;
+                      }
+
+                      if (((ponNumeric >> 24) & 0xFF) !== 0x11) {
+                          return;
+                      }
+
+                      var slot = (ponNumeric >> 8) & 0xFF;
+                      var pon = ponNumeric & 0xFF;
+                      if (!isFinite(slot) || !isFinite(pon) || slot <= 0 || pon <= 0) {
+                          return;
+                      }
+
+                      var onuName = String(row['{#ONU_NAME}'] || '').trim();
+                      var serial = normalizeSerial(row['{#SERIAL}']);
+
+                      output.push({
+                          '{#SNMPINDEX}': indexStr,
+                          '{#PON_NUMERIC}': String(ponNumeric),
+                          '{#SLOT}': String(slot),
+                          '{#PON}': String(pon),
+                          '{#ONU_ID}': String(onuId),
+                          '{#ONU_NAME}': onuName,
+                          '{#SERIAL}': serial,
+                          '{#ONU_PATH}': String(slot) + '/' + String(pon) + '/' + String(onuId)
+                      });
+                  });
+
+                  return JSON.stringify(output);
+          item_prototypes:
+            - uuid: aa7e80d08c29476485633aeeebe04aef
+              name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: Status'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.3902.1082.500.10.2.3.8.1.4.{#PON_NUMERIC}.{#ONU_ID}'
+              key: 'onuStatusValue[{#PON_NUMERIC}.{#ONU_ID}]'
+              delay: '{$VARUNA.STATUS_INTERVAL}'
+              history: '{$VARUNA.HISTORY_DAYS}'
+              value_type: TEXT
+              trends: '0'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var raw = String(value || '').trim();
+                      if (raw === '3') {
+                          return 'online';
+                      }
+                      if (raw === '4') {
+                          return 'online';
+                      }
+                      if (raw === '1') {
+                          return 'link_loss';
+                      }
+                      if (raw === '2') {
+                          return 'link_loss';
+                      }
+                      if (raw === '5') {
+                          return 'dying_gasp';
+                      }
+                      if (raw === '6' || raw === '7') {
+                          return 'offline';
+                      }
+                      return 'unknown';
+                  error_handler: DISCARD_VALUE
+              tags:
+                - tag: collector
+                  value: varuna
+                - tag: metric
+                  value: onu_status
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
+            - uuid: a2539eee09bf4d528a8d5554f5102b80
+              name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: ONU Rx power'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.3902.1082.500.20.2.2.2.1.10.{#PON_NUMERIC}.{#ONU_ID}.1'
+              key: 'onuRxPower[{#PON_NUMERIC}.{#ONU_ID}]'
+              delay: '{$VARUNA.POWER_INTERVAL}'
+              history: '{$VARUNA.HISTORY_DAYS}'
+              value_type: FLOAT
+              trends: '0'
+              units: dBm
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var INVALID_POWER = -80;
+                      var rawText = String(value || '').trim();
+                      if (!rawText) {
+                          return INVALID_POWER;
+                      }
+
+                      var raw = parseInt(rawText, 10);
+                      if (!isFinite(raw)) {
+                          return INVALID_POWER;
+                      }
+
+                      if (raw < 0) {
+                          raw = raw + 65536;
+                      }
+
+                      if (!(raw >= 0 && raw < 65535)) {
+                          return INVALID_POWER;
+                      }
+
+                      if (raw === 65535) {
+                          return INVALID_POWER;
+                      }
+
+                      var n;
+                      if (raw <= 32767) {
+                          n = (raw * 0.002) - 30;
+                      } else {
+                          n = ((raw - 65535) * 0.002) - 30;
+                      }
+
+                      if (!isFinite(n) || n <= -40 || n >= 0) {
+                          return INVALID_POWER;
+                      }
+
+                      if (Math.abs(n) < 0.0001 || Math.abs(n + 40) < 0.0001) {
+                          return INVALID_POWER;
+                      }
+
+                      return Math.round(n * 100) / 100;
+                  error_handler: DISCARD_VALUE
+              tags:
+                - tag: collector
+                  value: varuna
+                - tag: metric
+                  value: onu_rx_power
+                - tag: slot
+                  value: '{#SLOT}'
+                - tag: pon
+                  value: '{#PON}'
+            - uuid: ad019006501a4b4e9cb7eb7d84d4930f
+              name: 'ONU {#SLOT}/{#PON}/{#ONU_ID} {#ONU_NAME} {#SERIAL}: OLT Rx power'
+              type: SNMP_AGENT
+              snmp_oid: '1.3.6.1.4.1.3902.1082.500.1.2.4.2.1.2.{#PON_NUMERIC}.{#ONU_ID}'
+              key: 'oltRxPower[{#PON_NUMERIC}.{#ONU_ID}]'
+              delay: '{$VARUNA.POWER_INTERVAL}'
+              history: '{$VARUNA.HISTORY_DAYS}'
+              value_type: FLOAT
+              trends: '0'
+              units: dBm
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var INVALID_POWER = -80;
+                      var rawText = String(value || '').trim();
+                      if (!rawText) {
+                          return INVALID_POWER;
+                      }
+
+                      var raw = parseFloat(rawText);
+                      if (!isFinite(raw)) {
+                          return INVALID_POWER;
+                      }
+
                       var n = (raw < -100 || raw > 100) ? (raw / 1000.0) : raw;
 
                       if (raw === -80000) {

@@ -601,6 +601,87 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(update_response.status_code, 200)
         self.assertIsNone(cache_service.get_topology_structure(self.olt.id))
 
+    @patch("topology.api.views.zabbix_service.sync_olt_host_runtime", return_value=True)
+    def test_olt_create_requires_unm_mneid_when_unm_enabled(self, _sync_runtime_mock):
+        admin_user = User.objects.create_superuser(
+            username="admin-unm-create",
+            password="admin-unm-create",
+            email="admin-unm-create@example.com",
+        )
+        request = self.api_factory.post(
+            "/api/olts/",
+            {
+                "name": "OLT-UNM-REQ",
+                "vendor_profile": self.vendor.id,
+                "protocol": "snmp",
+                "ip_address": "10.0.0.40",
+                "snmp_port": 161,
+                "snmp_community": "public",
+                "snmp_version": "v2c",
+                "discovery_enabled": True,
+                "polling_enabled": True,
+                "discovery_interval_minutes": 60,
+                "polling_interval_seconds": 300,
+                "power_interval_seconds": 300,
+                "history_days": 7,
+                "unm_enabled": True,
+                "unm_host": "192.168.30.101",
+                "unm_port": 3306,
+                "unm_username": "unm2000",
+                "unm_password": "secret",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"post": "create"})(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unm_mneid", response.data)
+
+    @patch("topology.api.views.zabbix_service.sync_olt_host_runtime", return_value=True)
+    def test_olt_update_preserves_existing_unm_password_when_not_resubmitted(self, _sync_runtime_mock):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "existing-secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+
+        admin_user = User.objects.create_superuser(
+            username="admin-unm-update",
+            password="admin-unm-update",
+            email="admin-unm-update@example.com",
+        )
+        request = self.api_factory.patch(
+            f"/api/olts/{self.olt.id}/",
+            {
+                "unm_enabled": True,
+                "unm_host": "192.168.30.102",
+                "unm_username": "unm2000",
+                "unm_password": "",
+                "unm_mneid": 13172741,
+            },
+            format="json",
+        )
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"patch": "partial_update"})(request, pk=str(self.olt.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.olt.refresh_from_db()
+        self.assertEqual(self.olt.unm_host, "192.168.30.102")
+        self.assertEqual(self.olt.unm_mneid, 13172741)
+        self.assertEqual(self.olt.unm_password, "existing-secret")
+
     def test_pon_description_update_invalidates_topology_structure_cache(self):
         slot, pon, _ = self._create_topology_onu(
             slot_id=2,
@@ -738,6 +819,98 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(onu.name, "client-1")
         self.olt.refresh_from_db()
         self.assertTrue(self.olt.snmp_reachable)
+
+    @patch("topology.management.commands.discover_onus.unm_service.fetch_onu_inventory_map")
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_prefers_unm_name_when_configured(
+        self,
+        fetch_discovery_rows_mock,
+        fetch_unm_inventory_mock,
+    ):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "1",
+                    "{#PON}": "2",
+                    "{#ONU_ID}": "3",
+                    "{#PON_ID}": "11",
+                    "{#SNMPINDEX}": "11.3",
+                    "{#SERIAL}": "ABCD12345678",
+                    "{#ONU_NAME}": "zabbix-name",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+        fetch_unm_inventory_mock.return_value = {
+            (1, 2, 3): {"unm_object_id": 196700003, "name": "unm-name", "serial": ""},
+        }
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        onu = ONU.objects.get(olt=self.olt, slot_id=1, pon_id=2, onu_id=3)
+        self.assertEqual(onu.name, "unm-name")
+
+    @patch("topology.management.commands.discover_onus.unm_service.fetch_onu_inventory_map")
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_keeps_zabbix_name_when_unm_inventory_lookup_fails(
+        self,
+        fetch_discovery_rows_mock,
+        fetch_unm_inventory_mock,
+    ):
+        from topology.services.unm_service import UNMServiceError
+
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "1",
+                    "{#PON}": "2",
+                    "{#ONU_ID}": "3",
+                    "{#PON_ID}": "11",
+                    "{#SNMPINDEX}": "11.3",
+                    "{#SERIAL}": "ABCD12345678",
+                    "{#ONU_NAME}": "zabbix-name",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+        fetch_unm_inventory_mock.side_effect = UNMServiceError("UNM query failed.")
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        onu = ONU.objects.get(olt=self.olt, slot_id=1, pon_id=2, onu_id=3)
+        self.assertEqual(onu.name, "zabbix-name")
 
     def test_normalize_serial_prefers_serial_like_fragment_when_value_has_comma(self):
         self.assertEqual(_normalize_serial("TPLG-D22D7400,"), "TPLGD22D7400")
@@ -3172,6 +3345,145 @@ class ZabbixModeTests(TestCase):
         power_history = response.data.get("power_history") or []
         self.assertEqual(len(power_history), 1)
         self.assertEqual(power_history[0].get("onu_rx_power"), -21.3)
+
+    @patch("topology.api.views.unm_service.fetch_onu_alarm_history")
+    @patch("topology.api.views.zabbix_service.fetch_onu_item_timelines")
+    def test_alarm_history_uses_unm_source_when_olt_has_unm_enabled(
+        self,
+        fetch_timeline_mock,
+        fetch_unm_alarm_history_mock,
+    ):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=107,
+            snmp_index="11.107",
+            serial="ABCD01020107",
+            name="cliente-hist-unm",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        base_epoch = int(timezone.now().timestamp())
+        fetch_unm_alarm_history_mock.return_value = [
+            {
+                "id": "unm-1",
+                "event_type": "link_loss",
+                "event_label": "LINK LOSS",
+                "event_code": 2400,
+                "severity": 2,
+                "start_at": timezone.now().isoformat(),
+                "end_at": None,
+                "status": "active",
+                "duration_seconds": 120,
+                "location": "OLT/PON/ONU",
+            },
+            {
+                "id": "unm-2",
+                "event_type": "unm",
+                "event_label": "TX POWER HIGH ALARM",
+                "event_code": 2592,
+                "severity": 2,
+                "start_at": (timezone.now() - timedelta(minutes=20)).isoformat(),
+                "end_at": (timezone.now() - timedelta(minutes=10)).isoformat(),
+                "status": "resolved",
+                "duration_seconds": 600,
+                "location": "OLT/PON/ONU",
+            },
+        ]
+        fetch_timeline_mock.return_value = {
+            "onu_rx_samples": [
+                {"clock_epoch": base_epoch - 300, "clock": None, "value": "-22.5"},
+            ],
+            "olt_rx_samples": [
+                {"clock_epoch": base_epoch - 300, "clock": None, "value": "-24.5"},
+            ],
+        }
+
+        request = self.api_factory.get(
+            f"/api/onu/{onu.id}/alarm-history/",
+            {
+                "alarm_days": 7,
+                "power_days": 7,
+                "alarm_limit": 1000,
+                "max_power_points": 744,
+            },
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "alarm_history"})(request, pk=str(onu.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("source"), "unm")
+        alarms = response.data.get("alarms") or []
+        self.assertEqual(len(alarms), 2)
+        self.assertEqual(alarms[0].get("event_label"), "LINK LOSS")
+        self.assertEqual(alarms[1].get("event_code"), 2592)
+        stats = response.data.get("stats") or {}
+        self.assertEqual(stats.get("total"), 2)
+        self.assertEqual(stats.get("link_loss"), 1)
+        self.assertEqual(stats.get("unknown"), 1)
+        power_history = response.data.get("power_history") or []
+        self.assertEqual(len(power_history), 1)
+        self.assertEqual(power_history[0].get("onu_rx_power"), -22.5)
+
+    @patch("topology.api.views.unm_service.fetch_onu_alarm_history")
+    def test_alarm_history_returns_503_when_unm_lookup_fails(self, fetch_unm_alarm_history_mock):
+        from topology.services.unm_service import UNMServiceError
+
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=108,
+            snmp_index="11.108",
+            serial="ABCD01020108",
+            name="cliente-hist-unm-fail",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        fetch_unm_alarm_history_mock.side_effect = UNMServiceError("UNM query failed.")
+
+        request = self.api_factory.get(
+            f"/api/onu/{onu.id}/alarm-history/",
+            {"alarm_days": 7, "power_days": 7},
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "alarm_history"})(request, pk=str(onu.id))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data.get("detail"), "UNM query failed.")
 
     def test_power_report_discards_sentinel_power_values(self):
         onu = ONU.objects.create(

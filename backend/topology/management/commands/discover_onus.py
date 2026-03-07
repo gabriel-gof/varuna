@@ -13,6 +13,7 @@ from topology.models import OLT, OLTSlot, OLTPON, ONU, ONULog
 from topology.services.cache_service import cache_service
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.topology_counter_service import topology_counter_service
+from topology.services.unm_service import UNMServiceError, unm_service
 from topology.services.vendor_profile import parse_onu_index
 from topology.services.zabbix_service import zabbix_service
 
@@ -376,6 +377,30 @@ class Command(BaseCommand):
                 }
             )
 
+        unm_name_hits = 0
+        if normalized_entries and unm_service.is_enabled_for_olt(olt):
+            try:
+                unm_inventory_map = unm_service.fetch_onu_inventory_map(olt)
+            except UNMServiceError as exc:
+                logger.warning("Discovery OLT %s: UNM inventory enrichment skipped (%s).", olt.id, exc)
+            except Exception:
+                logger.exception("Discovery OLT %s: unexpected UNM inventory enrichment failure.", olt.id)
+            else:
+                for entry in normalized_entries:
+                    unm_row = unm_inventory_map.get(
+                        (int(entry["slot_id"]), int(entry["pon_id"]), int(entry["onu_id"]))
+                    )
+                    if not unm_row:
+                        continue
+                    unm_name = str(unm_row.get("name") or "").strip()
+                    if unm_name:
+                        if entry.get("name") != unm_name:
+                            entry["name"] = unm_name
+                        unm_name_hits += 1
+                    unm_serial = str(unm_row.get("serial") or "").strip()
+                    if unm_serial and not entry.get("serial"):
+                        entry["serial"] = unm_serial
+
         if not normalized_entries:
             self._mark_discovery_result(olt, success=False, dry_run=dry_run)
             if not dry_run:
@@ -648,7 +673,7 @@ class Command(BaseCommand):
         self._mark_discovery_result(olt, success=True, dry_run=dry_run)
         self.stdout.write(
             f"OLT {olt.id}: discovered {len(normalized_entries)} ONUs via Zabbix "
-            f"(created={created}, updated={updated})."
+            f"(created={created}, updated={updated}, unm_name_hits={unm_name_hits})."
         )
 
     _DISCOVERY_RETRY_MINUTES = 2

@@ -18,15 +18,11 @@ export const classifyOnu = (onu) => {
     return { status: 'link_loss', label: 'LINK LOSS' }
   }
 
-  if (status === 'unknown' || isUnknownReason(reason)) {
+  if (status === 'offline' || status === 'unknown' || isUnknownReason(reason)) {
     return { status: 'unknown', label: 'UNKNOWN' }
   }
 
-  if (status === 'offline') {
-    return { status: 'unknown', label: 'UNKNOWN' }
-  }
-
-  return { status: status || 'offline', label: (status || 'OFFLINE').toUpperCase() }
+  return { status: 'unknown', label: 'UNKNOWN' }
 }
 
 export const getOnuStats = (onus = []) => {
@@ -60,7 +56,9 @@ export const getOnuStats = (onus = []) => {
       return
     }
 
-    stats.unknown += 1
+    if (status === 'unknown') {
+      stats.unknown += 1
+    }
   })
 
   return stats
