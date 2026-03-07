@@ -43,3 +43,8 @@ olt-zte-cedrentials
 
 # Backups
 backups/
+
+# Reference / consulting files
+olt-fit/
+zte-c600/
+docs/plans/
