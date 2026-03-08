@@ -49,7 +49,7 @@ Container/runtime health:
   - dedicated Compose project namespace (`docker compose -p ...`)
   - dedicated Varuna logical database (`POSTGRES_DB`) and credentials
   - dedicated Redis credentials/namespace (or dedicated Redis container, per operator policy)
-  - dedicated Zabbix host-group namespace (`ZABBIX_HOST_GROUP_NAME`, title case, for example `Varuna/Gabisat`, `Varuna/Vianet`, `Varuna/Pontal`)
+  - dedicated Zabbix host-group namespace (`ZABBIX_HOST_GROUP_NAME`, for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`)
 - Recommended shared infrastructure on one VM:
   - shared `pg-varuna` PostgreSQL container for all Varuna logical DBs,
   - separate shared `pg-zabbix` PostgreSQL container for Zabbix only,

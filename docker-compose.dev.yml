@@ -115,23 +115,8 @@ services:
       - ZBX_ACTIVE_ALLOW=true
     restart: unless-stopped
 
-  zabbix-template-sync:
-    image: python:3.12-alpine
-    depends_on:
-      zabbix-web:
-        condition: service_started
-    environment:
-      - ZABBIX_API_URL=http://zabbix-web:8080/api_jsonrpc.php
-      - ZABBIX_OPERATOR_USERNAME=Admin
-      - ZABBIX_OPERATOR_PASSWORD=zabbix
-    volumes:
-      - ./scripts/zabbix_sync_templates.py:/opt/varuna/zabbix_sync_templates.py:ro
-      - ./zabbix-templates:/opt/varuna/zabbix-templates:ro
-    command: ["python", "/opt/varuna/zabbix_sync_templates.py"]
-    restart: "no"
-
   backend:
-    build:
+    build: 
       context: .
       dockerfile: backend/Dockerfile
     depends_on:
