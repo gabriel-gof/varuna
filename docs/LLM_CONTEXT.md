@@ -101,7 +101,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - **Power validity contract** — accepted optical RX values are strictly `-40 dBm < value < 0 dBm`; template-level preprocessing enforces this first, and backend `normalize_power_value` mirrors it as a defensive guard.
 - **Serial normalization in templates** — discovery preprocessing must sanitize malformed serial payloads (comma/punctuation artifacts) before Varuna consumes LLD rows.
 - Current vendor profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei MA5680T (seed migration `0012`), Fiberhome AN5516 (seed migration `0013`), FIT FNCS4000 (seed migration `0030`).
-- Zabbix template set in repo root includes: `snmp-avail-template.yaml`, `huawei-template.yaml`, `fiberhome-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`.
+- Zabbix template set in `zabbix-templates/` includes: `snmp-avail-template.yaml`, `huawei-template.yaml`, `fiberhome-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`.
 - `zte-template.yaml` now exports two Varuna templates: `OLT ZTE C300` and `OLT ZTE C600`.
 - **ZTE C600 live mapping** — validation on `192.168.7.151` (`sysName=ZTE-PONTAL`) plus CLI `show gpon onu state` output showed `3/4 -> online`, `2 -> link_loss`, `5 -> dying_gasp`, `7 -> offline`; keep `1 -> link_loss` only as a compatibility fallback for unseen LOS-class rows.
 - **ZTE C600 ONU names** — the correct ONU name OID is still `.1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`, but nameless ONUs legitimately return `""`; do not invent numeric placeholder names from serial prefixes.

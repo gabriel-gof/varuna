@@ -99,7 +99,7 @@ Default dev login:
 
 Template import workflow:
 - Open `http://localhost:8080` in a browser.
-- Import vendor templates from repo root:
+- Import vendor templates from `zabbix-templates/`:
   - `snmp-avail-template.yaml`
   - `huawei-template.yaml`
   - `fiberhome-template.yaml`
