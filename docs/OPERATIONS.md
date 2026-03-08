@@ -98,8 +98,9 @@ Default dev login:
 - password: `zabbix`
 
 Template import workflow:
-- Open `http://localhost:8080` in a browser.
-- Import vendor templates from `zabbix-templates/`:
+- **Automatic**: the `zabbix-template-sync` one-shot container imports all `zabbix-templates/*.yaml` files via the Zabbix API on every `docker compose up`. Templates are created on first deploy and updated on subsequent deploys.
+- **Manual fallback**: open `http://localhost:8080` → Data collection → Templates → Import, and upload files from `zabbix-templates/`.
+- Template files:
   - `snmp-avail-template.yaml`
   - `huawei-template.yaml`
   - `fiberhome-template.yaml`
