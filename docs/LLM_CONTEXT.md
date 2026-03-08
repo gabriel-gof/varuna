@@ -33,7 +33,9 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Backend container runtime starts scheduler automatically when `ENABLE_SCHEDULER=1` (enabled in current dev/prod env templates).
 - Manual settings maintenance actions use a persistent `MaintenanceJob` queue (PostgreSQL), not volatile in-memory flags.
 - Background discovery/polling jobs have runtime timeouts (`MAINTENANCE_*_TIMEOUT_SECONDS`) and stale running jobs are auto-failed to prevent permanent queue lock when collector/integration settings are wrong.
-- Collection is Zabbix-only: discovery/status/power are read via Zabbix API item keys.
+- Background discovery/polling jobs also inspect resulting OLT health after command execution and are marked `failed` when the collector run actually failed, instead of reporting `completed` with failure text only in stdout.
+- Default collection path is Zabbix API item keys.
+- Exception: `FIT / FNCS4000` uses a direct backend Telnet collector (`fit_telnet`) for discovery/status/power because there is no equivalent Zabbix/SNMP runtime path for that device.
 - Product version source-of-truth is root `VERSION`; frontend version labels are injected from this file through `__APP_VERSION__` (no hardcoded UI version text).
 - Varuna owns Zabbix host runtime lifecycle for OLTs: create/update syncs host group/tags/interface macros, missing hosts are auto-created, and OLT delete attempts `host.delete`.
 - Host group for managed OLT hosts is instance-configurable (`ZABBIX_HOST_GROUP_NAME`) so each Varuna instance can keep its own client namespace on a shared Zabbix server.
@@ -52,9 +54,10 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - Topology-heavy API reads use hybrid caching: per-OLT Redis entries store only static topology structure (OLT/slot/PON/ONU identity fields), while live status/disconnect fields are overlaid from PostgreSQL on every read.
 - Topology list/detail no longer load full-tree power snapshots. Power fields stay in the payload for compatibility but may be `null` until the frontend requests scoped `batch-power refresh=false` for the selected PON.
 - `GET /api/onu/{id}/power/` and `POST /api/onu/batch-power/` with `refresh=false` read the latest persisted `ONUPowerSample`; `refresh=true` still runs live Zabbix collection and persists the result.
-- Topology list/detail payloads expose SNMP health metadata used by frontend gray-state logic (`snmp_reachable`, `last_snmp_check_at`, `snmp_failure_count`, `last_snmp_error`).
+- Topology list/detail payloads expose collector health metadata used by frontend gray-state logic (`collector_reachable`, `last_collector_check_at`, `collector_failure_count`, `last_collector_error`). Legacy `snmp_*` aliases remain in the payload for compatibility.
 - ONU batch status/power endpoints default to snapshot mode (`refresh=false` unless explicitly provided), so opening/refreshing topology panels does not implicitly trigger upstream collection.
-- `snmp_check` endpoint name is kept for compatibility, but behavior is Zabbix-only.
+- `collector_check` is the canonical reachability action. `snmp_check` remains as a compatibility alias, and both are collector-aware (Zabbix sentinel or FIT Telnet login).
+- FIT discovery keeps only authorized ONUs (`Active` column from `show onu info`); unauthorized rows must not keep topology branches active.
 - Topology color contract is strict: any ONU that is not `online` counts as offline for PON/slot/OLT color decisions, even when its operator-facing bucket is `unknown`.
 - The purple `unknown` counter is informational only; it does not suppress red/yellow escalation when a whole PON is down.
 
@@ -62,7 +65,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - `ONU` is scoped to `OLT`; SNMP index uniqueness is `(olt, snmp_index)`.
 - `ONU.is_active` defines whether an ONU is part of current topology.
 - OLT removal is lifecycle-based (`is_active=False`) rather than immediate hard delete.
-- Discovery follows lost-resource retention windows (`disable_lost_after_minutes`, `delete_lost_after_minutes`).
+- Discovery is immediate for missing resources in active topology (`deactivate_missing=true`, `disable_lost_after_minutes=0`), with optional hard-delete retention (`delete_lost_after_minutes`).
 - Polling should avoid false offline alarms during transient collector gaps.
 - Settings actions validate vendor capabilities/OID templates before executing discovery/polling/power commands.
 - Background maintenance responses include durable job metadata and progress; frontend polls `GET /api/olts/{id}/maintenance_status/`.
@@ -97,10 +100,12 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - **Power normalization in templates** — Zabbix templates normalize vendor raw values before Varuna reads them.
 - **Power validity contract** — accepted optical RX values are strictly `-40 dBm < value < 0 dBm`; template-level preprocessing enforces this first, and backend `normalize_power_value` mirrors it as a defensive guard.
 - **Serial normalization in templates** — discovery preprocessing must sanitize malformed serial payloads (comma/punctuation artifacts) before Varuna consumes LLD rows.
-- Current vendor profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei MA5680T (seed migration `0012`), Fiberhome AN5516 (seed migration `0013`).
+- Current vendor profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei MA5680T (seed migration `0012`), Fiberhome AN5516 (seed migration `0013`), FIT FNCS4000 (seed migration `0030`).
 - Zabbix template set in repo root includes: `snmp-avail-template.yaml`, `huawei-template.yaml`, `fiberhome-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`.
 - `zte-template.yaml` now exports two Varuna templates: `OLT ZTE C300` and `OLT ZTE C600`.
 - **ZTE C600 live mapping** — validation on `192.168.7.151` (`sysName=ZTE-PONTAL`) plus CLI `show gpon onu state` output showed `3/4 -> online`, `2 -> link_loss`, `5 -> dying_gasp`, `7 -> offline`; keep `1 -> link_loss` only as a compatibility fallback for unseen LOS-class rows.
 - **ZTE C600 ONU names** — the correct ONU name OID is still `.1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`, but nameless ONUs legitimately return `""`; do not invent numeric placeholder names from serial prefixes.
 - **ZTE C600 serial cleanup** — comma-prefixed serial payloads such as `1,DD72E68F39E5` must be normalized to the serial token in template preprocessing and backend fallback parsing.
 - **Fiberhome AN5516** — enterprise OID prefix `1.3.6.1.4.1.5875`, flat integer SNMP index (not dotted), slot/pon resolved from separate OID columns (`onu_slot_oid`/`onu_pon_oid` via `index_from: oid_columns`), onu_id extracted from byte2 of flat index, no ONU name OID (serial-only identification, `onu_name_oid` is empty), both ONU Rx and OLT Rx power via `hundredths_dbm`, OLT Rx uses `{pon_base}.{onu_id}` index format via `olt_rx_index_formula: fiberhome_pon_onu`.
+- **FIT FNCS4000** — direct Telnet collector, configured EPON interfaces `0/1..0/4` by default, discovery runs `show onu info epon 0/x all` on all configured interfaces, while routine status polling scopes `show onu info` reads to PONs that currently have active ONUs in Varuna. Telnet login lands on `EPON>` and must be escalated with `enable`, long `show onu info` output paginates with `--- Enter Key To Continue ----`, identity by `OLT + slot_id + PON + ONU ID`, name from CLI when present, no serial contract, power via `show onu optical-ddm epon 0/x <onu_id>` for online ONUs only, ONU IDs above `64` skipped for power, OLT RX unsupported, disconnect reason remains `unknown`. Multi-blade chassis support via `OLT.blade_ips` JSONField: each blade IP maps to a slot; discovery/status/power open per-blade Telnet sessions. FIT `show onu info` rows may arrive with or without an `Uptime` column depending on blade firmware, and the parser must accept both. FIT failures must preserve blade IP context in error text (`Blade <ip>: ...`). `snmp_index` format: `"{slot_id}/{interface}:{onu_id}"`. Single-blade OLTs fall back to `[ip_address]`. Discovery only materializes blades/PONs that currently have ONUs.
+- **Empty PON hiding** — topology structure builder skips PONs with 0 active ONUs and slots with 0 non-empty PONs. Applies generically to all OLT types, including FIT multi-blade chassis. Cache invalidation is natural via `discovery_signature`.

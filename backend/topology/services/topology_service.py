@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog
 from topology.services.cache_service import cache_service
+from topology.services.vendor_profile import supports_olt_rx_power
 
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class TopologyService:
     STATUS_ONLINE = 'online'
-    STRUCTURE_CACHE_VERSION = 1
+    STRUCTURE_CACHE_VERSION = 3
 
     @staticmethod
     def _as_iso(value) -> str | None:
@@ -29,8 +30,7 @@ class TopologyService:
         return str(value)
 
     def _supports_olt_rx_power(self, olt: OLT) -> bool:
-        power_cfg = ((olt.vendor_profile.oid_templates or {}).get('power', {}))
-        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+        return supports_olt_rx_power(olt)
 
     def _discovery_signature(self, olt: OLT) -> str | None:
         return self._as_iso(getattr(olt, 'last_discovery_at', None))
@@ -121,8 +121,10 @@ class TopologyService:
                                 'last_discovered_at': self._as_iso(onu.last_discovered_at),
                             }
                         )
-                    slot_payload['pons'][pon_key] = pon_payload
-                slots_payload[slot_key] = slot_payload
+                    if pon_payload['onus']:
+                        slot_payload['pons'][pon_key] = pon_payload
+                if slot_payload['pons']:
+                    slots_payload[slot_key] = slot_payload
 
             structures[int(olt.id)] = {
                 'cache_version': self.STRUCTURE_CACHE_VERSION,
@@ -332,6 +334,9 @@ class TopologyService:
                     else:
                         pon_offline += 1
 
+                if not list_onus:
+                    continue
+
                 pon_status = self._compute_status(pon_online, pon_offline)
                 detail_pons[pon_key] = {
                     'id': int(pon_payload['id']),
@@ -370,6 +375,9 @@ class TopologyService:
                 slot_online += pon_online
                 slot_offline += pon_offline
                 slot_onu_count += pon_onu_count
+
+            if not list_pons:
+                continue
 
             slot_status = self._compute_status(slot_online, slot_offline)
             detail_slots[slot_key] = {
@@ -438,21 +446,40 @@ class TopologyService:
                     'vendor_profile': int(olt.vendor_profile_id),
                     'vendor_display': (olt.vendor_profile.vendor or '').upper(),
                     'vendor_profile_name': olt.vendor_profile.model_name,
+                    'protocol': olt.protocol,
                     'snmp_port': olt.snmp_port,
                     'snmp_community': olt.snmp_community,
                     'snmp_version': olt.snmp_version,
-                    'snmp_reachable': olt.snmp_reachable,
-                    'last_snmp_check_at': self._as_iso(olt.last_snmp_check_at),
-                    'last_snmp_error': olt.last_snmp_error,
-                    'snmp_failure_count': int(olt.snmp_failure_count or 0),
+                    'telnet_port': olt.telnet_port,
+                    'telnet_username': olt.telnet_username,
+                    'telnet_password_configured': bool(str(olt.telnet_password or '').strip()),
+                    'blade_ips': olt.blade_ips,
+                    'unm_enabled': bool(olt.unm_enabled),
+                    'unm_host': olt.unm_host,
+                    'unm_port': olt.unm_port,
+                    'unm_username': olt.unm_username,
+                    'unm_password_configured': bool(str(olt.unm_password or '').strip()),
+                    'unm_mneid': olt.unm_mneid,
+                    'collector_reachable': olt.collector_reachable,
+                    'last_collector_check_at': self._as_iso(olt.last_collector_check_at),
+                    'last_collector_error': olt.last_collector_error,
+                    'collector_failure_count': int(olt.collector_failure_count or 0),
+                    'snmp_reachable': olt.collector_reachable,
+                    'last_snmp_check_at': self._as_iso(olt.last_collector_check_at),
+                    'last_snmp_error': olt.last_collector_error,
+                    'snmp_failure_count': int(olt.collector_failure_count or 0),
                     'discovery_enabled': bool(olt.discovery_enabled),
                     'discovery_interval_minutes': int(olt.discovery_interval_minutes or 0),
                     'polling_enabled': bool(olt.polling_enabled),
                     'polling_interval_seconds': int(olt.polling_interval_seconds or 0),
                     'power_interval_seconds': int(olt.power_interval_seconds or 0),
+                    'history_days': int(olt.history_days or 0),
                     'last_discovery_at': self._as_iso(olt.last_discovery_at),
+                    'next_discovery_at': self._as_iso(olt.next_discovery_at),
                     'last_poll_at': self._as_iso(olt.last_poll_at),
+                    'next_poll_at': self._as_iso(olt.next_poll_at),
                     'last_power_at': self._as_iso(olt.last_power_at),
+                    'next_power_at': self._as_iso(olt.next_power_at),
                     'slots': overlaid['list_slots'],
                     'slot_count': overlaid['slot_count'],
                     'pon_count': overlaid['pon_count'],
@@ -461,6 +488,8 @@ class TopologyService:
                     'offline_count': overlaid['offline_count'],
                     'supports_olt_rx_power': self._supports_olt_rx_power(olt),
                     'is_active': bool(olt.is_active),
+                    'created_at': self._as_iso(olt.created_at),
+                    'updated_at': self._as_iso(olt.updated_at),
                 }
             )
         return rows
@@ -482,10 +511,14 @@ class TopologyService:
                 'status': overlaid['status'],
                 'online_count': overlaid['online_count'],
                 'offline_count': overlaid['offline_count'],
-                'snmp_reachable': olt.snmp_reachable,
-                'last_snmp_check_at': self._as_iso(olt.last_snmp_check_at),
-                'last_snmp_error': olt.last_snmp_error or '',
-                'snmp_failure_count': int(olt.snmp_failure_count or 0),
+                'collector_reachable': olt.collector_reachable,
+                'last_collector_check_at': self._as_iso(olt.last_collector_check_at),
+                'last_collector_error': olt.last_collector_error or '',
+                'collector_failure_count': int(olt.collector_failure_count or 0),
+                'snmp_reachable': olt.collector_reachable,
+                'last_snmp_check_at': self._as_iso(olt.last_collector_check_at),
+                'last_snmp_error': olt.last_collector_error or '',
+                'snmp_failure_count': int(olt.collector_failure_count or 0),
                 'last_discovery': self._as_iso(olt.last_discovery_at),
                 'last_poll': self._as_iso(olt.last_poll_at),
                 'supports_olt_rx_power': self._supports_olt_rx_power(olt),

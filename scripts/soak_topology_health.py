@@ -63,27 +63,27 @@ def as_positive_seconds(value: Any, fallback: int = 300) -> int:
 def is_status_stale(olt: Dict[str, Any], now: datetime) -> bool:
     last_poll = parse_iso(olt.get("last_poll_at"))
     interval_seconds = as_positive_seconds(olt.get("polling_interval_seconds"), fallback=300)
-    stale_after_ms = interval_seconds * 1000
-    grace_ms = max(90_000, int(round(stale_after_ms * 0.5)))
-    minimum_tolerance_ms = 10 * 60 * 1000
-    stale_window_ms = max(stale_after_ms + grace_ms, minimum_tolerance_ms)
+    # Keep aligned with frontend/src/utils/oltHealth.js
+    stale_window_ms = max((interval_seconds * 1000 * 3) + 90_000, 390_000)
 
     if last_poll is None:
-        last_discovery = parse_iso(olt.get("last_discovery_at"))
-        if last_discovery is None:
-            return False
-        return (now - last_discovery).total_seconds() * 1000 > stale_window_ms
+        return True
 
     return (now - last_poll).total_seconds() * 1000 > stale_window_ms
 
 
+def get_collector_reachable(olt: Dict[str, Any]) -> Any:
+    if "collector_reachable" in olt:
+        return olt.get("collector_reachable")
+    return olt.get("snmp_reachable")
+
+
 def derive_expected_health_state(olt: Dict[str, Any], now: datetime) -> Tuple[str, str]:
-    snmp_reachable = olt.get("snmp_reachable")
-    failure_count = int(olt.get("snmp_failure_count") or 0)
-    if snmp_reachable is None:
+    collector_reachable = get_collector_reachable(olt)
+    if collector_reachable is None:
         return "neutral", "checking"
-    if snmp_reachable is False and failure_count >= 2:
-        return "gray", "snmp_unreachable"
+    if collector_reachable is False:
+        return "gray", "collector_unreachable"
     if is_status_stale(olt, now):
         return "gray", "status_stale"
     return "non_gray", "fresh"
@@ -153,8 +153,8 @@ class OltHealthSnapshot:
     name: str
     state: str
     reason: str
-    snmp_reachable: Any
-    snmp_failure_count: int
+    collector_reachable: Any
+    collector_failure_count: int
     last_poll_at: Optional[str]
     last_discovery_at: Optional[str]
     polling_interval_seconds: int
@@ -176,7 +176,7 @@ class SoakRunner:
         self.max_poll_age_seconds: Dict[str, float] = {}
         self.max_discovery_age_seconds: Dict[str, float] = {}
         self.seen_olts: Dict[str, str] = {}
-        self.gray_samples_by_reason: Dict[str, int] = {"snmp_unreachable": 0, "status_stale": 0}
+        self.gray_samples_by_reason: Dict[str, int] = {"collector_unreachable": 0, "status_stale": 0}
         self.detail_probe_interval = max(int(args.detail_probe_seconds), 0)
         self._last_detail_probe_at = 0.0
 
@@ -186,6 +186,7 @@ class SoakRunner:
         ensure_dir(self.output_dir)
         self.log_path = os.path.join(self.output_dir, f"{run_id}.jsonl")
         self.summary_path = os.path.join(self.output_dir, f"{run_id}.summary.json")
+        self._consistency_race_window_seconds = max(45, int(self.args.interval_seconds) * 2)
 
     def _write_event(self, event: Dict[str, Any]) -> None:
         with open(self.log_path, "a", encoding="utf-8") as handle:
@@ -218,15 +219,23 @@ class SoakRunner:
 
     def _validate_required_fields(self, row: Dict[str, Any], olt_id: str, name: str) -> None:
         required = [
-            "snmp_reachable",
-            "last_snmp_check_at",
-            "snmp_failure_count",
-            "last_snmp_error",
             "polling_interval_seconds",
             "last_poll_at",
-            "last_discovery_at",
         ]
+        has_reachability = ("collector_reachable" in row) or ("snmp_reachable" in row)
+        has_last_check = ("last_collector_check_at" in row) or ("last_snmp_check_at" in row)
+        has_failure_count = ("collector_failure_count" in row) or ("snmp_failure_count" in row)
+        has_last_error = ("last_collector_error" in row) or ("last_snmp_error" in row)
+
         missing = [field for field in required if field not in row]
+        if not has_reachability:
+            missing.append("collector_reachable|snmp_reachable")
+        if not has_last_check:
+            missing.append("last_collector_check_at|last_snmp_check_at")
+        if not has_failure_count:
+            missing.append("collector_failure_count|snmp_failure_count")
+        if not has_last_error:
+            missing.append("last_collector_error|last_snmp_error")
         if missing:
             self._record_anomaly(
                 kind="missing_fields",
@@ -271,28 +280,80 @@ class SoakRunner:
                 )
                 continue
 
-            keys = ("snmp_reachable", "snmp_failure_count", "last_snmp_check_at", "last_snmp_error")
+            keys = (
+                ("collector_reachable", "snmp_reachable"),
+                ("collector_failure_count", "snmp_failure_count"),
+                ("last_collector_check_at", "last_snmp_check_at"),
+                ("last_collector_error", "last_snmp_error"),
+            )
             mismatches = {}
-            for key in keys:
-                list_value = row.get(key)
-                detail_value = detail_olt.get(key)
-                if not self._values_match(key, list_value, detail_value):
-                    mismatches[key] = {"list": list_value, "detail": detail_value}
+            for collector_key, legacy_key in keys:
+                list_value = row.get(collector_key, row.get(legacy_key))
+                detail_value = detail_olt.get(collector_key, detail_olt.get(legacy_key))
+                if self._values_match(collector_key, list_value, detail_value):
+                    continue
+                if self._is_transient_collector_mismatch(
+                    collector_key=collector_key,
+                    list_row=row,
+                    detail_row=detail_olt,
+                    list_value=list_value,
+                    detail_value=detail_value,
+                ):
+                    continue
+                if not self._values_match(collector_key, list_value, detail_value):
+                    mismatches[collector_key] = {"list": list_value, "detail": detail_value}
             if mismatches:
                 self._record_anomaly(
                     kind="list_detail_mismatch",
-                    message=f"List/detail SNMP metadata mismatch for OLT {name} ({olt_id}).",
+                    message=f"List/detail collector metadata mismatch for OLT {name} ({olt_id}).",
                     extra={"olt_id": olt_id, "olt_name": name, "mismatches": mismatches},
                 )
 
+    def _is_transient_collector_mismatch(
+        self,
+        *,
+        collector_key: str,
+        list_row: Dict[str, Any],
+        detail_row: Dict[str, Any],
+        list_value: Any,
+        detail_value: Any,
+    ) -> bool:
+        list_check_dt = parse_iso(list_row.get("last_collector_check_at", list_row.get("last_snmp_check_at")))
+        detail_check_dt = parse_iso(detail_row.get("last_collector_check_at", detail_row.get("last_snmp_check_at")))
+        if list_check_dt is None or detail_check_dt is None:
+            return False
+
+        check_delta_seconds = abs((detail_check_dt - list_check_dt).total_seconds())
+        if check_delta_seconds > self._consistency_race_window_seconds:
+            return False
+
+        if collector_key in {"last_collector_check_at", "last_snmp_check_at"}:
+            return True
+
+        if collector_key in {"collector_failure_count", "snmp_failure_count"}:
+            try:
+                return abs(int(list_value or 0) - int(detail_value or 0)) <= 1
+            except (TypeError, ValueError):
+                return False
+
+        if collector_key in {
+            "collector_reachable",
+            "snmp_reachable",
+            "last_collector_error",
+            "last_snmp_error",
+        }:
+            return True
+
+        return False
+
     @staticmethod
     def _values_match(key: str, list_value: Any, detail_value: Any) -> bool:
-        if key == "snmp_failure_count":
+        if key in {"collector_failure_count", "snmp_failure_count"}:
             try:
                 return int(list_value or 0) == int(detail_value or 0)
             except (TypeError, ValueError):
                 return False
-        if key == "last_snmp_check_at":
+        if key in {"last_collector_check_at", "last_snmp_check_at"}:
             list_dt = parse_iso(list_value)
             detail_dt = parse_iso(detail_value)
             if list_dt and detail_dt:
@@ -311,8 +372,8 @@ class SoakRunner:
             name=name,
             state=state,
             reason=reason,
-            snmp_reachable=row.get("snmp_reachable"),
-            snmp_failure_count=int(row.get("snmp_failure_count") or 0),
+            collector_reachable=get_collector_reachable(row),
+            collector_failure_count=int(row.get("collector_failure_count", row.get("snmp_failure_count") or 0) or 0),
             last_poll_at=row.get("last_poll_at"),
             last_discovery_at=row.get("last_discovery_at"),
             polling_interval_seconds=polling_interval,

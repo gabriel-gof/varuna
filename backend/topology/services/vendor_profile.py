@@ -10,6 +10,11 @@ from topology.models import ONU, ONULog
 VALID_STATUSES = {ONU.STATUS_ONLINE, ONU.STATUS_OFFLINE, ONU.STATUS_UNKNOWN}
 VALID_REASONS = {ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP, ONULog.REASON_UNKNOWN, ''}
 
+COLLECTOR_TYPE_ZABBIX = 'zabbix'
+COLLECTOR_TYPE_FIT_TELNET = 'fit_telnet'
+DEFAULT_PROTOCOL_SNMP = 'snmp'
+DEFAULT_PROTOCOL_TELNET = 'telnet'
+
 
 def _to_int(value: Any) -> Optional[int]:
     try:
@@ -32,6 +37,41 @@ def decode_pon_numeric(pon_numeric: int, encoding: str) -> Optional[Dict[str, in
             'port': pon_numeric & 0xFF,
         }
     return None
+
+
+def _extract_templates(source: Any) -> Dict[str, Any]:
+    if hasattr(source, 'vendor_profile'):
+        source = getattr(source, 'vendor_profile')
+    templates = getattr(source, 'oid_templates', source)
+    return templates if isinstance(templates, dict) else {}
+
+
+def get_collector_type(source: Any) -> str:
+    templates = _extract_templates(source)
+    collector_cfg = templates.get('collector', {}) if isinstance(templates.get('collector', {}), dict) else {}
+    collector_type = str(collector_cfg.get('type') or '').strip().lower()
+    if collector_type:
+        return collector_type
+    protocol = str(getattr(source, 'protocol', '') or '').strip().lower()
+    if protocol == DEFAULT_PROTOCOL_TELNET:
+        return COLLECTOR_TYPE_FIT_TELNET
+    return COLLECTOR_TYPE_ZABBIX
+
+
+def get_default_protocol(source: Any) -> str:
+    collector_type = get_collector_type(source)
+    if collector_type == COLLECTOR_TYPE_FIT_TELNET:
+        return DEFAULT_PROTOCOL_TELNET
+    return DEFAULT_PROTOCOL_SNMP
+
+
+def supports_olt_rx_power(source: Any) -> bool:
+    templates = _extract_templates(source)
+    power_cfg = templates.get('power', {}) if isinstance(templates.get('power', {}), dict) else {}
+    explicit_flag = power_cfg.get('supports_olt_rx_power')
+    if explicit_flag is not None:
+        return bool(explicit_flag)
+    return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
 
 
 def map_disconnect_reason(

@@ -51,6 +51,10 @@ const parseTimestampMs = (value) => {
 }
 
 const getPollingIntervalSeconds = (olt) => toPositiveSeconds(olt?.polling_interval_seconds, 300)
+const getCollectorReachable = (olt) => {
+  if (olt?.collector_reachable != null) return olt.collector_reachable
+  return olt?.snmp_reachable
+}
 
 const isStatusStale = (olt, nowMs = Date.now()) => {
   const lastPollMs = parseTimestampMs(olt?.last_poll_at)
@@ -87,13 +91,14 @@ export const getSlotHealthColorState = (slot) => {
 }
 
 export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
-  // When SNMP has never been checked, show neutral until the scheduler reports.
-  if (olt?.snmp_reachable == null) {
+  // When collector health has never been checked, show neutral until the scheduler reports.
+  const collectorReachable = getCollectorReachable(olt)
+  if (collectorReachable == null) {
     return { state: 'neutral', reason: 'checking' }
   }
 
-  if (olt?.snmp_reachable === false) {
-    return { state: 'gray', reason: 'snmp_unreachable' }
+  if (collectorReachable === false) {
+    return { state: 'gray', reason: 'collector_unreachable' }
   }
 
   if (isStatusStale(olt, nowMs)) {
@@ -115,7 +120,7 @@ export const deriveOltHealthState = (olt, nowMs = Date.now()) => {
   // Count-only payloads (/api/olts/ without include_topology) can be briefly stale on reload.
   // Avoid transient warning colors until the topology tree is loaded.
   if (!hasTopologyTree) {
-    if (olt?.snmp_reachable === true) {
+    if (collectorReachable === true) {
       return { state: 'green', reason: 'reachable_without_topology' }
     }
     return { state: 'neutral', reason: 'topology_not_loaded' }

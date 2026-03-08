@@ -34,7 +34,7 @@ def get_status_snapshot_max_age_seconds(olt: OLT) -> int:
 def has_usable_status_snapshot(olt: OLT) -> bool:
     if not olt.last_poll_at:
         return False
-    if olt.snmp_reachable is False:
+    if olt.collector_reachable is False:
         return False
 
     stale_status_max_age_seconds = get_status_snapshot_max_age_seconds(olt)
@@ -63,11 +63,7 @@ def ensure_status_snapshot_for_power(
         _emit_progress(progress_callback, 35, "Using existing status snapshot.")
         return
 
-    status_templates = ((olt.vendor_profile.oid_templates or {}).get('status', {}))
-    zabbix_templates = ((olt.vendor_profile.oid_templates or {}).get('zabbix', {}))
-    zabbix_status_pattern = zabbix_templates.get('status_item_key_pattern')
-    has_status_collector = bool(zabbix_status_pattern)
-    if not olt.vendor_profile.supports_onu_status or not has_status_collector:
+    if not olt.vendor_profile.supports_onu_status:
         logger.warning(
             "Power refresh OLT %s: status snapshot missing and polling capability is unavailable. Proceeding with stored ONU statuses.",
             olt.id,
@@ -90,7 +86,7 @@ def ensure_status_snapshot_for_power(
         stdout=output,
     )
     olt.refresh_from_db(
-        fields=['last_poll_at', 'snmp_reachable', 'snmp_failure_count', 'last_snmp_error']
+        fields=['last_poll_at', 'collector_reachable', 'collector_failure_count', 'last_collector_error']
     )
     known_status_count = ONU.objects.filter(
         olt=olt,
@@ -173,7 +169,12 @@ def collect_power_for_olt(
         for row in results
         if str(row.get('skipped_reason') or '').lower() in {'offline', 'unknown', 'not_online'}
     )
-    attempted_count = max(0, len(results) - skipped_not_online_count)
+    skipped_unsupported_count = sum(
+        1
+        for row in results
+        if str(row.get('skipped_reason') or '').lower() in {'unsupported_onu_id', 'unsupported'}
+    )
+    attempted_count = max(0, len(results) - skipped_not_online_count - skipped_unsupported_count)
     mark_power_collection_schedule(olt)
     payload = {
         'status': 'completed',
@@ -183,13 +184,14 @@ def collect_power_for_olt(
         'skipped_not_online_count': skipped_not_online_count,
         'skipped_offline_count': skipped_offline_count,
         'skipped_unknown_count': skipped_unknown_count,
+        'skipped_unsupported_count': skipped_unsupported_count,
         'collected_count': collected_count,
         'stored_count': stored_count,
         'last_power_at': olt.last_power_at,
         'next_power_at': olt.next_power_at,
     }
     logger.warning(
-        "Power refresh OLT %s summary: total=%s attempted=%s collected=%s stored=%s skipped_offline=%s skipped_unknown=%s.",
+        "Power refresh OLT %s summary: total=%s attempted=%s collected=%s stored=%s skipped_offline=%s skipped_unknown=%s skipped_unsupported=%s.",
         olt.id,
         payload['count'],
         payload['attempted_count'],
@@ -197,6 +199,7 @@ def collect_power_for_olt(
         payload['stored_count'],
         payload['skipped_offline_count'],
         payload['skipped_unknown_count'],
+        payload['skipped_unsupported_count'],
     )
     if include_results:
         payload['results'] = results

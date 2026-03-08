@@ -9,9 +9,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from topology.models import OLT, ONU, ONULog
+from topology.services.fit_collector_service import FITCollectorError, fit_collector_service
 from topology.services.maintenance_runtime import get_status_snapshot_max_age_seconds
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.topology_counter_service import topology_counter_service
+from topology.services.vendor_profile import COLLECTOR_TYPE_FIT_TELNET, get_collector_type
 from topology.services.zabbix_service import zabbix_service
 
 
@@ -37,7 +39,7 @@ def _to_int_or_none(value) -> Optional[int]:
 
 
 class Command(BaseCommand):
-    help = "Poll ONU status via Zabbix and update status/logs."
+    help = "Poll ONU status via the configured collector and update status/logs."
 
     def add_arguments(self, parser):
         parser.add_argument("--olt-id", type=int, help="Run polling for a specific OLT id")
@@ -111,6 +113,184 @@ class Command(BaseCommand):
             deduped.append(key)
         return deduped
 
+    def _poll_for_olt_fit(
+        self,
+        olt: OLT,
+        dry_run: bool = False,
+        *,
+        scope_slot_id: Optional[int] = None,
+        scope_pon_id: Optional[int] = None,
+        scope_onu_ids: Optional[Set[int]] = None,
+    ) -> None:
+        scoped_refresh = bool(scope_onu_ids) or scope_slot_id is not None or scope_pon_id is not None
+
+        onus_qs = ONU.objects.filter(olt=olt, is_active=True)
+        if scope_slot_id is not None:
+            onus_qs = onus_qs.filter(slot_id=scope_slot_id)
+        if scope_pon_id is not None:
+            onus_qs = onus_qs.filter(pon_id=scope_pon_id)
+        if scope_onu_ids:
+            onus_qs = onus_qs.filter(id__in=scope_onu_ids)
+
+        onus = list(onus_qs.order_by("slot_id", "pon_id", "onu_id"))
+        if not onus:
+            if scoped_refresh:
+                self.stdout.write(f"OLT {olt.id}: no active ONUs matched scoped polling filters.")
+            else:
+                self.stdout.write(f"OLT {olt.id}: no active ONUs found.")
+            return
+
+        interfaces_by_slot: Dict[int, List[str]] = {}
+        for onu in onus:
+            slot_id = int(getattr(onu, "slot_id", 0) or 0)
+            pon_id = int(getattr(onu, "pon_id", 0) or 0)
+            if slot_id <= 0 or pon_id <= 0:
+                continue
+            interfaces_by_slot.setdefault(slot_id, []).append(f"0/{pon_id}")
+        for slot_id, interfaces in list(interfaces_by_slot.items()):
+            seen = set()
+            deduped = []
+            for interface in sorted(interfaces):
+                if interface in seen:
+                    continue
+                seen.add(interface)
+                deduped.append(interface)
+            interfaces_by_slot[slot_id] = deduped
+
+        try:
+            fit_rows = fit_collector_service.fetch_status_inventory_for_interfaces(
+                olt,
+                interfaces_by_slot=interfaces_by_slot,
+            )
+        except FITCollectorError as exc:
+            if not dry_run:
+                mark_olt_unreachable(olt, error=str(exc))
+            self.stdout.write(f"OLT {olt.id}: FIT status polling failed ({exc}).")
+            return
+        except Exception as exc:
+            if not dry_run:
+                mark_olt_unreachable(olt, error=str(exc))
+            self.stdout.write(f"OLT {olt.id}: FIT status polling failed ({exc}).")
+            return
+
+        row_by_key = {
+            (int(row["slot_id"]), int(row["pon_id"]), int(row["onu_id"])): row
+            for row in fit_rows
+        }
+        now = timezone.now()
+
+        if not row_by_key:
+            if not dry_run:
+                # Telnet command execution succeeded, so reachability is healthy even
+                # when the device returned an empty status snapshot.
+                mark_olt_reachable(olt)
+            self.stdout.write(f"OLT {olt.id}: no status data returned.")
+            return
+
+        if not dry_run:
+            mark_olt_reachable(olt)
+
+        open_logs_by_onu: Dict[int, ONULog] = {}
+        open_logs_qs = ONULog.objects.filter(
+            onu__olt=olt,
+            onu__is_active=True,
+            offline_until__isnull=True,
+        )
+        if scoped_refresh:
+            open_logs_qs = open_logs_qs.filter(onu_id__in=[onu.id for onu in onus])
+        for log in open_logs_qs.order_by("-offline_since"):
+            open_logs_by_onu.setdefault(log.onu_id, log)
+
+        updated = online = offline = unknown = missing = missing_preserved = 0
+        onus_to_update: List[ONU] = []
+        logs_to_close: List[ONULog] = []
+        logs_to_log_update: List[ONULog] = []
+        new_logs: List[ONULog] = []
+
+        for onu in onus:
+            mapped = row_by_key.get((int(onu.slot_id), int(onu.pon_id), int(onu.onu_id)))
+            if mapped is None:
+                missing += 1
+                if dry_run:
+                    continue
+                missing_preserved += 1
+                continue
+
+            new_status = str(mapped.get("status") or ONU.STATUS_UNKNOWN)
+            reason = "" if new_status == ONU.STATUS_ONLINE else ONULog.REASON_UNKNOWN
+            if new_status == ONU.STATUS_ONLINE:
+                online += 1
+            elif new_status == ONU.STATUS_OFFLINE:
+                offline += 1
+            else:
+                unknown += 1
+
+            if dry_run:
+                updated += 1
+                continue
+
+            open_log = open_logs_by_onu.get(onu.id)
+
+            if new_status == ONU.STATUS_ONLINE:
+                if open_log and open_log.offline_until is None:
+                    open_log.offline_until = now
+                    logs_to_close.append(open_log)
+            elif new_status == ONU.STATUS_OFFLINE:
+                if onu.status == ONU.STATUS_ONLINE or not open_log:
+                    active_log = ONULog(
+                        onu=onu,
+                        offline_since=now,
+                        disconnect_reason=ONULog.REASON_UNKNOWN,
+                        disconnect_window_start=now,
+                        disconnect_window_end=now,
+                    )
+                    new_logs.append(active_log)
+                    open_logs_by_onu[onu.id] = active_log
+                else:
+                    needs_log_update = False
+                    if open_log.disconnect_reason != ONULog.REASON_UNKNOWN:
+                        open_log.disconnect_reason = ONULog.REASON_UNKNOWN
+                        needs_log_update = True
+                    if not open_log.disconnect_window_start:
+                        open_log.disconnect_window_start = open_log.offline_since or now
+                        needs_log_update = True
+                    if not open_log.disconnect_window_end:
+                        open_log.disconnect_window_end = open_log.offline_since or now
+                        needs_log_update = True
+                    if needs_log_update:
+                        logs_to_log_update.append(open_log)
+
+            if onu.status != new_status:
+                onu.status = new_status
+                onus_to_update.append(onu)
+            updated += 1
+
+        if not dry_run:
+            with transaction.atomic():
+                if new_logs:
+                    ONULog.objects.bulk_create(new_logs)
+                if logs_to_close:
+                    ONULog.objects.bulk_update(logs_to_close, ["offline_until"])
+                if logs_to_log_update:
+                    ONULog.objects.bulk_update(
+                        logs_to_log_update,
+                        ["disconnect_reason", "disconnect_window_start", "disconnect_window_end"],
+                    )
+                if onus_to_update:
+                    ONU.objects.bulk_update(onus_to_update, ["status"])
+                if not scoped_refresh:
+                    self._mark_poll_result(olt, now)
+            try:
+                topology_counter_service.refresh_olt(olt.id)
+            except Exception:
+                logger.exception("OLT %s polling: failed to refresh cached topology counters.", olt.id)
+
+        self.stdout.write(
+            f"OLT {olt.id}: polled {updated} ONUs "
+            f"(online={online}, offline={offline}, unknown={unknown}, missing={missing}, "
+            f"missing_preserved={missing_preserved})."
+        )
+
     def handle(self, *args, **options):
         force = bool(options.get("force", False))
         olt_id = options.get("olt_id")
@@ -146,7 +326,7 @@ class Command(BaseCommand):
                 olt
                 for olt in olts
                 if self._is_due(olt, now)
-                and not (olt.snmp_reachable is False and (olt.snmp_failure_count or 0) >= 2)
+                and not (olt.collector_reachable is False and (olt.collector_failure_count or 0) >= 2)
             ]
         else:
             due_olts = olts
@@ -183,6 +363,16 @@ class Command(BaseCommand):
         refresh_upstream: bool = False,
         force_upstream: bool = False,
     ) -> None:
+        if get_collector_type(olt) == COLLECTOR_TYPE_FIT_TELNET:
+            self._poll_for_olt_fit(
+                olt,
+                dry_run=dry_run,
+                scope_slot_id=scope_slot_id,
+                scope_pon_id=scope_pon_id,
+                scope_onu_ids=scope_onu_ids,
+            )
+            return
+
         scoped_refresh = bool(scope_onu_ids) or scope_slot_id is not None or scope_pon_id is not None
 
         onus_qs = ONU.objects.filter(olt=olt, is_active=True)

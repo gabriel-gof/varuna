@@ -4,17 +4,18 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 
 ## What It Does
 - Discovers and maintains OLT → Slot → PON → ONU topology.
-- Polls ONU status via Zabbix item keys with disconnect-reason mapping.
+- Polls ONU status via Zabbix item keys with disconnect-reason mapping, or direct Telnet CLI for FIT `FNCS4000`.
 - Persists ONU power history for trend/report APIs.
 - Shows unreachable OLTs clearly (gray state in frontend).
-- Caches hot status/power reads in Redis.
+- Caches only slow-changing topology structure in Redis.
 
 ## Runtime Architecture
 - `frontend`: React app (Vite dev / Nginx prod)
 - `backend`: Django + DRF API and collection orchestration
 - `varuna-db`: PostgreSQL
 - `redis`: Redis
-- Optional (enabled in current dev compose): `zabbix-db`, `zabbix-server`, `zabbix-web`, `zabbix-agent` for full Zabbix-based collection.
+- Optional (enabled in current dev compose): `zabbix-db`, `zabbix-server`, `zabbix-web`, `zabbix-agent` for Zabbix-based vendors.
+- FIT `FNCS4000` uses direct backend Telnet collection and does not require a Zabbix template.
 
 ## Versioning
 - Release version is tracked in the root `VERSION` file.
@@ -23,7 +24,7 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 
 Manual maintenance actions (discovery, polling, power refresh) are queued as persistent backend jobs with progress tracking (`MaintenanceJob`), so long-running operations are observable and resilient to transient API process restarts.
 Backend scheduler (`run_scheduler`) is started at container boot when `ENABLE_SCHEDULER=1` (enabled by default in current dev/prod env templates), keeping discovery/polling/power collection backend-driven.
-Topology-heavy API reads are served through short-lived Redis response cache to reduce initial topology load latency.
+Topology-heavy API reads use per-OLT Redis structure cache only; live status and power remain uncached read paths.
 
 ## Multi-Instance Production
 - Current codebase is single-tenant at application level (no tenant isolation in backend models/API).
@@ -191,6 +192,9 @@ Zabbix template files in repo root:
 - `fiberhome-template.yaml`
 - `zte-template.yaml` (`OLT ZTE C300` and `OLT ZTE C600`)
 - `vsol-like-template.yaml`
+
+Direct collector vendor:
+- `FIT / FNCS4000` uses backend Telnet collection (`show onu info` / `show onu optical-ddm`) instead of a repo-root Zabbix template.
 
 ## Validation
 ```bash

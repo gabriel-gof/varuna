@@ -9,6 +9,10 @@ const MAX_OLT_NAME = 12
 const EXPANDED_OLTS_STORAGE_KEY = 'varuna.settings.expandedOltIds'
 const OLD_SELECTED_OLT_STORAGE_KEY = 'varuna.settings.selectedOltId'
 const isFiberhomeVendor = (vendor) => String(vendor || '').toUpperCase() === 'FIBERHOME'
+const getProfileProtocol = (profile, fallback = 'snmp') => {
+  const candidate = String(profile?.default_protocol || fallback || 'snmp').trim().toLowerCase()
+  return candidate === 'telnet' ? 'telnet' : 'snmp'
+}
 
 const buildInitialForm = (vendorProfiles = []) => {
   const firstVendor = vendorProfiles[0]?.vendor || ''
@@ -20,6 +24,9 @@ const buildInitialForm = (vendorProfiles = []) => {
     vendor_profile: firstModel?.id ? String(firstModel.id) : '',
     snmp_community: 'public',
     snmp_port: '161',
+    telnet_port: '23',
+    telnet_username: '',
+    telnet_password: '',
     discovery_interval: '5h',
     polling_interval: '5m',
     power_interval: '1d',
@@ -30,6 +37,7 @@ const buildInitialForm = (vendorProfiles = []) => {
     unm_username: 'unm2000',
     unm_password: '',
     unm_mneid: '',
+    blade_ips: [],
   }
 }
 
@@ -42,6 +50,9 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     vendor_profile: olt.vendor_profile ? String(olt.vendor_profile) : '',
     snmp_community: olt.snmp_community || 'public',
     snmp_port: String(olt.snmp_port || 161),
+    telnet_port: String(olt.telnet_port || 23),
+    telnet_username: olt.telnet_username || '',
+    telnet_password: '',
     discovery_interval: formatDuration((olt.discovery_interval_minutes || 240) * 60),
     polling_interval: formatDuration(olt.polling_interval_seconds || 300),
     power_interval: formatDuration(olt.power_interval_seconds || 300),
@@ -52,6 +63,7 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     unm_username: olt.unm_username || '',
     unm_password: '',
     unm_mneid: olt.unm_mneid ? String(olt.unm_mneid) : '',
+    blade_ips: Array.isArray(olt.blade_ips) ? olt.blade_ips.map(String) : [],
   }
 }
 
@@ -121,7 +133,7 @@ const isFormDirty = (editForm, olt, vendorProfiles) => {
   if (!editForm || !olt) return false
   const original = buildEditForm(olt, vendorProfiles)
   return Object.keys(original).some((key) => {
-    if (key === 'unm_password') {
+    if (key === 'unm_password' || key === 'telnet_password') {
       return String(editForm[key] || '') !== ''
     }
     // For duration fields, compare resolved seconds instead of raw strings
@@ -500,6 +512,7 @@ export const SettingsPanel = ({
   }, [i18n.language, t])
 
   const createSelectedProfile = vendorProfileById.get(String(form.vendor_profile || ''))
+  const createSelectedProtocol = getProfileProtocol(createSelectedProfile)
   const createSupportsOltRxPower = typeof createSelectedProfile?.supports_olt_rx_power === 'boolean'
     ? createSelectedProfile.supports_olt_rx_power
     : true
@@ -727,14 +740,18 @@ export const SettingsPanel = ({
 
   const handleCreate = async () => {
     const unmEnabled = Boolean(form.unm_enabled)
+    const protocol = createSelectedProtocol
     const payload = {
       name: String(form.name || '').trim().slice(0, MAX_OLT_NAME),
       ip_address: String(form.ip_address || '').trim(),
       vendor_profile: Number(form.vendor_profile),
-      protocol: 'snmp',
+      protocol,
       snmp_community: String(form.snmp_community || '').trim(),
       snmp_port: Number(form.snmp_port || 161),
       snmp_version: 'v2c',
+      telnet_port: Number(form.telnet_port || 23),
+      telnet_username: String(form.telnet_username || '').trim(),
+      telnet_password: String(form.telnet_password || ''),
       discovery_enabled: true,
       polling_enabled: true,
       discovery_interval_minutes: Math.round((parseDuration(form.discovery_interval) || 18000) / 60),
@@ -747,9 +764,21 @@ export const SettingsPanel = ({
       unm_username: String(form.unm_username || '').trim(),
       unm_password: String(form.unm_password || ''),
       unm_mneid: String(form.unm_mneid || '').trim() ? Number(form.unm_mneid) : null,
+      blade_ips: (form.blade_ips || []).filter((ip) => String(ip || '').trim()).length
+        ? (form.blade_ips || []).filter((ip) => String(ip || '').trim())
+        : null,
     }
 
-    if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
+    // When blades are configured, derive ip_address from the first blade
+    if (payload.blade_ips && payload.blade_ips.length > 0) {
+      payload.ip_address = payload.blade_ips[0]
+    }
+
+    const hasProtocolFields = protocol === 'telnet'
+      ? Boolean(payload.telnet_username && payload.telnet_password)
+      : Boolean(payload.snmp_community)
+
+    if (!payload.name || !payload.ip_address || !Number.isFinite(payload.vendor_profile) || !hasProtocolFields) {
       setLocalError(t('Required fields are missing'))
       setTimeout(() => setLocalError(''), 5000)
       return
@@ -771,13 +800,19 @@ export const SettingsPanel = ({
     const cardEditForm = editForms[oltId]
     if (!oltId || !cardEditForm) return
     const unmEnabled = Boolean(cardEditForm.unm_enabled)
+    const cardProfile = vendorProfileById.get(String(cardEditForm.vendor_profile || ''))
+    const protocol = getProfileProtocol(cardProfile, 'snmp')
 
     const payload = {
       name: String(cardEditForm.name || '').trim().slice(0, MAX_OLT_NAME),
       ip_address: String(cardEditForm.ip_address || '').trim(),
       vendor_profile: Number(cardEditForm.vendor_profile),
+      protocol,
       snmp_community: String(cardEditForm.snmp_community || '').trim(),
       snmp_port: Number(cardEditForm.snmp_port || 161),
+      telnet_port: Number(cardEditForm.telnet_port || 23),
+      telnet_username: String(cardEditForm.telnet_username || '').trim(),
+      telnet_password: String(cardEditForm.telnet_password || ''),
       discovery_interval_minutes: Math.round((parseDuration(cardEditForm.discovery_interval) || 18000) / 60),
       polling_interval_seconds: parseDuration(cardEditForm.polling_interval) || 300,
       power_interval_seconds: parseDuration(cardEditForm.power_interval) || 86400,
@@ -788,9 +823,21 @@ export const SettingsPanel = ({
       unm_username: String(cardEditForm.unm_username || '').trim(),
       unm_password: String(cardEditForm.unm_password || ''),
       unm_mneid: String(cardEditForm.unm_mneid || '').trim() ? Number(cardEditForm.unm_mneid) : null,
+      blade_ips: (cardEditForm.blade_ips || []).filter((ip) => String(ip || '').trim()).length
+        ? (cardEditForm.blade_ips || []).filter((ip) => String(ip || '').trim())
+        : null,
     }
 
-    if (!payload.name || !payload.ip_address || !payload.snmp_community || !Number.isFinite(payload.vendor_profile)) {
+    // When blades are configured, derive ip_address from the first blade
+    if (payload.blade_ips && payload.blade_ips.length > 0) {
+      payload.ip_address = payload.blade_ips[0]
+    }
+
+    const hasProtocolFields = protocol === 'telnet'
+      ? Boolean(payload.telnet_username)
+      : Boolean(payload.snmp_community)
+
+    if (!payload.name || !payload.ip_address || !Number.isFinite(payload.vendor_profile) || !hasProtocolFields) {
       setLocalErrors((prev) => ({ ...prev, [oltId]: t('Required fields are missing') }))
       setTimeout(() => setLocalErrors((prev) => { const n = { ...prev }; delete n[oltId]; return n }), 5000)
       return
@@ -801,7 +848,6 @@ export const SettingsPanel = ({
     // Persist thresholds to localStorage
     const cardThresholdForm = thresholdForms[oltId]
     if (cardThresholdForm && oltId) {
-      const cardProfile = vendorProfileById.get(String(cardEditForm.vendor_profile || ''))
       const cardSupportsOltRx = typeof cardProfile?.supports_olt_rx_power === 'boolean'
         ? cardProfile.supports_olt_rx_power
         : true
@@ -972,6 +1018,7 @@ export const SettingsPanel = ({
                                </div>
 
                                {/* Row 2 */}
+                               {createSelectedProtocol !== 'telnet' && (
                                <div className="flex flex-col gap-1.5">
                                   <FieldLabel>{t('IP')}</FieldLabel>
                                   <FieldInput
@@ -981,28 +1028,113 @@ export const SettingsPanel = ({
                                     placeholder="10.0.0.1"
                                   />
                                </div>
-                               <div className="flex flex-col gap-1.5">
-                                  <FieldLabel>{t('SNMP community')}</FieldLabel>
-                                  <FieldInput
-                                    className="text-center"
-                                    value={form.snmp_community}
-                                    onChange={(e) => setField('snmp_community', e.target.value)}
-                                    placeholder="public"
-                                  />
-                               </div>
-                               <div className="flex flex-col gap-1.5">
-                                  <FieldLabel>{t('Port')}</FieldLabel>
-                                  <FieldInput
-                                    className="text-center"
-                                    type="number"
-                                    min={1}
-                                    max={65535}
-                                    value={form.snmp_port}
-                                    onChange={(e) => setField('snmp_port', e.target.value)}
-                                    placeholder="161"
-                                  />
-                               </div>
+                               )}
+                               {createSelectedProtocol === 'telnet' ? (
+                                 <>
+                                   <div className="flex flex-col gap-1.5">
+                                      <FieldLabel>{t('Username')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={form.telnet_username}
+                                        onChange={(e) => setField('telnet_username', e.target.value)}
+                                        placeholder="bifrost"
+                                      />
+                                   </div>
+                                   <div className="flex flex-col gap-1.5">
+                                      <FieldLabel>{t('Password')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        type="password"
+                                        autoComplete="off"
+                                        value={form.telnet_password}
+                                        onChange={(e) => setField('telnet_password', e.target.value)}
+                                        placeholder="••••••••"
+                                      />
+                                   </div>
+                                   <div className="flex flex-col gap-1.5">
+                                      <FieldLabel>{t('Port')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        type="number"
+                                        min={1}
+                                        max={65535}
+                                        value={form.telnet_port}
+                                        onChange={(e) => setField('telnet_port', e.target.value)}
+                                        placeholder="23"
+                                      />
+                                   </div>
+                                 </>
+                               ) : (
+                                 <>
+                                   <div className="flex flex-col gap-1.5">
+                                      <FieldLabel>{t('SNMP community')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        value={form.snmp_community}
+                                        onChange={(e) => setField('snmp_community', e.target.value)}
+                                        placeholder="public"
+                                      />
+                                   </div>
+                                   <div className="flex flex-col gap-1.5">
+                                      <FieldLabel>{t('Port')}</FieldLabel>
+                                      <FieldInput
+                                        className="text-center"
+                                        type="number"
+                                        min={1}
+                                        max={65535}
+                                        value={form.snmp_port}
+                                        onChange={(e) => setField('snmp_port', e.target.value)}
+                                        placeholder="161"
+                                      />
+                                   </div>
+                                 </>
+                               )}
                             </div>
+
+                        {/* Blade IPs — Telnet only */}
+                        {createSelectedProtocol === 'telnet' && (
+                          <div className="w-full max-w-xl mt-3">
+                            <FieldLabel>{t('Blade IPs')}</FieldLabel>
+                            <div className="flex flex-col gap-1.5">
+                              {((form.blade_ips || []).length === 0 ? [''] : form.blade_ips).map((ip, idx, arr) => (
+                                <div key={idx} className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
+                                    Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
+                                  </span>
+                                  <FieldInput
+                                    className="text-center flex-1"
+                                    value={ip}
+                                    onChange={(e) => {
+                                      const updated = [...arr]
+                                      updated[idx] = e.target.value
+                                      setField('blade_ips', updated)
+                                    }}
+                                    placeholder={`10.0.0.${idx + 1}`}
+                                  />
+                                  {arr.length > 1 && (
+                                  <button
+                                    type="button"
+                                    className="p-1 text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400"
+                                    onClick={() => {
+                                      const updated = arr.filter((_, i) => i !== idx)
+                                      setField('blade_ips', updated)
+                                    }}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                  )}
+                                </div>
+                              ))}
+                              <button
+                                type="button"
+                                className="text-[10px] font-semibold text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 self-start mt-0.5"
+                                onClick={() => { const cur = (form.blade_ips || []).length === 0 ? [''] : form.blade_ips; setField('blade_ips', [...cur, '']) }}
+                              >
+                                + {t('Add Blade')}
+                              </button>
+                            </div>
+                          </div>
+                        )}
 
                         {/* UNM Integration — FiberHome only */}
                         {isFiberhomeVendor(form.vendor) && (
@@ -1363,6 +1495,7 @@ export const SettingsPanel = ({
                            </div>
 
                            {/* Row 2 */}
+                           {getProfileProtocol(cardEditSelectedProfile, olt?.protocol || 'snmp') !== 'telnet' && (
                            <div className="flex flex-col gap-1.5">
                               <FieldLabel>{t('IP')}</FieldLabel>
                               <FieldInput
@@ -1372,31 +1505,123 @@ export const SettingsPanel = ({
                                 placeholder="10.0.0.1"
                               />
                            </div>
+                           )}
 
-                           <div className="flex flex-col gap-1.5">
-                              <FieldLabel>{t('SNMP community')}</FieldLabel>
-                              <FieldInput
-                                className="text-center"
-                                value={cardEditForm.snmp_community}
-                                onChange={(e) => setEditField(oltId, 'snmp_community', e.target.value)}
-                                placeholder="public"
-                              />
-                           </div>
+                           {getProfileProtocol(cardEditSelectedProfile, olt?.protocol || 'snmp') === 'telnet' ? (
+                             <>
+                               <div className="flex flex-col gap-1.5">
+                                  <FieldLabel>{t('Username')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center"
+                                    value={cardEditForm.telnet_username}
+                                    onChange={(e) => setEditField(oltId, 'telnet_username', e.target.value)}
+                                    placeholder="bifrost"
+                                  />
+                               </div>
 
-                           <div className="flex flex-col gap-1.5">
-                              <FieldLabel>{t('Port')}</FieldLabel>
-                              <FieldInput
-                                className="text-center px-1"
-                                type="number"
-                                min={1}
-                                max={65535}
-                                value={cardEditForm.snmp_port}
-                                onChange={(e) => setEditField(oltId, 'snmp_port', e.target.value)}
-                                placeholder="161"
-                              />
-                           </div>
+                               <div className="flex flex-col gap-1.5">
+                                  <FieldLabel>{t('Password')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center"
+                                    type="password"
+                                    autoComplete="off"
+                                    value={cardEditForm.telnet_password}
+                                    onChange={(e) => setEditField(oltId, 'telnet_password', e.target.value)}
+                                    placeholder="••••••••"
+                                  />
+                                  {olt.telnet_password_configured && (
+                                    <span className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 text-center">
+                                      {t('Leave blank to keep current password')}
+                                    </span>
+                                  )}
+                               </div>
+
+                               <div className="flex flex-col gap-1.5">
+                                  <FieldLabel>{t('Port')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center px-1"
+                                    type="number"
+                                    min={1}
+                                    max={65535}
+                                    value={cardEditForm.telnet_port}
+                                    onChange={(e) => setEditField(oltId, 'telnet_port', e.target.value)}
+                                    placeholder="23"
+                                  />
+                               </div>
+                             </>
+                           ) : (
+                             <>
+                               <div className="flex flex-col gap-1.5">
+                                  <FieldLabel>{t('SNMP community')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center"
+                                    value={cardEditForm.snmp_community}
+                                    onChange={(e) => setEditField(oltId, 'snmp_community', e.target.value)}
+                                    placeholder="public"
+                                  />
+                               </div>
+
+                               <div className="flex flex-col gap-1.5">
+                                  <FieldLabel>{t('Port')}</FieldLabel>
+                                  <FieldInput
+                                    className="text-center px-1"
+                                    type="number"
+                                    min={1}
+                                    max={65535}
+                                    value={cardEditForm.snmp_port}
+                                    onChange={(e) => setEditField(oltId, 'snmp_port', e.target.value)}
+                                    placeholder="161"
+                                  />
+                               </div>
+                             </>
+                           )}
 
                         </div>
+
+                        {/* Blade IPs — Telnet only (edit) */}
+                        {getProfileProtocol(cardEditSelectedProfile, olt?.protocol || 'snmp') === 'telnet' && (
+                          <div className="w-full max-w-xl mt-3">
+                            <FieldLabel>{t('Blade IPs')}</FieldLabel>
+                            <div className="flex flex-col gap-1.5">
+                              {((cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips).map((ip, idx, arr) => (
+                                <div key={idx} className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
+                                    Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
+                                  </span>
+                                  <FieldInput
+                                    className="text-center flex-1"
+                                    value={ip}
+                                    onChange={(e) => {
+                                      const updated = [...arr]
+                                      updated[idx] = e.target.value
+                                      setEditField(oltId, 'blade_ips', updated)
+                                    }}
+                                    placeholder={`10.0.0.${idx + 1}`}
+                                  />
+                                  {arr.length > 1 && (
+                                  <button
+                                    type="button"
+                                    className="p-1 text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400"
+                                    onClick={() => {
+                                      const updated = arr.filter((_, i) => i !== idx)
+                                      setEditField(oltId, 'blade_ips', updated)
+                                    }}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                  )}
+                                </div>
+                              ))}
+                              <button
+                                type="button"
+                                className="text-[10px] font-semibold text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 self-start mt-0.5"
+                                onClick={() => { const cur = (cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips; setEditField(oltId, 'blade_ips', [...cur, '']) }}
+                              >
+                                + {t('Add Blade')}
+                              </button>
+                            </div>
+                          </div>
+                        )}
 
                         {/* UNM Integration — FiberHome only */}
                         {isFiberhomeVendor(cardEditForm.vendor) && (

@@ -7,25 +7,25 @@ const NOW_MS = Date.parse('2026-02-24T18:00:00.000Z')
 
 const isoAgoSeconds = (seconds) => new Date(NOW_MS - (seconds * 1000)).toISOString()
 
-test('deriveOltHealthState marks OLT gray after repeated SNMP failures', () => {
+test('deriveOltHealthState marks OLT gray after repeated collector failures', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: false,
-      snmp_failure_count: 2,
+      collector_reachable: false,
+      collector_failure_count: 2,
       last_poll_at: isoAgoSeconds(120),
       polling_interval_seconds: 300,
     },
     NOW_MS,
   )
   assert.equal(state.state, 'gray')
-  assert.equal(state.reason, 'snmp_unreachable')
+  assert.equal(state.reason, 'collector_unreachable')
 })
 
-test('deriveOltHealthState marks OLT gray on first explicit SNMP unreachable state', () => {
+test('deriveOltHealthState marks OLT gray on first explicit collector unreachable state', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: false,
-      snmp_failure_count: 1,
+      collector_reachable: false,
+      collector_failure_count: 1,
       last_poll_at: isoAgoSeconds(120),
       polling_interval_seconds: 300,
       online_count: 1,
@@ -34,14 +34,14 @@ test('deriveOltHealthState marks OLT gray on first explicit SNMP unreachable sta
     NOW_MS,
   )
   assert.equal(state.state, 'gray')
-  assert.equal(state.reason, 'snmp_unreachable')
+  assert.equal(state.reason, 'collector_unreachable')
 })
 
 test('deriveOltHealthState marks OLT gray when status polling is stale', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_poll_at: isoAgoSeconds(1200),
       polling_interval_seconds: 300,
       online_count: 1,
@@ -53,13 +53,13 @@ test('deriveOltHealthState marks OLT gray when status polling is stale', () => {
   assert.equal(state.reason, 'status_stale')
 })
 
-test('deriveOltHealthState keeps OLT gray when status polling is stale even with fresh SNMP check', () => {
+test('deriveOltHealthState keeps OLT gray when status polling is stale even with fresh collector check', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_poll_at: isoAgoSeconds(1800),
-      last_snmp_check_at: isoAgoSeconds(20),
+      last_collector_check_at: isoAgoSeconds(20),
       polling_interval_seconds: 300,
       online_count: 1,
       offline_count: 0,
@@ -73,8 +73,8 @@ test('deriveOltHealthState keeps OLT gray when status polling is stale even with
 test('deriveOltHealthState uses discovery timestamp when polling timestamp is absent', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_discovery_at: isoAgoSeconds(1200),
       polling_interval_seconds: 300,
       online_count: 1,
@@ -86,13 +86,13 @@ test('deriveOltHealthState uses discovery timestamp when polling timestamp is ab
   assert.equal(state.reason, 'status_stale')
 })
 
-test('deriveOltHealthState keeps OLT gray when polling timestamp is absent even with fresh SNMP check', () => {
+test('deriveOltHealthState keeps OLT gray when polling timestamp is absent even with fresh collector check', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_discovery_at: isoAgoSeconds(1200),
-      last_snmp_check_at: isoAgoSeconds(25),
+      last_collector_check_at: isoAgoSeconds(25),
       polling_interval_seconds: 300,
       online_count: 1,
       offline_count: 0,
@@ -119,8 +119,8 @@ test('getPonHealthColorState treats unknown ONUs as offline for color decisions'
 test('deriveOltHealthState marks OLT red when ONUs are only unknown', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_poll_at: isoAgoSeconds(60),
       polling_interval_seconds: 300,
       slots: [
@@ -147,8 +147,8 @@ test('deriveOltHealthState marks OLT red when ONUs are only unknown', () => {
 test('deriveOltHealthState keeps OLT green when at least one ONU is online', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_poll_at: isoAgoSeconds(60),
       polling_interval_seconds: 300,
       slots: [
@@ -175,8 +175,8 @@ test('deriveOltHealthState keeps OLT green when at least one ONU is online', () 
 test('deriveOltHealthState keeps red when all ONUs are confirmed offline reasons', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_poll_at: isoAgoSeconds(60),
       polling_interval_seconds: 300,
       slots: [
@@ -202,8 +202,8 @@ test('deriveOltHealthState keeps red when all ONUs are confirmed offline reasons
 test('deriveOltHealthState marks OLT yellow when at least one slot is fully offline (red)', () => {
   const state = deriveOltHealthState(
     {
-      snmp_reachable: true,
-      snmp_failure_count: 0,
+      collector_reachable: true,
+      collector_failure_count: 0,
       last_poll_at: isoAgoSeconds(60),
       polling_interval_seconds: 300,
       slots: [

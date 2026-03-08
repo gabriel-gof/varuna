@@ -21,6 +21,16 @@ logger = logging.getLogger(__name__)
 
 
 class MaintenanceJobService:
+    _COMMAND_FAILURE_MARKERS = (
+        ' failed ',
+        ' failed(',
+        ' failed:',
+        'collector unreachable',
+        'no status data returned',
+        'only stale status data returned',
+        'no parseable onu entries',
+    )
+
     def __init__(self):
         self.poll_interval_seconds = 0.5
         self.idle_shutdown_seconds = 10.0
@@ -88,7 +98,7 @@ class MaintenanceJobService:
 
         timeout_msg = (
             "Maintenance task exceeded runtime timeout and was marked as failed. "
-            "Verify OLT collector settings in Zabbix and retry."
+            "Verify OLT collector settings and retry."
         )
         stale_qs.update(
             status=MaintenanceJob.STATUS_FAILED,
@@ -390,6 +400,9 @@ class MaintenanceJobService:
             args=['--olt-id', str(job.olt_id), '--force', '--refresh-upstream'],
             timeout_seconds=self._resolve_timeout_seconds(MaintenanceJob.KIND_DISCOVERY),
         )
+        olt = OLT.objects.only('id', 'discovery_healthy', 'last_collector_error').get(id=job.olt_id)
+        if olt.discovery_healthy is False:
+            raise RuntimeError(output or olt.last_collector_error or 'Discovery reported failure.')
         self._progress_update(job.id, 92, 'Finalizing discovery.')
         return 'Discovery completed.', output
 
@@ -400,6 +413,9 @@ class MaintenanceJobService:
             args=['--olt-id', str(job.olt_id), '--force', '--refresh-upstream', '--force-upstream'],
             timeout_seconds=self._resolve_timeout_seconds(MaintenanceJob.KIND_POLLING),
         )
+        olt = OLT.objects.only('id', 'collector_reachable', 'last_collector_error').get(id=job.olt_id)
+        if self._output_indicates_failure(output) or olt.collector_reachable is False:
+            raise RuntimeError(output or olt.last_collector_error or 'Polling reported failure.')
         self._progress_update(job.id, 92, 'Finalizing polling.')
         return 'Polling completed.', output
 
@@ -421,6 +437,10 @@ class MaintenanceJobService:
             f"collected={payload.get('collected_count', 0)}"
         )
         return 'Power collection completed.', summary
+
+    def _output_indicates_failure(self, output: str) -> bool:
+        normalized = f" {str(output or '').strip().lower()} "
+        return any(marker in normalized for marker in self._COMMAND_FAILURE_MARKERS)
 
 
 maintenance_job_service = MaintenanceJobService()

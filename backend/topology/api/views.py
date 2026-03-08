@@ -25,6 +25,8 @@ from topology.api.serializers import (
 from topology.api.auth_utils import can_modify_settings, can_operate_topology
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, ONUPowerSample, VendorProfile
 from topology.services.cache_service import cache_service
+from topology.services.collector_service import check_olt_reachability, collector_name_for_olt
+from topology.services.fit_collector_service import FITCollectorError
 from topology.services.history_service import get_latest_power_snapshot_map, persist_power_samples
 from topology.services.maintenance_job_service import maintenance_job_service
 from topology.services.maintenance_runtime import collect_power_for_olt, ensure_status_snapshot_for_power, has_usable_status_snapshot
@@ -33,10 +35,19 @@ from topology.services.power_values import normalize_power_value
 from topology.services.power_service import power_service
 from topology.services.topology_service import TopologyService
 from topology.services.unm_service import UNMServiceError, unm_service
-from topology.services.vendor_profile import map_disconnect_reason, map_status_code
+from topology.services.vendor_profile import get_collector_type, map_disconnect_reason, map_status_code
 from topology.services.zabbix_service import zabbix_service
 
 logger = logging.getLogger(__name__)
+_COMMAND_FAILURE_MARKERS = (
+    ' failed ',
+    ' failed(',
+    ' failed:',
+    'collector unreachable',
+    'no status data returned',
+    'only stale status data returned',
+    'no parseable onu entries',
+)
 
 
 def _is_true(value: str | None) -> bool:
@@ -122,6 +133,8 @@ class OLTViewSet(viewsets.ModelViewSet):
         cache_service.invalidate_topology_structure_cache(olt.id)
 
     def _sync_zabbix_host_runtime(self, olt, *, previous=None):
+        if get_collector_type(olt) != 'zabbix':
+            return
         try:
             synced = zabbix_service.sync_olt_host_runtime(olt, previous=previous)
         except Exception:
@@ -147,6 +160,8 @@ class OLTViewSet(viewsets.ModelViewSet):
             'snmp_port',
             'snmp_community',
             'snmp_version',
+            'telnet_port',
+            'telnet_username',
             'unm_enabled',
             'unm_host',
             'unm_port',
@@ -181,14 +196,15 @@ class OLTViewSet(viewsets.ModelViewSet):
             'name': olt.name,
             'ip_address': olt.ip_address,
         }
-        try:
-            zabbix_service.delete_olt_host(olt, previous=zabbix_snapshot)
-        except Exception:
-            logger.exception(
-                "Failed to delete Zabbix host for OLT id=%s name=%s",
-                olt.id,
-                olt.name,
-            )
+        if get_collector_type(olt) == 'zabbix':
+            try:
+                zabbix_service.delete_olt_host(olt, previous=zabbix_snapshot)
+            except Exception:
+                logger.exception(
+                    "Failed to delete Zabbix host for OLT id=%s name=%s",
+                    olt.id,
+                    olt.name,
+                )
 
         now = timezone.now()
         with transaction.atomic():
@@ -236,15 +252,16 @@ class OLTViewSet(viewsets.ModelViewSet):
         oid_templates = profile.oid_templates if isinstance(profile.oid_templates, dict) else {}
 
         missing_paths = []
-        for path in required_template_paths:
-            node = oid_templates
-            for key in path:
-                if not isinstance(node, dict):
-                    node = None
-                    break
-                node = node.get(key)
-            if node in (None, ''):
-                missing_paths.append('.'.join(path))
+        if get_collector_type(olt) == 'zabbix':
+            for path in required_template_paths:
+                node = oid_templates
+                for key in path:
+                    if not isinstance(node, dict):
+                        node = None
+                        break
+                    node = node.get(key)
+                if node in (None, ''):
+                    missing_paths.append('.'.join(path))
 
         if missing_paths:
             return Response(
@@ -276,6 +293,11 @@ class OLTViewSet(viewsets.ModelViewSet):
 
     def _serialize_maintenance_job(self, job):
         return maintenance_job_service.serialize_job(job)
+
+    @staticmethod
+    def _command_output_indicates_failure(output: str) -> bool:
+        normalized = f" {str(output or '').strip().lower()} "
+        return any(marker in normalized for marker in _COMMAND_FAILURE_MARKERS)
 
     def _enqueue_maintenance_job(self, *, olt: OLT, kind: str, request):
         accepted_detail_map = {
@@ -359,12 +381,19 @@ class OLTViewSet(viewsets.ModelViewSet):
                 request=request,
             )
 
-        payload = self._collect_power_for_olt(
-            olt,
-            force_refresh=True,
-            include_results=True,
-            refresh_upstream=True,
-        )
+        try:
+            payload = self._collect_power_for_olt(
+                olt,
+                force_refresh=True,
+                include_results=True,
+                refresh_upstream=True,
+            )
+        except FITCollectorError as exc:
+            mark_olt_unreachable(olt, error=str(exc))
+            return Response(
+                {'detail': f"{olt.name}: {exc}"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response(payload)
 
     @action(detail=False, methods=['post'], url_path='refresh_power')
@@ -389,6 +418,7 @@ class OLTViewSet(viewsets.ModelViewSet):
         total_skipped_not_online_count = 0
         total_skipped_offline_count = 0
         total_skipped_unknown_count = 0
+        total_skipped_unsupported_count = 0
         total_collected_count = 0
         completed_count = 0
         skipped_count = 0
@@ -421,6 +451,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                 total_skipped_not_online_count += payload.get('skipped_not_online_count', 0)
                 total_skipped_offline_count += payload.get('skipped_offline_count', 0)
                 total_skipped_unknown_count += payload.get('skipped_unknown_count', 0)
+                total_skipped_unsupported_count += payload.get('skipped_unsupported_count', 0)
                 total_collected_count += payload['collected_count']
                 results.append(payload)
             except Exception as exc:
@@ -446,6 +477,7 @@ class OLTViewSet(viewsets.ModelViewSet):
                 'total_skipped_not_online_count': total_skipped_not_online_count,
                 'total_skipped_offline_count': total_skipped_offline_count,
                 'total_skipped_unknown_count': total_skipped_unknown_count,
+                'total_skipped_unsupported_count': total_skipped_unsupported_count,
                 'total_collected_count': total_collected_count,
                 'results': results,
             }
@@ -492,12 +524,24 @@ class OLTViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        return Response({'status': 'completed', 'olt_id': olt.id, 'output': output.getvalue().strip()})
+        olt.refresh_from_db(fields=['discovery_healthy', 'last_collector_error'])
+        output_text = output.getvalue().strip()
+        if olt.discovery_healthy is False:
+            return Response(
+                {
+                    'status': 'error',
+                    'olt_id': olt.id,
+                    'detail': output_text or olt.last_collector_error or 'Discovery failed.',
+                    'output': output_text,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
-    @action(detail=True, methods=['post'])
-    def snmp_check(self, request, pk=None):
+        return Response({'status': 'completed', 'olt_id': olt.id, 'output': output_text})
+
+    def _collector_check(self, request, pk=None):
         """
-        Quick collector connectivity check via Zabbix reachability state.
+        Quick collector connectivity check for the configured OLT transport.
         Returns { reachable: bool, sys_descr: null, olt_id: int }
         """
         access_error = self._ensure_settings_write_access(request)
@@ -505,10 +549,9 @@ class OLTViewSet(viewsets.ModelViewSet):
             return access_error
 
         olt = get_object_or_404(OLT, pk=pk, is_active=True)
+        collector_name = collector_name_for_olt(olt)
         try:
-            reachable, detail = zabbix_service.check_olt_reachability(
-                olt,
-            )
+            reachable, detail = check_olt_reachability(olt)
             if reachable:
                 mark_olt_reachable(olt)
                 return Response(
@@ -516,23 +559,23 @@ class OLTViewSet(viewsets.ModelViewSet):
                         'reachable': True,
                         'sys_descr': None,
                         'olt_id': olt.id,
-                        'failure_count': olt.snmp_failure_count,
-                        'collector': 'zabbix',
+                        'failure_count': olt.collector_failure_count,
+                        'collector': collector_name,
                     }
                 )
-            mark_olt_unreachable(olt, error=detail or 'Zabbix reported OLT unreachable')
+            mark_olt_unreachable(olt, error=detail or 'Collector reported OLT unreachable')
             return Response(
                 {
                     'reachable': False,
                     'sys_descr': None,
                     'olt_id': olt.id,
-                    'detail': detail or 'Zabbix reported OLT unreachable',
-                    'failure_count': olt.snmp_failure_count,
-                    'collector': 'zabbix',
+                    'detail': detail or 'Collector reported OLT unreachable',
+                    'failure_count': olt.collector_failure_count,
+                    'collector': collector_name,
                 }
             )
         except Exception as exc:
-            logger.warning("Zabbix reachability check failed for OLT %s: %s", olt.name, exc)
+            logger.warning("Collector reachability check failed for OLT %s: %s", olt.name, exc)
             mark_olt_unreachable(olt, error=str(exc))
             return Response(
                 {
@@ -540,10 +583,18 @@ class OLTViewSet(viewsets.ModelViewSet):
                     'sys_descr': None,
                     'olt_id': olt.id,
                     'detail': str(exc),
-                    'failure_count': olt.snmp_failure_count,
-                    'collector': 'zabbix',
+                    'failure_count': olt.collector_failure_count,
+                    'collector': collector_name,
                 }
             )
+
+    @action(detail=True, methods=['post'], url_path='collector_check')
+    def collector_check(self, request, pk=None):
+        return self._collector_check(request, pk=pk)
+
+    @action(detail=True, methods=['post'], url_path='snmp_check')
+    def snmp_check(self, request, pk=None):
+        return self._collector_check(request, pk=pk)
 
     @action(detail=True, methods=['post'])
     def run_polling(self, request, pk=None):
@@ -587,7 +638,20 @@ class OLTViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        return Response({'status': 'completed', 'olt_id': olt.id, 'output': output.getvalue().strip()})
+        olt.refresh_from_db(fields=['collector_reachable', 'last_collector_error'])
+        output_text = output.getvalue().strip()
+        if self._command_output_indicates_failure(output_text) or olt.collector_reachable is False:
+            return Response(
+                {
+                    'status': 'error',
+                    'olt_id': olt.id,
+                    'detail': output_text or olt.last_collector_error or 'Polling failed.',
+                    'output': output_text,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response({'status': 'completed', 'olt_id': olt.id, 'output': output_text})
 
 
 class ONUViewSet(viewsets.ReadOnlyModelViewSet):
@@ -664,10 +728,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         collector_errors = []
         for olt_onus in by_olt.values():
             olt = olt_onus[0].olt
-            zabbix_templates = (olt.vendor_profile.oid_templates or {}).get('zabbix', {})
-            zabbix_status_pattern = zabbix_templates.get('status_item_key_pattern')
-            has_status_collector = bool(zabbix_status_pattern)
-            if not olt.vendor_profile.supports_onu_status or not has_status_collector:
+            if not olt.vendor_profile.supports_onu_status:
                 logger.warning(
                     "Scoped status refresh OLT %s skipped: status polling capability unavailable.",
                     olt.id,
@@ -688,9 +749,9 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 kwargs['onu_id'] = [int(onu.id) for onu in olt_onus]
 
             call_command('poll_onu_status', **kwargs)
-            olt.refresh_from_db(fields=['snmp_reachable', 'snmp_failure_count', 'last_snmp_error'])
-            if olt.snmp_reachable is False:
-                detail = str(olt.last_snmp_error or 'Collector reported OLT unreachable').strip()
+            olt.refresh_from_db(fields=['collector_reachable', 'collector_failure_count', 'last_collector_error'])
+            if olt.collector_reachable is False:
+                detail = str(olt.last_collector_error or 'Collector reported OLT unreachable').strip()
                 collector_errors.append(f"{olt.name}: {detail}")
 
         if collector_errors:
@@ -1453,21 +1514,28 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
         if refresh:
             self._ensure_status_snapshot_for_power(onu.olt)
             onu.olt.refresh_from_db(
-                fields=['last_poll_at', 'snmp_reachable', 'snmp_failure_count', 'last_snmp_error']
+                fields=['last_poll_at', 'collector_reachable', 'collector_failure_count', 'last_collector_error']
             )
             if not self._has_usable_status_snapshot(onu.olt):
-                detail = str(onu.olt.last_snmp_error or 'Collector reported OLT unreachable').strip()
+                detail = str(onu.olt.last_collector_error or 'Collector reported OLT unreachable').strip()
                 return Response(
                     {'detail': f"{onu.olt.name}: {detail}"},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
         if refresh:
-            result_map = power_service.refresh_for_onus(
-                [onu],
-                force_refresh=True,
-                refresh_upstream=True,
-                force_upstream=True,
-            )
+            try:
+                result_map = power_service.refresh_for_onus(
+                    [onu],
+                    force_refresh=True,
+                    refresh_upstream=True,
+                    force_upstream=True,
+                )
+            except FITCollectorError as exc:
+                mark_olt_unreachable(onu.olt, error=str(exc))
+                return Response(
+                    {'detail': f"{onu.olt.name}: {exc}"},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             history_min_read_at = None
             history_max_age_minutes = 180
             persist_power_samples(
@@ -1614,11 +1682,11 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 if olt is None:
                     continue
                 olt.refresh_from_db(
-                    fields=['last_poll_at', 'snmp_reachable', 'snmp_failure_count', 'last_snmp_error']
+                    fields=['last_poll_at', 'collector_reachable', 'collector_failure_count', 'last_collector_error']
                 )
                 if self._has_usable_status_snapshot(olt):
                     continue
-                detail = str(olt.last_snmp_error or 'Collector reported OLT unreachable').strip()
+                detail = str(olt.last_collector_error or 'Collector reported OLT unreachable').strip()
                 collector_errors.append(f"{olt.name}: {detail}")
             if collector_errors:
                 return Response(
@@ -1626,12 +1694,20 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
 
-        result_map = power_service.refresh_for_onus(
-            onus,
-            force_refresh=refresh,
-            refresh_upstream=refresh,
-            force_upstream=refresh,
-        )
+        try:
+            result_map = power_service.refresh_for_onus(
+                onus,
+                force_refresh=refresh,
+                refresh_upstream=refresh,
+                force_upstream=refresh,
+            )
+        except FITCollectorError as exc:
+            for olt in {candidate.olt for candidate in onus}:
+                mark_olt_unreachable(olt, error=str(exc))
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         if refresh:
             history_min_read_at = None
             history_max_age_minutes = 180

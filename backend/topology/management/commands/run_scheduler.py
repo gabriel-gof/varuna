@@ -10,9 +10,9 @@ from django.db import close_old_connections
 from django.utils import timezone
 
 from topology.models import OLT, ONUPowerSample
+from topology.services.collector_service import check_olt_reachability, collector_name_for_olt
 from topology.services.maintenance_runtime import collect_power_for_olt as collect_power_runtime
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
-from topology.services.zabbix_service import zabbix_service
 
 
 logger = logging.getLogger(__name__)
@@ -36,21 +36,21 @@ def _is_power_due(olt, now):
     return True
 
 
-def _snmp_check_interval_seconds(olt, base_interval_seconds: int, max_backoff_seconds: int) -> int:
+def _collector_check_interval_seconds(olt, base_interval_seconds: int, max_backoff_seconds: int) -> int:
     # Keep collector checks at a fixed cadence so recovery after VPN/network
     # return is detected quickly and does not stay gray for long windows.
     return base_interval_seconds
 
 
-def _is_snmp_check_due(olt, now, base_interval_seconds: int, max_backoff_seconds: int) -> bool:
-    if not olt.last_snmp_check_at:
+def _is_collector_check_due(olt, now, base_interval_seconds: int, max_backoff_seconds: int) -> bool:
+    if not olt.last_collector_check_at:
         return True
-    interval_seconds = _snmp_check_interval_seconds(
+    interval_seconds = _collector_check_interval_seconds(
         olt,
         base_interval_seconds=base_interval_seconds,
         max_backoff_seconds=max_backoff_seconds,
     )
-    return (olt.last_snmp_check_at + timedelta(seconds=interval_seconds)) <= now
+    return (olt.last_collector_check_at + timedelta(seconds=interval_seconds)) <= now
 
 
 def _collect_power_for_olt(olt):
@@ -161,7 +161,7 @@ class Command(BaseCommand):
                 close_old_connections()
                 now_mono = time.monotonic()
                 if now_mono - last_collector_check_at >= collector_check_seconds:
-                    self._run_snmp_checks(
+                    self._run_collector_checks(
                         base_interval_seconds=collector_check_seconds,
                         max_backoff_seconds=collector_check_max_backoff_seconds,
                     )
@@ -225,7 +225,7 @@ class Command(BaseCommand):
             power_elapsed_total = 0.0
             due_olts = []
             for olt in power_olts:
-                if olt.snmp_reachable is False and (olt.snmp_failure_count or 0) >= 2:
+                if olt.collector_reachable is False and (olt.collector_failure_count or 0) >= 2:
                     continue
                 if _is_power_due(olt, now):
                     due_olts.append(olt)
@@ -261,7 +261,7 @@ class Command(BaseCommand):
         except Exception:
             logger.exception("scheduler: power collection query failed.")
 
-    def _run_snmp_checks(self, *, base_interval_seconds: int = 180, max_backoff_seconds: int = 1800):
+    def _run_collector_checks(self, *, base_interval_seconds: int = 180, max_backoff_seconds: int = 1800):
         try:
             olts = list(
                 OLT.objects.filter(is_active=True)
@@ -275,7 +275,7 @@ class Command(BaseCommand):
         due_olts = [
             olt
             for olt in olts
-            if _is_snmp_check_due(
+            if _is_collector_check_due(
                 olt,
                 now,
                 base_interval_seconds=base_interval_seconds,
@@ -292,18 +292,23 @@ class Command(BaseCommand):
         for olt in due_olts:
             started = time.monotonic()
             try:
-                was_unreachable = bool(olt.snmp_reachable is False)
-                reachable, detail = zabbix_service.check_olt_reachability(
-                    olt,
-                )
+                was_unreachable = bool(olt.collector_reachable is False)
+                collector_name = collector_name_for_olt(olt)
+                reachable, detail = check_olt_reachability(olt)
                 if reachable:
                     mark_olt_reachable(olt)
                     if was_unreachable:
                         OLT.objects.filter(id=olt.id).update(next_poll_at=timezone.now())
                     reachable_count += 1
                 else:
-                    mark_olt_unreachable(olt, error=detail or "Zabbix reported OLT unreachable")
+                    mark_olt_unreachable(olt, error=detail or "Collector reported OLT unreachable")
                     unreachable_count += 1
+                    logger.warning(
+                        "scheduler: collector unreachable for OLT %s via %s (%s)",
+                        olt.id,
+                        collector_name,
+                        detail or "Collector reported OLT unreachable",
+                    )
             except Exception as exc:
                 mark_olt_unreachable(olt, error=str(exc)[:500])
                 unreachable_count += 1

@@ -43,8 +43,10 @@ class OLT(models.Model):
     """
     
     PROTOCOL_SNMP = 'snmp'
+    PROTOCOL_TELNET = 'telnet'
     PROTOCOL_CHOICES = [
         (PROTOCOL_SNMP, 'SNMP'),
+        (PROTOCOL_TELNET, 'Telnet'),
     ]
     
     name = models.CharField(max_length=100, unique=True, verbose_name='Nome')
@@ -55,6 +57,10 @@ class OLT(models.Model):
     snmp_port = models.IntegerField(default=161, verbose_name='Porta SNMP')
     snmp_community = models.CharField(max_length=100, verbose_name='Comunidade SNMP')
     snmp_version = models.CharField(max_length=10, default='v2c', choices=[('v2c', 'v2c'), ('v3', 'v3')], verbose_name='Versão SNMP')
+    telnet_port = models.IntegerField(default=23, verbose_name='Porta Telnet')
+    telnet_username = models.CharField(max_length=100, blank=True, default='', verbose_name='Usuário Telnet')
+    telnet_password = models.CharField(max_length=255, blank=True, default='', verbose_name='Senha Telnet')
+    blade_ips = models.JSONField(null=True, blank=True, default=None, verbose_name='IPs das Blades')
     unm_enabled = models.BooleanField(default=False, verbose_name='Integração UNM Ativada')
     unm_host = models.GenericIPAddressField(null=True, blank=True, verbose_name='Host do UNM')
     unm_port = models.PositiveIntegerField(default=3306, verbose_name='Porta do UNM')
@@ -93,10 +99,10 @@ class OLT(models.Model):
     last_power_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Coleta de Potência')
     next_power_at = models.DateTimeField(null=True, blank=True, verbose_name='Próxima Coleta de Potência')
 
-    snmp_reachable = models.BooleanField(null=True, blank=True, verbose_name='SNMP Acessível')
-    last_snmp_check_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Verificação SNMP')
-    last_snmp_error = models.TextField(blank=True, default='', verbose_name='Último Erro SNMP')
-    snmp_failure_count = models.IntegerField(default=0, verbose_name='Falhas SNMP Consecutivas')
+    collector_reachable = models.BooleanField(null=True, blank=True, verbose_name='Coletor Acessível')
+    last_collector_check_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Verificação do Coletor')
+    last_collector_error = models.TextField(blank=True, default='', verbose_name='Último Erro do Coletor')
+    collector_failure_count = models.IntegerField(default=0, verbose_name='Falhas Consecutivas do Coletor')
 
     cached_slot_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='Slots Ativos (Cache)')
     cached_pon_count = models.PositiveIntegerField(null=True, blank=True, verbose_name='PONs Ativas (Cache)')
@@ -109,10 +115,17 @@ class OLT(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Atualizado em')
     
+    def get_blade_ips(self):
+        if self.blade_ips and isinstance(self.blade_ips, list):
+            filtered = [ip for ip in self.blade_ips if ip and str(ip).strip()]
+            if filtered:
+                return filtered
+        return [str(self.ip_address)]
+
     def __str__(self):
         vendor = (self.vendor_profile.vendor or '').upper()
         return f"{self.name} ({vendor} {self.vendor_profile.model_name})"
-    
+
     class Meta:
         verbose_name = 'OLT'
         verbose_name_plural = 'OLTs'

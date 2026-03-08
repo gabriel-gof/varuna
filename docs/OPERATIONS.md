@@ -111,6 +111,7 @@ Template import workflow:
   - `OLT ZTE C300`
   - `OLT ZTE C600`
   - `OLT VSOL GPON 8P`
+- FIT `FNCS4000` does not use a Zabbix template. It is configured in Varuna as a Telnet-backed OLT with mandatory Telnet username/password.
 - Varuna controls Zabbix collection cadence through host macros pushed on OLT create/update:
   - `{$VARUNA.DISCOVERY_INTERVAL}`
   - `{$VARUNA.STATUS_INTERVAL}`
@@ -130,7 +131,8 @@ Template import workflow:
   - The C600 ONU name OID is still `1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`; if the OLT returns `""`, treat the ONU as nameless rather than substituting numeric placeholders.
   - C600 serial payloads may include numeric prefixes such as `1,<serial>`; template preprocessing should strip the prefix before Varuna discovery/polling runs.
 - Template default macro values are bootstrap-only (`5m`, `1m`, `5m`, `30s`, `7d`) and are overridden per OLT by Varuna settings.
-- Varuna ONU LLD rules in both Huawei and Fiberhome templates are configured with immediate lost-resource cleanup (`Delete lost resources = Immediately`) so stale ONU item prototypes are removed as soon as discovery no longer returns them.
+- Varuna ONU LLD rules in all production ONU templates (`fiberhome-template.yaml`, `huawei-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`) are configured with immediate lost-resource cleanup (`Delete lost resources = Immediately` / `lifetime_type: DELETE_IMMEDIATELY`) so stale ONU item prototypes are removed as soon as discovery no longer returns them.
+- FIT `FNCS4000` is Telnet-based (no Zabbix LLD), but follows the same policy in Varuna runtime/vendor profile discovery config: `deactivate_missing=true`, `disable_lost_after_minutes=0`, `delete_lost_after_minutes=10080`.
 - On OLT create/update, Varuna also synchronizes Zabbix host runtime fields:
   - auto-create missing Zabbix host with vendor template + shared `Varuna SNMP Availability` linkage when possible,
   - host group membership to `ZABBIX_HOST_GROUP_NAME` (legacy names from `ZABBIX_HOST_GROUP_LEGACY_NAMES` are migrated automatically),
@@ -142,6 +144,17 @@ Template import workflow:
 - On OLT delete in Varuna, backend attempts `host.delete` in Zabbix for the resolved host.
 - Zabbix host resolution is self-healing across host recreation: stale cached host IDs are validated and re-resolved by host name/IP automatically.
 - Huawei and Fiberhome vendor profiles are standardized to model `UNIFICADO`; host tag `model` is synced as lowercase `unified` (English normalization in Zabbix).
+- FIT `FNCS4000` operational notes:
+  - fixed EPON interfaces `0/1..0/4`;
+  - Telnet sessions land on `EPON>` and require an `enable` step before collector commands;
+  - discovery reads all configured interfaces from Telnet CLI (`show onu info epon 0/x all`) and keeps only authorized ONUs (`Active` column);
+  - routine status polling keeps Telnet reads scoped to interfaces that currently have active ONUs, reducing poll time on sparse blades;
+  - firmware output can differ per blade: some `show onu info` tables include `Uptime`, others stop at `Active`. Varuna accepts both formats, so a rediscovery should repopulate previously missed ONUs instead of leaving a blade empty;
+  - long `show onu info` output paginates with `--- Enter Key To Continue ----`, so failed discovery on this vendor often points to pager/login handling instead of missing ONUs;
+  - multi-blade failures are surfaced with blade IP context (`Blade <ip>: ...`) in `last_collector_error`, `collector_check`/`snmp_check`, and maintenance output so operators can isolate which blade session is failing;
+  - if status polling returns an empty FIT snapshot after successful Telnet login, Varuna reports polling failure but keeps collector reachability healthy; check `last_poll_at` staleness before treating the OLT as unreachable;
+  - power is per-ONU only (`show onu optical-ddm epon 0/x <onu_id>`) and skips ONU IDs above `64`;
+  - no OLT RX power and no vendor-specific disconnect-reason history.
 - Trends are disabled in Varuna templates (`trends=0`) to reduce Zabbix storage overhead.
 - Item history in Varuna templates is driven by `{$VARUNA.HISTORY_DAYS}` (default `7d`) for ONU status and power metrics.
 - ONU item prototypes include `slot` and `pon` tags (`slot={#SLOT}`, `pon={#PON}`) for direct slot/PON filtering in Zabbix item views.
@@ -401,7 +414,7 @@ rm -f backend/db.sqlite3 backend/varuna_dev
 backend/venv/bin/python backend/manage.py migrate
 ```
 
-Topology endpoint fails with DB column errors (example: missing `snmp_reachable` or `is_active`):
+Topology endpoint fails with DB column errors (example: missing `collector_reachable` or `is_active`):
 ```bash
 cd /Users/gabriel/Documents/varuna
 backend/venv/bin/python backend/manage.py migrate
@@ -556,7 +569,8 @@ Response includes active/latest job metadata:
 - `progress`: `0..100`
 - `detail`, `output`, `error`
 
-If queued jobs are present, backend API calls that touch maintenance status (`maintenance_status`, `snmp_check`) automatically ensure the in-process runner is active.
+If queued jobs are present, backend API calls that touch maintenance status (`maintenance_status`, `collector_check`, `snmp_check`) automatically ensure the in-process runner is active.
+Discovery/polling maintenance jobs now flip to `failed` when the collector run itself fails, even if the management command exited cleanly with failure text in stdout. Check `GET /api/olts/<OLT_ID>/maintenance_status/` after queued FIT actions instead of assuming `202 Accepted` means the collector succeeded.
 
 Timeout safety knobs (optional env overrides):
 - `MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS` (default `1800`)
@@ -593,8 +607,8 @@ tail -f artifacts/soak/<run-id>.jsonl
 
 What it checks:
 - topology list endpoint (`/api/olts/?include_topology=true`) every interval;
-- expected health state using frontend stale-window logic (`gray` on `snmp_failure_count>=2` or stale polling age);
-- consistency of SNMP health metadata between list and detail (`/api/olts/{id}/topology/`) on probe interval;
+- expected health state using frontend stale-window logic (`gray` when `collector_reachable=false` or polling age is stale);
+- consistency of collector health metadata between list and detail (`/api/olts/{id}/topology/`) on probe interval;
 - state transitions and anomaly counts over the full soak duration.
 
 ## Validation

@@ -76,8 +76,8 @@ The UI remains topology-first. No dashboard page is required for current product
 - Refresh periodically.
 - Production frontend Nginx preserves incoming `X-Forwarded-Proto` when proxying `/api` and `/admin` to backend so Django security middleware can correctly detect HTTPS behind host-level TLS termination.
 - In production compose, frontend also serves `/static` directly from shared volume mount `/var/www/static` (populated by backend `collectstatic`).
-- OLT SNMP reachability is derived from backend `snmp_reachable` and `snmp_failure_count` fields (no frontend-side SNMP checks). An OLT is shown as unreachable immediately when `snmp_reachable === false`.
-- Both topology list (`/api/olts/?include_topology=true`) and topology detail (`/api/olts/{id}/topology/`) payloads expose the same SNMP health fields so gray-state logic remains consistent on fallback loads.
+- OLT reachability is derived from backend `collector_reachable` / `collector_failure_count` (with legacy `snmp_*` aliases still accepted by the frontend helper). An OLT is shown as unreachable immediately when collector reachability is `false`.
+- Both topology list (`/api/olts/?include_topology=true`) and topology detail (`/api/olts/{id}/topology/`) payloads expose the same collector health fields so gray-state logic remains consistent on fallback loads.
 - Render unreachable or stale OLT nodes in gray.
 - Topology health colors follow the hierarchy contract from the live ONU rows, not only the reason buckets shown in the pills:
   - PON: any non-online ONU counts as offline for color, so a PON is red when all ONUs are non-online, yellow when online/offline are mixed, and green only when every ONU is online.
@@ -91,6 +91,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - normal cadence: 30s;
   - when any OLT is in gray state (unreachable/stale), cadence temporarily increases to 5s for faster visual recovery after connectivity returns.
 - Settings mutations (`updateOlt`, `deleteOlt`) trigger `fetchOlts` without `await`, so the success toast shows immediately and the topology refreshes silently in the background (same pattern as `createOlt`).
+- `include_topology=true` rows therefore carry the same FIT/Telnet settings shape used by the settings panel (`protocol`, `blade_ips`, `telnet_port`, `telnet_username`, password-configured flags, and collector health fields).
 - Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
 - Theme selection is persisted in `localStorage` (`varuna.theme`). On reload, the app restores the saved `light`/`dark` mode and reapplies the corresponding root `dark` class.
@@ -120,7 +121,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - OLT health color is shared between topology and settings views.
 - During bootstrap with lightweight OLT payloads (`/api/olts/` without topology tree), frontend avoids warning colors (`yellow`/`red`) from aggregate counts only; it keeps reachable OLTs green until full topology data arrives. This prevents transient false alarm flashes on hard refresh.
 - Stale status data is considered unreliable and forced to gray:
-  - if `last_poll_at` is missing, OLT remains gray (`status_stale`) even when SNMP sentinel is reachable.
+  - if `last_poll_at` is missing, OLT remains gray (`status_stale`) even when collector reachability is healthy.
   - if `now - last_poll_at > max(polling_interval_seconds * 3 + 90s, 390s)`.
   - OLT returns to active color only after fresh ONU status polling updates `last_poll_at`.
 - OLT color semantics follow slot health:
@@ -128,7 +129,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - `yellow` when at least one active slot is `red` but not all slots are `red`,
   - `green` when no active slot is `red`,
   - `neutral` only for transitional/no-topology fallback states,
-  - `gray` when SNMP is unreachable or status is stale.
+  - `gray` when the collector is unreachable or status is stale.
 - Slot color semantics follow PON health:
   - `red` when all active PONs are `red`,
   - `yellow` when at least one active PON is `red` but not all PONs are `red`,
@@ -160,7 +161,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - PON sidebar refresh is tab-aware and live-refresh capable:
   - `Status`: triggers `POST /api/onu/batch-status/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped status polling and return fresh rows.
   - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped power collection and return fresh rows.
-  - `refresh=true` paths request immediate Zabbix item execution before reading values, so manual PON refresh is near-real-time.
+  - `refresh=true` uses the active collector:
+    - Zabbix-backed vendors request immediate Zabbix item execution before reading values.
+    - FIT `FNCS4000` performs a direct Telnet read.
   - when collector connectivity is unavailable for targeted OLTs, scoped refresh endpoints return `503` with `detail`; frontend surfaces this as a contextual sidebar error instead of silently treating stale data as a successful refresh.
   - Both paths patch only the selected PON ONU rows in-memory (no forced full-topology reload on success).
   - OLT-wide maintenance actions (`run_polling` / `refresh_power`) remain available from settings for larger batch operations.
@@ -196,7 +199,11 @@ The UI remains topology-first. No dashboard page is required for current product
 - **Tabs inside expanded card**: `Device`, `Intervals`, and `Thresholds`.
 - Device tab uses a responsive grid (`grid-cols-2` on mobile, `grid-cols-3` on `lg+`):
   1. **Device row**: Name, Vendor, Model.
-  2. **Connection row**: IP, SNMP Community, Port.
+  2. **Connection row**:
+     - SNMP vendors: IP, SNMP Community, Port.
+     - Telnet vendors (FIT `FNCS4000`): Username, Password, Port (no standalone IP field; blade list is the source of management IPs).
+  3. **Blade IPs section** (Telnet vendors only, below connection row): always visible with at least one blade entry. Dynamic list of labeled IP inputs (`Blade N / Slot N`) with delete buttons (disabled on last remaining blade) and "Add Blade" button. Blade IPs are sent as a JSON array; `ip_address` is auto-derived from the first blade on save.
+  4. Topology renders only populated branches: PONs with no active ONUs and slots with no populated PONs are omitted, including FIT multi-blade OLTs.
 - UNM integration section (bottom of Device tab) uses a bordered card that changes border/bg color based on enabled state (emerald when enabled, slate when disabled). An `UnmToggle` switch component toggles the section; fields collapse/expand with a CSS grid-rows animation. When enabled on an existing OLT with a saved MNEID, a green pulsing dot appears next to the label. Field labels use short generic keys (`Host`, `Port`, `MNEID`, `Username`, `Password`) instead of `UNM`-prefixed labels.
 - Vendor and Model selects use a custom Radix `DropdownMenu` (`FieldSelect` component) matching the sort dropdown pattern from the topology view — portaled content, check indicator for selected item, emerald accent, keyboard navigation. Native `<select>` elements are not used.
 - In PT-BR UI, model labels for vendor profiles with `vendor=FIBERHOME` or `vendor=HUAWEI` are normalized to `UNIFICADO` in Settings cards/forms while keeping the underlying `vendor_profile` ID and backend `model_name` unchanged.
@@ -234,9 +241,10 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Settings API Contract Expectations
 - OLT removal from Settings maps to backend soft-deactivation (not hard delete), so removed OLTs disappear from active UI while history is preserved server-side.
 - Save actions can return explicit `400` validation errors for invalid runtime configuration (invalid intervals/ports, missing required fields).
+- Vendor profile payloads expose `default_protocol`, and the form uses that backend-declared protocol to choose SNMP vs Telnet fields.
 - Manual action buttons (`Run` for discovery/polling/power) can return explicit `400` errors when the vendor profile lacks required capabilities or OID templates.
 - Manual action buttons (`run_discovery`, `run_polling`, `refresh_power`) are acknowledged immediately by backend `202` responses when queued in background mode.
-- Frontend translates known backend errors through the i18n system; unknown messages pass through as-is for operator visibility.
+- Frontend translates known backend errors through the i18n system, including protocol-specific validation (`Unsupported protocol`, Telnet required fields, vendor-required protocol). Unknown messages pass through as-is for operator visibility.
 
 ## Power Threshold Coloring
 - Utility: `frontend/src/utils/powerThresholds.js`.
@@ -351,10 +359,9 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Frontend Health Tests
 - Deterministic unit coverage exists in `frontend/src/utils/oltHealth.test.js` (Node test runner).
 - Covered behaviors:
-  - gray on repeated SNMP failures (`snmp_failure_count >= 2`);
-  - transient failures are not immediately gray;
+  - gray immediately when collector reachability is explicitly `false` (`collector_reachable`, with `snmp_reachable` fallback);
   - stale polling data becomes gray by interval window;
-  - fresh SNMP sentinel alone does not clear stale gray when `last_poll_at` is stale/missing;
+  - fresh collector reachability alone does not clear stale gray when `last_poll_at` is stale/missing;
   - OLT leaves gray only after fresh ONU status polling (`last_poll_at` inside window).
 
 ## Power Report Tab

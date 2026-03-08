@@ -8,11 +8,16 @@ const BACKEND_MESSAGE_MAP = {
   'Vendor profile is missing required OID templates.': 'Vendor profile is missing required OID templates.',
   'Name cannot be empty.': 'Name cannot be empty.',
   'An active OLT with this name already exists.': 'An active OLT with this name already exists.',
+  'Unsupported protocol.': 'Unsupported protocol.',
   'Only SNMP protocol is supported.': 'Only SNMP protocol is supported.',
   'SNMP community cannot be empty.': 'SNMP community cannot be empty.',
   'SNMP port must be an integer.': 'SNMP port must be an integer.',
   'SNMP port must be between 1 and 65535.': 'SNMP port must be between 1 and 65535.',
   'Only SNMP v2c is currently supported.': 'Only SNMP v2c is currently supported.',
+  'Telnet username cannot be empty.': 'Telnet username cannot be empty.',
+  'Telnet password is required.': 'Telnet password is required.',
+  'Telnet port must be an integer.': 'Telnet port must be an integer.',
+  'Telnet port must be between 1 and 65535.': 'Telnet port must be between 1 and 65535.',
   'UNM host is required when UNM is enabled.': 'UNM host is required when UNM is enabled.',
   'UNM username is required when UNM is enabled.': 'UNM username is required when UNM is enabled.',
   'UNM password is required when UNM is enabled.': 'UNM password is required when UNM is enabled.',
@@ -37,6 +42,7 @@ const BACKEND_PREFIX_PATTERNS = [
   { prefix: 'Polling interval must be <=', key: 'Polling interval exceeds maximum' },
   { prefix: 'Power interval must be <=', key: 'Power interval exceeds maximum' },
   { prefix: 'Vendor profile does not support', key: 'Vendor profile does not support this action.' },
+  { prefix: 'This vendor profile requires ', key: 'This vendor profile requires {{protocol}} protocol.' },
 ]
 
 const BACKEND_REGEX_PATTERNS = [
@@ -99,7 +105,15 @@ export const translateBackendMessage = (message, t) => {
   if (exactKey) return t(exactKey)
 
   for (const { prefix, key } of BACKEND_PREFIX_PATTERNS) {
-    if (normalized.startsWith(prefix)) return t(key)
+    if (!normalized.startsWith(prefix)) continue
+    if (key === 'This vendor profile requires {{protocol}} protocol.') {
+      const protocol = normalized
+        .slice(prefix.length)
+        .replace(/\s+protocol\.?$/i, '')
+        .trim()
+      return t(key, { protocol })
+    }
+    return t(key)
   }
 
   for (const { regex, translate } of BACKEND_REGEX_PATTERNS) {

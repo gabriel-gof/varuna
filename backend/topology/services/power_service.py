@@ -1,5 +1,5 @@
 """
-ONU power collection service (Zabbix-backed).
+ONU power collection service.
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from django.conf import settings
 
 from topology.models import ONU
+from topology.services.fit_collector_service import fit_collector_service
 from topology.services.power_values import normalize_power_value
+from topology.services.vendor_profile import COLLECTOR_TYPE_FIT_TELNET, get_collector_type
 from topology.services.zabbix_service import zabbix_service
 
 
@@ -71,6 +73,47 @@ class PowerService:
             deduped.append(key)
         return deduped
 
+    def _refresh_for_olt_fit(
+        self,
+        olt_onus: List[ONU],
+        *,
+        results: Dict[int, Dict],
+        metrics: Dict[str, int],
+    ) -> None:
+        olt = olt_onus[0].olt
+        eligible_onus: List[ONU] = []
+
+        for onu in olt_onus:
+            if int(getattr(onu, "onu_id", 0) or 0) > 64:
+                metrics["skipped_unsupported"] = int(metrics.get("skipped_unsupported", 0) or 0) + 1
+                results[onu.id] = self._build_empty_payload(onu, skipped_reason="unsupported_onu_id")
+                continue
+            eligible_onus.append(onu)
+
+        if not eligible_onus:
+            logger.warning(
+                "Power refresh OLT %s: no FIT ONUs eligible for optical DDM (active=%s, online=%s, skipped_unsupported=%s).",
+                olt.id,
+                metrics.get("total_active", len(olt_onus)),
+                metrics.get("online", 0),
+                metrics.get("skipped_unsupported", 0),
+            )
+            return
+
+        fit_map = fit_collector_service.fetch_power_for_onus(olt, eligible_onus)
+        for onu in eligible_onus:
+            results[onu.id] = fit_map.get(onu.id) or self._build_empty_payload(onu)
+
+        logger.info(
+            "Power refresh OLT %s: collected FIT ONU RX values (active=%s, online=%s, skipped_offline=%s, skipped_unknown=%s, skipped_unsupported=%s).",
+            olt.id,
+            metrics.get("total_active", len(olt_onus)),
+            metrics.get("online", len(eligible_onus)),
+            metrics.get("skipped_offline", 0),
+            metrics.get("skipped_unknown", 0),
+            metrics.get("skipped_unsupported", 0),
+        )
+
     def refresh_for_onus(
         self,
         onus: Iterable[ONU],
@@ -79,7 +122,7 @@ class PowerService:
         refresh_upstream: bool = False,
         force_upstream: bool = False,
     ) -> Dict[int, Dict]:
-        base_onus = [onu for onu in onus if onu and onu.olt_id and onu.snmp_index and onu.is_active]
+        base_onus = [onu for onu in onus if onu and onu.olt_id and onu.is_active]
         if not base_onus:
             return {}
 
@@ -95,6 +138,7 @@ class PowerService:
                 "skipped_offline": 0,
                 "skipped_unknown": 0,
                 "skipped_not_online": 0,
+                "skipped_unsupported": 0,
             }
         )
 
@@ -138,6 +182,13 @@ class PowerService:
         for olt_onus in grouped.values():
             olt = olt_onus[0].olt
             metrics = counters_by_olt.get(olt.id, {})
+            if get_collector_type(olt) == COLLECTOR_TYPE_FIT_TELNET:
+                self._refresh_for_olt_fit(
+                    olt_onus,
+                    results=results,
+                    metrics=metrics,
+                )
+                continue
             refresh_requested_epoch: Optional[int] = None
             refresh_clock_grace_seconds = int(
                 getattr(settings, "ZABBIX_REFRESH_CLOCK_GRACE_SECONDS", 15) or 15
@@ -165,8 +216,13 @@ class PowerService:
             for onu in olt_onus:
                 normalized_index = str(getattr(onu, "snmp_index", "") or "").strip(".")
                 if not normalized_index:
+                    results[onu.id] = self._build_empty_payload(onu)
                     continue
                 index_to_onu[normalized_index] = onu
+
+            if not index_to_onu:
+                logger.warning("Power refresh OLT %s: no Zabbix topology indexes available for eligible ONUs.", olt.id)
+                continue
 
             should_refresh_upstream = bool(refresh_upstream)
             if refresh_upstream and len(index_to_onu) > refresh_upstream_max_items and not force_upstream:

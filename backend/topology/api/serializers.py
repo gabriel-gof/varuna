@@ -6,6 +6,7 @@ from rest_framework import serializers
 from topology.models import OLTPON, OLT, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
 from topology.services.history_service import get_latest_power_snapshot_map
 from topology.services.power_values import normalize_power_value
+from topology.services.vendor_profile import get_default_protocol, supports_olt_rx_power
 
 
 def _live_count(fallback_fn):
@@ -24,6 +25,7 @@ class VendorProfileSerializer(serializers.ModelSerializer):
     Serializer for VendorProfile
     """
     supports_olt_rx_power = serializers.SerializerMethodField()
+    default_protocol = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorProfile
@@ -37,12 +39,15 @@ class VendorProfileSerializer(serializers.ModelSerializer):
             'supports_power_monitoring',
             'supports_disconnect_reason',
             'supports_olt_rx_power',
+            'default_protocol',
         ]
         read_only_fields = ['id']
 
     def get_supports_olt_rx_power(self, obj):
-        power_cfg = ((obj.oid_templates or {}).get('power', {}))
-        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+        return supports_olt_rx_power(obj)
+
+    def get_default_protocol(self, obj):
+        return get_default_protocol(obj)
 
 
 # ============================================
@@ -103,8 +108,7 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         return get_latest_power_snapshot_map([obj.id]).get(obj.id) or {}
 
     def _supports_olt_rx_power(self, obj):
-        power_cfg = ((obj.olt.vendor_profile.oid_templates or {}).get('power', {}))
-        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+        return supports_olt_rx_power(obj.olt)
 
     @staticmethod
     def _as_iso(value):
@@ -269,6 +273,14 @@ class OLTTopologySerializer(serializers.ModelSerializer):
 
     vendor_profile_name = serializers.CharField(source='vendor_profile.model_name', read_only=True)
     vendor_display = serializers.SerializerMethodField()
+    collector_reachable = serializers.BooleanField(read_only=True)
+    last_collector_check_at = serializers.DateTimeField(read_only=True)
+    last_collector_error = serializers.CharField(read_only=True)
+    collector_failure_count = serializers.IntegerField(read_only=True)
+    snmp_reachable = serializers.BooleanField(source='collector_reachable', read_only=True)
+    last_snmp_check_at = serializers.DateTimeField(source='last_collector_check_at', read_only=True)
+    last_snmp_error = serializers.CharField(source='last_collector_error', read_only=True)
+    snmp_failure_count = serializers.IntegerField(source='collector_failure_count', read_only=True)
     slots = SlotNestedSerializer(many=True, read_only=True)
     slot_count = serializers.SerializerMethodField()
     pon_count = serializers.SerializerMethodField()
@@ -289,6 +301,10 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'snmp_port',
             'snmp_community',
             'snmp_version',
+            'collector_reachable',
+            'last_collector_check_at',
+            'last_collector_error',
+            'collector_failure_count',
             'snmp_reachable',
             'last_snmp_check_at',
             'last_snmp_error',
@@ -301,6 +317,10 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'last_discovery_at',
             'last_poll_at',
             'last_power_at',
+            'protocol',
+            'telnet_port',
+            'telnet_username',
+            'blade_ips',
             'slots',
             'slot_count',
             'pon_count',
@@ -315,6 +335,10 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'last_discovery_at',
             'last_poll_at',
             'last_power_at',
+            'collector_reachable',
+            'last_collector_check_at',
+            'last_collector_error',
+            'collector_failure_count',
             'snmp_reachable',
             'last_snmp_check_at',
             'last_snmp_error',
@@ -361,8 +385,7 @@ class OLTTopologySerializer(serializers.ModelSerializer):
         )
 
     def get_supports_olt_rx_power(self, obj):
-        power_cfg = ((obj.vendor_profile.oid_templates or {}).get('power', {}))
-        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+        return supports_olt_rx_power(obj)
 
 
 # ============================================
@@ -379,6 +402,29 @@ class OLTSerializer(serializers.ModelSerializer):
     MAX_POWER_INTERVAL_SECONDS = 7 * 24 * 60 * 60
 
     name = serializers.CharField(max_length=100, trim_whitespace=True)
+    protocol = serializers.CharField(required=False, allow_blank=True)
+    snmp_community = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+    snmp_port = serializers.IntegerField(required=False)
+    snmp_version = serializers.CharField(required=False, allow_blank=True)
+    telnet_port = serializers.IntegerField(required=False)
+    telnet_username = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=True,
+    )
+    telnet_password = serializers.CharField(
+        max_length=255,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+        write_only=True,
+    )
+    telnet_password_configured = serializers.SerializerMethodField()
+    blade_ips = serializers.JSONField(required=False, allow_null=True, default=None)
     unm_password = serializers.CharField(
         max_length=255,
         required=False,
@@ -393,6 +439,14 @@ class OLTSerializer(serializers.ModelSerializer):
     vendor_display = serializers.SerializerMethodField()
     model_display = serializers.CharField(source='vendor_profile.model_name', read_only=True)
     vendor_profile_name = serializers.CharField(source='vendor_profile.model_name', read_only=True)
+    collector_reachable = serializers.BooleanField(read_only=True)
+    last_collector_check_at = serializers.DateTimeField(read_only=True)
+    last_collector_error = serializers.CharField(read_only=True)
+    collector_failure_count = serializers.IntegerField(read_only=True)
+    snmp_reachable = serializers.BooleanField(source='collector_reachable', read_only=True)
+    last_snmp_check_at = serializers.DateTimeField(source='last_collector_check_at', read_only=True)
+    last_snmp_error = serializers.CharField(source='last_collector_error', read_only=True)
+    snmp_failure_count = serializers.IntegerField(source='collector_failure_count', read_only=True)
     slot_count = serializers.SerializerMethodField()
     pon_count = serializers.SerializerMethodField()
     onu_count = serializers.SerializerMethodField()
@@ -414,6 +468,11 @@ class OLTSerializer(serializers.ModelSerializer):
             'snmp_port',
             'snmp_community',
             'snmp_version',
+            'telnet_port',
+            'telnet_username',
+            'telnet_password',
+            'telnet_password_configured',
+            'blade_ips',
             'unm_enabled',
             'unm_host',
             'unm_port',
@@ -421,6 +480,10 @@ class OLTSerializer(serializers.ModelSerializer):
             'unm_password',
             'unm_password_configured',
             'unm_mneid',
+            'collector_reachable',
+            'last_collector_check_at',
+            'last_collector_error',
+            'collector_failure_count',
             'snmp_reachable',
             'last_snmp_check_at',
             'last_snmp_error',
@@ -457,6 +520,10 @@ class OLTSerializer(serializers.ModelSerializer):
             'next_poll_at',
             'last_power_at',
             'next_power_at',
+            'collector_reachable',
+            'last_collector_check_at',
+            'last_collector_error',
+            'collector_failure_count',
             'snmp_reachable',
             'last_snmp_check_at',
             'last_snmp_error',
@@ -515,11 +582,22 @@ class OLTSerializer(serializers.ModelSerializer):
         )
 
     def get_supports_olt_rx_power(self, obj):
-        power_cfg = ((obj.vendor_profile.oid_templates or {}).get('power', {}))
-        return bool(str(power_cfg.get('olt_rx_oid') or '').strip('.'))
+        return supports_olt_rx_power(obj)
+
+    def get_telnet_password_configured(self, obj):
+        return bool(str(obj.telnet_password or '').strip())
 
     def get_unm_password_configured(self, obj):
         return bool(str(obj.unm_password or '').strip())
+
+    @staticmethod
+    def _preserve_password(attrs, instance, field_name):
+        incoming = attrs.get(field_name, serializers.empty)
+        if incoming is serializers.empty:
+            return str(getattr(instance, field_name, '') or '')
+        if instance is not None and not str(incoming or '').strip():
+            return str(getattr(instance, field_name, '') or '')
+        return str(incoming or '')
 
     def validate_name(self, value):
         name = str(value or '').strip()
@@ -534,15 +612,14 @@ class OLTSerializer(serializers.ModelSerializer):
         return name
 
     def validate_protocol(self, value):
-        if value != OLT.PROTOCOL_SNMP:
-            raise serializers.ValidationError('Only SNMP protocol is supported.')
-        return value
+        protocol = str(value or '').strip().lower()
+        valid_protocols = {choice[0] for choice in OLT.PROTOCOL_CHOICES}
+        if protocol not in valid_protocols:
+            raise serializers.ValidationError('Unsupported protocol.')
+        return protocol
 
     def validate_snmp_community(self, value):
-        community = str(value or '').strip()
-        if not community:
-            raise serializers.ValidationError('SNMP community cannot be empty.')
-        return community
+        return str(value or '').strip()
 
     def validate_snmp_port(self, value):
         try:
@@ -558,6 +635,18 @@ class OLTSerializer(serializers.ModelSerializer):
         if version != 'v2c':
             raise serializers.ValidationError('Only SNMP v2c is currently supported.')
         return version
+
+    def validate_telnet_port(self, value):
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Telnet port must be an integer.')
+        if port < 1 or port > 65535:
+            raise serializers.ValidationError('Telnet port must be between 1 and 65535.')
+        return port
+
+    def validate_telnet_username(self, value):
+        return str(value or '').strip()
 
     def validate_unm_port(self, value):
         if value in (None, ''):
@@ -586,27 +675,81 @@ class OLTSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('history_days must be between 7 and 30.')
         return value
 
+    def validate_blade_ips(self, value):
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise serializers.ValidationError('blade_ips must be a list of IP addresses.')
+        import ipaddress
+        cleaned = []
+        for entry in value:
+            ip_str = str(entry or '').strip()
+            if not ip_str:
+                continue
+            try:
+                ipaddress.ip_address(ip_str)
+            except ValueError:
+                raise serializers.ValidationError(f'Invalid IP address: {ip_str}')
+            cleaned.append(ip_str)
+        return cleaned if cleaned else None
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         if not self.instance:
             attrs = self._apply_vendor_defaults(attrs)
 
         instance = self.instance
-        unm_enabled = bool(attrs.get('unm_enabled', getattr(instance, 'unm_enabled', False)))
-        incoming_unm_password = attrs.get('unm_password', serializers.empty)
-        if incoming_unm_password is serializers.empty:
-            effective_unm_password = str(getattr(instance, 'unm_password', '') or '')
-        elif instance is not None and not str(incoming_unm_password or '').strip():
-            effective_unm_password = str(getattr(instance, 'unm_password', '') or '')
-        else:
-            effective_unm_password = str(incoming_unm_password or '')
+        vendor_profile = attrs.get('vendor_profile', getattr(instance, 'vendor_profile', None))
+        expected_protocol = get_default_protocol(vendor_profile) if vendor_profile else OLT.PROTOCOL_SNMP
+        protocol = str(
+            attrs.get('protocol', getattr(instance, 'protocol', expected_protocol) or expected_protocol)
+        ).strip().lower()
+        if protocol != expected_protocol:
+            raise serializers.ValidationError(
+                {'protocol': f'This vendor profile requires {expected_protocol.upper()} protocol.'}
+            )
+        attrs['protocol'] = protocol
 
+        effective_telnet_password = self._preserve_password(attrs, instance, 'telnet_password')
+        effective_unm_password = self._preserve_password(attrs, instance, 'unm_password')
+        effective_telnet_username = attrs.get('telnet_username', getattr(instance, 'telnet_username', ''))
         effective_unm_host = attrs.get('unm_host', getattr(instance, 'unm_host', None))
         effective_unm_username = attrs.get('unm_username', getattr(instance, 'unm_username', ''))
         effective_unm_mneid = attrs.get('unm_mneid', getattr(instance, 'unm_mneid', None))
 
+        validation_errors = {}
+        if protocol == OLT.PROTOCOL_SNMP:
+            effective_snmp_community = str(
+                attrs.get('snmp_community', getattr(instance, 'snmp_community', '')) or ''
+            ).strip()
+            if not effective_snmp_community:
+                validation_errors['snmp_community'] = 'SNMP community cannot be empty.'
+            attrs['snmp_community'] = effective_snmp_community
+            attrs['snmp_port'] = self.validate_snmp_port(
+                attrs.get('snmp_port', getattr(instance, 'snmp_port', 161))
+            )
+            attrs['snmp_version'] = self.validate_snmp_version(
+                attrs.get('snmp_version', getattr(instance, 'snmp_version', 'v2c'))
+            )
+            attrs.setdefault('telnet_port', getattr(instance, 'telnet_port', 23) or 23)
+            attrs.setdefault('telnet_username', getattr(instance, 'telnet_username', '') or '')
+        elif protocol == OLT.PROTOCOL_TELNET:
+            attrs['telnet_port'] = self.validate_telnet_port(
+                attrs.get('telnet_port', getattr(instance, 'telnet_port', 23))
+            )
+            attrs['telnet_username'] = self.validate_telnet_username(effective_telnet_username)
+            if not attrs['telnet_username']:
+                validation_errors['telnet_username'] = 'Telnet username cannot be empty.'
+            if not str(effective_telnet_password or '').strip():
+                validation_errors['telnet_password'] = 'Telnet password is required.'
+            attrs.setdefault('snmp_port', getattr(instance, 'snmp_port', 161) or 161)
+            attrs.setdefault('snmp_version', getattr(instance, 'snmp_version', 'v2c') or 'v2c')
+            attrs['snmp_community'] = str(
+                attrs.get('snmp_community', getattr(instance, 'snmp_community', '')) or ''
+            )
+
+        unm_enabled = bool(attrs.get('unm_enabled', getattr(instance, 'unm_enabled', False)))
         if unm_enabled:
-            validation_errors = {}
             if not str(effective_unm_host or '').strip():
                 validation_errors['unm_host'] = 'UNM host is required when UNM is enabled.'
             if not str(effective_unm_username or '').strip():
@@ -615,8 +758,12 @@ class OLTSerializer(serializers.ModelSerializer):
                 validation_errors['unm_password'] = 'UNM password is required when UNM is enabled.'
             if effective_unm_mneid in (None, ''):
                 validation_errors['unm_mneid'] = 'UNM MNEID is required when UNM is enabled.'
-            if validation_errors:
-                raise serializers.ValidationError(validation_errors)
+
+        if validation_errors:
+            raise serializers.ValidationError(validation_errors)
+
+        attrs['telnet_password'] = effective_telnet_password
+        attrs['unm_password'] = effective_unm_password
 
         discovery_interval = attrs.get(
             'discovery_interval_minutes',
@@ -637,20 +784,6 @@ class OLTSerializer(serializers.ModelSerializer):
             power_interval=power_interval,
         )
         return attrs
-
-    def create(self, validated_data):
-        unm_password = validated_data.pop('unm_password', '')
-        validated_data['unm_password'] = str(unm_password or '')
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        incoming_unm_password = validated_data.pop('unm_password', serializers.empty)
-        if incoming_unm_password is not serializers.empty:
-            if str(incoming_unm_password or '').strip():
-                validated_data['unm_password'] = str(incoming_unm_password)
-            else:
-                validated_data['unm_password'] = str(instance.unm_password or '')
-        return super().update(instance, validated_data)
 
     def _validate_interval_ranges(self, discovery_interval, polling_interval, power_interval):
         if discovery_interval is None or int(discovery_interval) <= 0:
@@ -697,6 +830,7 @@ class OLTSerializer(serializers.ModelSerializer):
         if vendor_profile and isinstance(vendor_profile.default_thresholds, dict):
             defaults_cfg = vendor_profile.default_thresholds
 
+        validated_data.setdefault('protocol', get_default_protocol(vendor_profile))
         if 'discovery_interval_minutes' not in validated_data:
             validated_data['discovery_interval_minutes'] = int(
                 defaults_cfg.get('discovery_interval_minutes', 240)
@@ -709,13 +843,18 @@ class OLTSerializer(serializers.ModelSerializer):
             validated_data['power_interval_seconds'] = int(
                 defaults_cfg.get('power_interval_seconds', 300)
             )
+        validated_data.setdefault('snmp_port', 161)
+        validated_data.setdefault('snmp_version', 'v2c')
+        validated_data.setdefault('snmp_community', 'public')
+        validated_data.setdefault('telnet_port', 23)
+        validated_data.setdefault('telnet_username', '')
         return validated_data
 
     def _reset_runtime_state(self, olt):
-        olt.snmp_reachable = None
-        olt.last_snmp_check_at = None
-        olt.last_snmp_error = ''
-        olt.snmp_failure_count = 0
+        olt.collector_reachable = None
+        olt.last_collector_check_at = None
+        olt.last_collector_error = ''
+        olt.collector_failure_count = 0
         olt.next_discovery_at = None
         olt.discovery_healthy = True
         olt.next_poll_at = None
@@ -728,10 +867,10 @@ class OLTSerializer(serializers.ModelSerializer):
         olt.cached_offline_count = None
         olt.cached_counts_at = None
         return {
-            'snmp_reachable',
-            'last_snmp_check_at',
-            'last_snmp_error',
-            'snmp_failure_count',
+            'collector_reachable',
+            'last_collector_check_at',
+            'last_collector_error',
+            'collector_failure_count',
             'next_discovery_at',
             'discovery_healthy',
             'next_poll_at',
@@ -766,6 +905,10 @@ class OLTSerializer(serializers.ModelSerializer):
             'snmp_port',
             'snmp_community',
             'snmp_version',
+            'telnet_port',
+            'telnet_username',
+            'telnet_password',
+            'blade_ips',
         }
         tracked_interval_fields = {
             'discovery_interval_minutes',

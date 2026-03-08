@@ -5,7 +5,8 @@
 - PostgreSQL
 - Redis
 - Collector backend:
-  - `zabbix` mode only: Zabbix API (`api_jsonrpc.php`) is the single collection source.
+  - `zabbix`: Zabbix API (`api_jsonrpc.php`) for standard SNMP/Zabbix-backed vendors.
+  - `fit_telnet`: direct backend Telnet CLI collector for `FIT / FNCS4000`.
 
 ## Naming and Boundaries
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
@@ -31,8 +32,10 @@
 - `backend/topology/api/auth_views.py`: auth endpoints (login, logout, me, change-password).
 - `backend/topology/api/auth_utils.py`: role resolution and permission helpers.
 - `backend/topology/services/zabbix_service.py`: Zabbix API integration (host lookup, item fetch, discovery/status/power reads).
+- `backend/topology/services/fit_collector_service.py`: FIT `FNCS4000` Telnet CLI collection (reachability, discovery/status rows, per-ONU power).
+- `backend/topology/services/collector_service.py`: collector-mode dispatcher (Zabbix vs FIT Telnet).
 - `backend/topology/services/vendor_profile.py`: vendor index/status parsing helpers.
-- `backend/topology/services/olt_health_service.py`: OLT SNMP health persistence.
+- `backend/topology/services/olt_health_service.py`: OLT collector health persistence.
 - `backend/topology/services/maintenance_runtime.py`: shared maintenance runtime helpers (status snapshot pre-checks + power collection payloads).
 - `backend/topology/services/maintenance_job_service.py`: persistent OLT maintenance queue/runner and progress lifecycle.
 - `backend/topology/services/history_service.py`: persistence helpers for ONU power history snapshots.
@@ -46,10 +49,12 @@
 
 ## Vendor Extensibility Contract
 Vendor behavior is controlled by `VendorProfile.oid_templates`:
+- `collector`: collector-mode metadata (`type`, fixed interface list, transport-specific hints).
 - `indexing`: how SNMP index maps to `(slot_id, pon_id, onu_id)`.
 - `status`: canonical status mapping metadata (`status_map`) kept for compatibility.
 - `power`: metadata used by report/signal contracts.
 - `zabbix`: key patterns used by the runtime collector:
+  - used only when `collector.type` resolves to `zabbix`
   - `discovery_item_key` (default `onuDiscovery`)
   - `availability_item_key` (default `varunaSnmpAvailability`)
   - `status_item_key_pattern` (default `onuStatusValue[{index}]`)
@@ -109,6 +114,7 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
   - ZTE C600/C620 ONU name OID remains `1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`. On nameless ONUs that branch legitimately returns an empty string; Varuna should keep the blank name instead of inventing a placeholder.
   - C600 serials can arrive comma-prefixed (for example `1,DD72E68F39E5`). Template preprocessing and backend discovery fallback normalize those rows to the real serial token and discard the numeric prefix.
   - Fiberhome can omit `reason_item_key_pattern` (empty string) because status values can directly encode offline reason (`link_loss` / `dying_gasp`) and Zabbix status parsing maps those to `status=offline` with canonical reason.
+  - FIT `FNCS4000` uses `collector.type=fit_telnet` plus a fixed EPON interface list (`0/1..0/4`); it does not require Zabbix key metadata.
 
 Default seed migrations:
 - `topology.0002_seed_zte_vendor_profile`: baseline `ZTE / C300`.
@@ -128,6 +134,8 @@ Default seed migrations:
 - `topology.0026_standardize_zabbix_template_names`: standardizes preferred Zabbix template names for Huawei/Fiberhome/ZTE/VSOL and keeps legacy aliases for compatibility.
 - `topology.0027_seed_zte_c600_profile`: seeds `ZTE / C600` with the C600/C620-specific status map and Zabbix template linkage (`OLT ZTE C600`).
 - `topology.0028_update_zte_c600_status_reason_map`: refines the seeded C600 map so Zabbix/Varuna distinguish `link_loss` and `dying_gasp` from generic offline rows.
+- `topology.0030_add_fit_telnet_support`: adds Telnet OLT fields and seeds `FIT / FNCS4000` with direct Telnet collection metadata and a slower default power interval (`1800s`).
+- `topology.0031_add_blade_ips_to_olt`: adds `OLT.blade_ips` JSONField for multi-blade chassis support (FIT FNCS4000).
 
 Parser supports:
 - regex-based index extraction,
@@ -139,10 +147,11 @@ Parser supports:
 
 ## OLT Availability State
 `OLT` now tracks runtime connectivity:
-- `snmp_reachable`
-- `last_snmp_check_at`
-- `last_snmp_error`
-- `snmp_failure_count`
+- `collector_reachable`
+- `last_collector_check_at`
+- `last_collector_error`
+- `collector_failure_count`
+- Legacy API compatibility aliases still expose the same values under `snmp_reachable`, `last_snmp_check_at`, `last_snmp_error`, and `snmp_failure_count`.
 - `polling_interval_seconds`
 - `power_interval_seconds`
 - `discovery_interval_minutes`
@@ -154,15 +163,15 @@ Parser supports:
   Exposed by `OLTSerializer` (read/write), validated by `validate_history_days`, and included in `alarm-clients` response per row.
 
 Updated from:
-- `snmp_check` API action,
+- `collector_check` API action (with legacy `snmp_check` alias),
 - discovery command,
 - polling command,
 - `run_scheduler` periodic collector checks.
-- connectivity state is overlaid at response time on cached topology payloads (no topology-cache flush required for pure runtime SNMP reachability updates).
+- connectivity state is overlaid at response time on cached topology payloads (no topology-cache flush required for pure runtime collector reachability updates).
 
-`snmp_check` is mode-aware:
-- endpoint name is kept for compatibility;
-- implementation is Zabbix-only and updates the same OLT health fields.
+`collector_check` is mode-aware:
+- implementation dispatches to the configured collector (Zabbix sentinel or FIT Telnet login) and updates the same OLT health fields.
+- `snmp_check` remains as a compatibility alias for older callers.
 
 ## Cached Topology Counters
 To remove repeated heavy aggregate queries from the configuration/topology APIs, topology counters are persisted on:
@@ -184,10 +193,16 @@ This keeps API responses consistent while making `/api/olts/` and `include_topol
 
 ## Settings API Guardrails
 The OLT configuration API now enforces strict runtime-safe validation:
-- `protocol` must be `snmp`.
-- `snmp_version` must be `v2c` (v3 credentials are not represented yet in the data model).
-- `snmp_port` must be in `[1, 65535]`.
-- `name` and `snmp_community` are normalized and cannot be empty.
+- `protocol` is vendor-driven:
+  - Zabbix-backed profiles require `snmp`.
+  - FIT `FNCS4000` requires `telnet`.
+- `snmp_version` must be `v2c` for SNMP/Zabbix-backed vendors (v3 credentials are not represented yet in the data model).
+- `snmp_port` and `telnet_port` must be in `[1, 65535]`.
+- `name` is normalized and cannot be empty.
+- SNMP vendors require non-empty `snmp_community`.
+- FIT `FNCS4000` requires non-empty `telnet_username` and `telnet_password`.
+- `blade_ips` (optional JSONField, list of IP strings): for multi-blade chassis OLTs, each blade IP maps to a separate telnet session/slot. Validated as a list of valid IPs; `null` or empty falls back to `[ip_address]`. Changing `blade_ips` resets runtime connectivity state.
+- Blank password updates preserve the currently stored Telnet/UNM secret instead of clearing it.
 - Intervals must be positive and bounded:
   - `discovery_interval_minutes` <= `10080` (7 days)
   - `polling_interval_seconds` <= `604800` (7 days)
@@ -199,15 +214,37 @@ Create semantics were also hardened:
 
 ## Collector Runtime
 - Direct backend SNMP polling/walk code was removed from runtime services and commands.
-- Discovery, status, and power refresh now run exclusively through Zabbix API reads.
-- Manual and scoped refresh paths can request immediate Zabbix execution (`task.create`) before reading values.
-- First-ever discovery (no ONUs exist yet) automatically triggers upstream Zabbix LLD execution (`refresh_upstream`) so newly created OLTs don't wait for the Zabbix LLD schedule.
-- Failed discovery retries in 2 minutes (not the full discovery interval) so transient LLD delays don't block topology for hours.
-- Empty discovery rows (Zabbix LLD not ready yet) no longer mark the OLT unreachable; reachability is determined solely by the collector sentinel check.
-- Discovery upstream refresh (`discover_onus --refresh-upstream`) uses a short retry window before failing empty:
+- Runtime is collector-aware:
+  - Zabbix vendors use Zabbix API reads for discovery, status, and power.
+  - FIT `FNCS4000` uses direct Telnet CLI reads for discovery/status and per-ONU power.
+- Manual and scoped refresh paths request immediate upstream execution only on Zabbix-backed vendors.
+- First-ever discovery (no ONUs exist yet) automatically triggers upstream Zabbix LLD execution (`refresh_upstream`) on Zabbix-backed vendors so newly created OLTs don't wait for the Zabbix LLD schedule.
+- Failed discovery retries in 2 minutes (not the full discovery interval) so transient upstream delays don't block topology for hours.
+- Empty discovery rows no longer mark the OLT unreachable; reachability is determined solely by the active collector check.
+- Zabbix discovery upstream refresh (`discover_onus --refresh-upstream`) uses a short retry window before failing empty:
   - `ZABBIX_DISCOVERY_REFRESH_WAIT_SECONDS` (default `15`)
   - `ZABBIX_DISCOVERY_REFRESH_WAIT_STEP_SECONDS` (default `2`)
   This reduces false "no ONUs discovered" results when Zabbix LLD item creation lags a few seconds after execution request.
+- FIT `FNCS4000` collector contract:
+  - discovery queries the configured EPON interfaces (`0/1..0/4` by default) on each blade IP, but only materializes slots/PONs that actually return ONUs. Empty branches are not kept active in topology.
+  - discovery keeps only **authorized** ONUs from FIT CLI rows (`Active` column); unauthorized rows are ignored and therefore do not keep PON/slot branches active.
+  - multi-blade: each blade IP opens a separate Telnet session; blade index+1 becomes `slot_id`. Slots are named `"Blade N"` when multi-blade and only appear when at least one ONU is discovered on that blade.
+  - `snmp_index` format: `"{slot_id}/{interface}:{onu_id}"` (e.g. `"2/0/3:7"`). Includes slot_id prefix to avoid UniqueConstraint collision across blades.
+  - discovery source: `show onu info epon 0/x all` on every configured interface;
+  - status polling source: `show onu info epon 0/x all` only for interfaces (PONs) that currently have active ONUs in Varuna topology, reducing routine polling latency;
+  - `show onu info` row parsing accepts both firmware formats seen in the field: rows with an `Uptime` column and rows that end immediately after the `Active` column;
+  - Telnet login reaches `EPON>` first and the collector must issue `enable` before command execution;
+  - `show onu info` output paginates with `--- Enter Key To Continue ----`, and the collector must advance that pager during reads;
+  - ONU identity: `OLT + slot_id + PON + ONU ID`;
+  - name comes from CLI when present and is allowed to stay blank;
+  - serial is unsupported;
+  - power source: `show onu optical-ddm epon 0/x <onu_id>` for online ONUs only; ONUs are grouped by slot_id and queried on the corresponding blade IP;
+  - ONU IDs above `64` are skipped as unsupported for power reads;
+  - only ONU RX is collected; OLT RX is always `null`;
+  - reachability check tests all blade IPs; any failure marks OLT unreachable;
+  - collector failures preserve blade context in error text (`Blade <ip>: ...`) for reachability, discovery, polling, and power reads so multi-blade faults are visible in `last_collector_error` and maintenance output;
+  - an empty FIT status snapshot after a successful Telnet session fails polling, but it does not mark the OLT unreachable; collector reachability stays `true` and `last_poll_at` remains stale until a usable snapshot lands;
+  - offline disconnect reason remains `unknown`.
 
 ## ONU Lifecycle
 `ONU.is_active` is used to keep history without polluting live topology.
@@ -264,6 +301,7 @@ Default global policy (any OLT/vendor profile):
 - Polling command output now includes `failed_chunks` and `missing_preserved` counters for operational visibility.
 - Polling command accepts optional `--max-olts <N>` to cap due OLTs processed in one run (oldest due first).
 - Successful/failed polling runs write directly to `ONU.status` and `ONULog`; topology/status read paths consume those persisted rows directly without a response-cache invalidation step.
+- FIT polling optimization: routine status polling scopes Telnet `show onu info` commands to only PONs that have active ONUs in the selected OLT/scope.
 
 ## OLT Deletion Contract
 `DELETE /api/olts/{id}/` is a soft-deactivation flow:
@@ -296,12 +334,13 @@ Background queue contract for OLT-scoped manual actions:
   - `enqueue_job()` creates a queued row and ensures a background runner is alive.
   - runner claims queued jobs with row locking and marks `status=running`.
   - completion/failure writes terminal status plus output/error, with `progress=100`.
+  - discovery/polling jobs do not trust command exit alone; after command execution the runner inspects the resulting OLT health state and marks the job `failed` when the collector/discovery actually failed.
 - Timeout and stale-job safety:
   - discovery and polling background jobs run in subprocesses with hard timeouts (`MAINTENANCE_DISCOVERY_TIMEOUT_SECONDS`, `MAINTENANCE_POLLING_TIMEOUT_SECONDS`) so blocked SNMP calls cannot stall the maintenance runner forever.
   - active `running` jobs older than the configured timeout window are auto-expired as `failed` during enqueue/status checks, unblocking new jobs for the same OLT.
   - timeout failures set job detail/error to explicit timeout guidance so operators can fix SNMP parameters and retry.
 - `GET /api/olts/{id}/maintenance_status/` returns active/latest job state for frontend progress polling.
-- Without `background=true`, actions keep synchronous behavior and return completion payloads (`200` or `500`) as before.
+- Without `background=true`, actions remain synchronous, but discovery/polling now return `503` when the collector run itself failed even if the management command exited normally.
 
 ## Authentication
 API uses Django REST Framework `TokenAuthentication`. All endpoints require authentication by default (`DEFAULT_PERMISSION_CLASSES = [IsAuthenticated]`).
@@ -331,7 +370,7 @@ Role resolution (`resolve_user_role`):
 
 Permission enforcement:
 - `VendorProfileViewSet` is `ReadOnlyModelViewSet` (no create/update/delete).
-- `OLTViewSet` guards `create`, `update`, `destroy`, and all maintenance actions (`run_discovery`, `run_polling`, `snmp_check`, `refresh_power`, `refresh_power_all`) with `can_modify_settings` (admin-only).
+- `OLTViewSet` guards `create`, `update`, `destroy`, and all maintenance actions (`run_discovery`, `run_polling`, `collector_check`/`snmp_check`, `refresh_power`, `refresh_power_all`) with `can_modify_settings` (admin-only).
 - PON `partial_update` (description editing) requires `can_operate_topology` (admin/operator).
 - ONU status/power endpoints keep snapshot reads available to all authenticated users, but `refresh=true` on single/scoped refresh actions requires `can_operate_topology` (admin/operator).
 - Successful PON description patch is reflected on the next topology read because topology responses are built directly from current DB rows.
@@ -370,7 +409,8 @@ Main endpoints:
 - `GET /api/olts/{id}/topology/`
 - `POST /api/olts/{id}/run_discovery/`
 - `POST /api/olts/{id}/run_polling/`
-- `POST /api/olts/{id}/snmp_check/`
+- `POST /api/olts/{id}/collector_check/`
+- `POST /api/olts/{id}/snmp_check/` (legacy alias)
 - `POST /api/olts/{id}/refresh_power/`
 - `GET /api/olts/{id}/maintenance_status/`
 - `POST /api/olts/refresh_power/`
@@ -397,22 +437,25 @@ Operational read paths now use a hybrid model: structure cache for slow-changing
   - TTL is controlled by `TOPOLOGY_STRUCTURE_CACHE_TTL` (default `43200` seconds).
   - Cache is invalidated on successful discovery, OLT create/update/delete/reactivation, and PON description edits.
   - Cache misses/corrupt entries/Redis outages fail open to live DB rebuilds; topology reads never hard-fail on cache availability.
+  - Only populated branches are materialized: PONs with `0` active ONUs and slots with `0` populated PONs are omitted from the payload for every collector type.
 - Topology power fields (`onu_rx_power`, `olt_rx_power`, `power_read_at`) stay present for payload compatibility but default to `null` in topology responses. The topology read path no longer loads full-tree power snapshots.
 - `GET /api/onu/{id}/power/` and `POST /api/onu/batch-power/` interpret `refresh=false` as "read the latest persisted `ONUPowerSample` from PostgreSQL". `refresh=true` still performs live Zabbix collection and persists the new samples.
 - `GET /api/onu/power-report/` remains uncached and reads from persisted `ONUPowerSample` data.
 - `GET /api/onu/{id}/alarm-history/` remains uncached and Zabbix-first for timelines, with local DB fallback (`ONULog` + `ONUPowerSample`) when Zabbix history is unavailable.
 
 `GET /api/olts/?include_topology=true` now also returns:
+- protocol/telnet settings needed by the settings panel (`protocol`, `blade_ips`, `telnet_port`, `telnet_username`, password-configured flags),
 - `discovery_interval_minutes`
 - `polling_interval_seconds`
 - `power_interval_seconds`
 - `last_power_at`
 - `next_power_at`
-- SNMP health metadata required for gray-state derivation on topology surfaces:
-  - `snmp_reachable`
-  - `last_snmp_check_at`
-  - `snmp_failure_count`
-  - `last_snmp_error`
+- collector health metadata required for gray-state derivation on topology surfaces:
+  - `collector_reachable`
+  - `last_collector_check_at`
+  - `collector_failure_count`
+  - `last_collector_error`
+  - legacy `snmp_*` aliases remain in the payload for compatibility
 - per-ONU disconnection window fields:
   - `disconnect_window_start`
   - `disconnect_window_end`
@@ -421,7 +464,7 @@ Operational read paths now use a hybrid model: structure cache for slow-changing
 
 These fields are used by the frontend for stale-data validation and interval-driven refresh behavior.
 
-`GET /api/olts/{id}/topology/` includes the same SNMP health metadata under `olt`, so fallback detail fetches and list fetches remain behaviorally consistent.
+`GET /api/olts/{id}/topology/` includes the same collector health metadata under `olt`, so fallback detail fetches and list fetches remain behaviorally consistent.
 
 Power refresh contract:
 - Power readings displayed in topology and report surfaces come from the latest persisted `ONUPowerSample`.
@@ -429,7 +472,7 @@ Power refresh contract:
 - `POST /api/olts/{id}/refresh_power/` refreshes one OLT collection cycle and updates `last_power_at`/`next_power_at`.
 - `POST /api/olts/refresh_power/` executes a full batch refresh across active OLTs and updates schedule fields per OLT.
 - Power collection is status-driven:
-  - if usable status snapshot is missing (`last_poll_at` absent, stale poll timestamp, `snmp_reachable=false`, or ONUs only `unknown`), backend runs `poll_onu_status` before collecting power;
+  - if usable status snapshot is missing (`last_poll_at` absent, stale poll timestamp, `collector_reachable=false`, or ONUs only `unknown`), backend runs `poll_onu_status` before collecting power;
   - the pre-power snapshot check uses the same stale-age rule as polling (`polling_interval_seconds * 3 + ZABBIX_STATUS_STALE_MARGIN_SECONDS`, with the 390-second minimum window);
   - only ONUs with `status=online` are queried for power through Zabbix item keys;
   - ONUs `offline`/`unknown` are intentionally skipped and returned with empty power values plus `skipped_reason`.
@@ -472,14 +515,14 @@ When `disconnect_reason_oid` is configured (Huawei), both status and disconnect 
 ## Backend Scheduler
 The `run_scheduler` management command (`backend/topology/management/commands/run_scheduler.py`) is a long-lived process that periodically dispatches:
 - **Collector reachability checks** (run first): every `--collector-check-seconds` (default `30s`), checks OLT availability from the dedicated Zabbix sentinel item and calls `mark_olt_reachable`/`mark_olt_unreachable`.
-  - checks are due-aware per OLT (`last_snmp_check_at`) and run with a fixed cadence to speed recovery detection when connectivity returns (no exponential backoff delay in runtime loop).
+  - checks are due-aware per OLT (`last_collector_check_at`) and run with a fixed cadence to speed recovery detection when connectivity returns (no exponential backoff delay in runtime loop).
   - reachability logic is sentinel-only:
     - uses `zabbix.availability_item_key` (default `varunaSnmpAvailability`);
     - item must be present, enabled, supported, and fresh (`lastclock` <= `ZABBIX_AVAILABILITY_STALE_SECONDS`, default `45s`);
     - stale sentinel clocks are fail-closed by default; Varuna can force an immediate sentinel execution (`task.create`) and re-check once for fast recovery.
   - scheduler emits per-cycle summary (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed time).
-- **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-discovery-olts-per-tick`.
-- **Polling**: `call_command('poll_onu_status')` — runs after discovery in the same tick, respects per-OLT `_is_due()` logic, skips OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`; supports scheduler cap `--max-poll-olts-per-tick`.
+- **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `collector_reachable=False` and `collector_failure_count >= 2`; supports scheduler cap `--max-discovery-olts-per-tick`.
+- **Polling**: `call_command('poll_onu_status')` — runs after discovery in the same tick, respects per-OLT `_is_due()` logic, skips OLTs with `collector_reachable=False` and `collector_failure_count >= 2`; supports scheduler cap `--max-poll-olts-per-tick`.
 - **Power collection**: checks `next_power_at` per OLT and collects via `power_service` for due OLTs; skips unreachable OLTs; supports scheduler cap `--max-power-olts-per-tick`.
 - **History prune**: `call_command('prune_history')` on scheduler interval (`--history-prune-seconds`, default from `HISTORY_PRUNE_INTERVAL_SECONDS`) to enforce retention windows.
 
@@ -564,7 +607,7 @@ Current tests validate:
 - vendor index/status mapping behavior,
 - discovery stale deactivation,
 - discovery partial walk guard (skips deactivation when walk returns too few ONUs),
-- discovery total index-parse failure guard (when all indices fail `parse_onu_index`, deactivation is skipped, `discovery_healthy` is set to `False`, and OLT stays `snmp_reachable` since collector read itself worked),
+- discovery total index-parse failure guard (when all indices fail `parse_onu_index`, deactivation is skipped, `discovery_healthy` is set to `False`, and OLT stays `collector_reachable` since collector read itself worked),
 - polling unreachable handling,
 - polling online/offline transition logs,
 - settings API validation guardrails,
@@ -592,7 +635,7 @@ Current tests validate:
 - polling disconnect reason second-pass (fetched for offline only, skipped for online, absent for ZTE),
 - scheduler power due logic (`_is_power_due`),
 - scheduler collector check reachable/unreachable paths,
-- scheduler collector check backoff due logic (`_is_snmp_check_due`),
+- scheduler collector check backoff due logic (`_is_collector_check_due`),
 - scheduler dispatches polling and discovery commands,
 - history/report APIs (`power-report`, `alarm-clients`, `alarm-history`) and `prune_history` retention behavior, alarm-history `start_date`/`end_date` date-range filtering and invalid-date fallback, Zabbix-timeline source selection (`source=zabbix|varuna`) and interval reconstruction,
 - serializer returns `unknown` disconnect reason for offline ONUs without active log,

@@ -8,10 +8,13 @@ from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from topology.api.auth_views import me_view
+from topology.api.serializers import VendorProfileSerializer
 from topology.api.views import OLTViewSet, OLTPONViewSet, ONUViewSet
-from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, ONUPowerSample, UserProfile, VendorProfile
+from topology.models import MaintenanceJob, OLT, OLTPON, OLTSlot, ONU, ONULog, ONUPowerSample, UserProfile, VendorProfile
 from topology.services.cache_service import cache_service
+from topology.services.fit_collector_service import FITCollectorError, _FITTelnetSession, fit_collector_service
 from topology.services.history_service import persist_power_samples
+from topology.services.maintenance_job_service import maintenance_job_service
 from topology.services.maintenance_runtime import collect_power_for_olt, has_usable_status_snapshot
 from topology.services.power_service import power_service
 from topology.services.zabbix_service import (
@@ -56,6 +59,24 @@ def _zabbix_vendor_templates():
     }
 
 
+class _FakeFITTelnet:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.writes = []
+        self.closed = False
+
+    def read_very_eager(self):
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+    def write(self, value):
+        self.writes.append(value)
+
+    def close(self):
+        self.closed = True
+
+
 class ZabbixModeTests(TestCase):
     def setUp(self):
         self.api_factory = APIRequestFactory()
@@ -87,6 +108,7 @@ class ZabbixModeTests(TestCase):
             power_interval_seconds=300,
             is_active=True,
         )
+        self.fit_vendor = VendorProfile.objects.get(vendor__iexact="FIT", model_name__iexact="FNCS4000")
 
     def _create_topology_onu(
         self,
@@ -127,6 +149,62 @@ class ZabbixModeTests(TestCase):
         )
         return slot, pon, onu
 
+    def _create_fit_olt(self, *, name="OLT-FIT-TEST", ip_address="192.168.100.4"):
+        return OLT.objects.create(
+            name=name,
+            vendor_profile=self.fit_vendor,
+            protocol="telnet",
+            ip_address=ip_address,
+            snmp_port=161,
+            snmp_community="public",
+            snmp_version="v2c",
+            telnet_port=23,
+            telnet_username="bifrost",
+            telnet_password="acaidosdeuses%gabisat",
+            discovery_enabled=True,
+            polling_enabled=True,
+            discovery_interval_minutes=60,
+            polling_interval_seconds=300,
+            power_interval_seconds=1800,
+            is_active=True,
+        )
+
+    def _create_fit_onu(
+        self,
+        fit_olt,
+        *,
+        pon_id=1,
+        onu_id=1,
+        status=ONU.STATUS_UNKNOWN,
+        name="",
+    ):
+        slot, _ = OLTSlot.objects.get_or_create(
+            olt=fit_olt,
+            slot_id=1,
+            slot_key="1",
+            defaults={"is_active": True},
+        )
+        pon, _ = OLTPON.objects.get_or_create(
+            olt=fit_olt,
+            slot=slot,
+            pon_id=pon_id,
+            pon_key=f"1/{pon_id}",
+            defaults={"is_active": True},
+        )
+        return ONU.objects.create(
+            olt=fit_olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=1,
+            pon_id=pon_id,
+            onu_id=onu_id,
+            snmp_index=f"0/{pon_id}:{onu_id}",
+            serial="",
+            name=name,
+            status=status,
+            is_active=True,
+        )
+
     def test_has_usable_status_snapshot_requires_fresh_reachable_data(self):
         ONU.objects.create(
             olt=self.olt,
@@ -140,22 +218,22 @@ class ZabbixModeTests(TestCase):
         )
 
         self.olt.last_poll_at = timezone.now() - timedelta(seconds=60)
-        self.olt.snmp_reachable = True
-        self.olt.save(update_fields=["last_poll_at", "snmp_reachable"])
+        self.olt.collector_reachable = True
+        self.olt.save(update_fields=["last_poll_at", "collector_reachable"])
         self.assertTrue(has_usable_status_snapshot(self.olt))
 
-        self.olt.snmp_reachable = False
-        self.olt.save(update_fields=["snmp_reachable"])
+        self.olt.collector_reachable = False
+        self.olt.save(update_fields=["collector_reachable"])
         self.assertFalse(has_usable_status_snapshot(self.olt))
 
-        self.olt.snmp_reachable = True
+        self.olt.collector_reachable = True
         self.olt.last_poll_at = timezone.now() - timedelta(minutes=8)
-        self.olt.save(update_fields=["snmp_reachable", "last_poll_at"])
+        self.olt.save(update_fields=["collector_reachable", "last_poll_at"])
         self.assertTrue(has_usable_status_snapshot(self.olt))
 
-        self.olt.snmp_reachable = True
+        self.olt.collector_reachable = True
         self.olt.last_poll_at = timezone.now() - timedelta(minutes=20)
-        self.olt.save(update_fields=["snmp_reachable", "last_poll_at"])
+        self.olt.save(update_fields=["collector_reachable", "last_poll_at"])
         self.assertFalse(has_usable_status_snapshot(self.olt))
 
     def test_seeded_zte_c600_profile_has_expected_status_map(self):
@@ -682,6 +760,361 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(self.olt.unm_mneid, 13172741)
         self.assertEqual(self.olt.unm_password, "existing-secret")
 
+    def test_seeded_fit_profile_exposes_telnet_defaults(self):
+        serializer = VendorProfileSerializer(instance=self.fit_vendor)
+        discovery_cfg = (self.fit_vendor.oid_templates or {}).get("discovery") or {}
+
+        self.assertEqual(serializer.data["vendor"], "FIT")
+        self.assertEqual(serializer.data["model_name"], "FNCS4000")
+        self.assertEqual(serializer.data["default_protocol"], "telnet")
+        self.assertFalse(serializer.data["supports_olt_rx_power"])
+        self.assertEqual((self.fit_vendor.oid_templates or {}).get("collector", {}).get("type"), "fit_telnet")
+        self.assertTrue(discovery_cfg.get("deactivate_missing"))
+        self.assertIn("disable_lost_after_minutes", discovery_cfg)
+        self.assertEqual(int(discovery_cfg.get("disable_lost_after_minutes") or 0), 0)
+        self.assertEqual(self.fit_vendor.default_thresholds.get("power_interval_seconds"), 1800)
+
+    def test_olt_create_requires_telnet_credentials_for_fit_vendor(self):
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-create",
+            password="admin-fit-create",
+            email="admin-fit-create@example.com",
+        )
+        request = self.api_factory.post(
+            "/api/olts/",
+            {
+                "name": "OLT-FIT-REQ",
+                "vendor_profile": self.fit_vendor.id,
+                "protocol": "telnet",
+                "ip_address": "192.168.100.10",
+                "telnet_port": 23,
+                "telnet_username": "",
+                "telnet_password": "",
+                "discovery_enabled": True,
+                "polling_enabled": True,
+                "discovery_interval_minutes": 60,
+                "polling_interval_seconds": 300,
+                "power_interval_seconds": 1800,
+                "history_days": 7,
+            },
+            format="json",
+        )
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"post": "create"})(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("telnet_username", response.data)
+        self.assertIn("telnet_password", response.data)
+
+    def test_olt_update_preserves_existing_telnet_password_when_not_resubmitted(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-PASSWORD")
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-update",
+            password="admin-fit-update",
+            email="admin-fit-update@example.com",
+        )
+        request = self.api_factory.patch(
+            f"/api/olts/{fit_olt.id}/",
+            {
+                "telnet_username": "new-bifrost",
+                "telnet_password": "",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"patch": "partial_update"})(request, pk=str(fit_olt.id))
+
+        self.assertEqual(response.status_code, 200)
+        fit_olt.refresh_from_db()
+        self.assertEqual(fit_olt.telnet_username, "new-bifrost")
+        self.assertEqual(fit_olt.telnet_password, "acaidosdeuses%gabisat")
+
+    @patch("topology.services.fit_collector_service.telnetlib.Telnet")
+    def test_fit_status_inventory_error_lists_each_failed_blade(self, telnet_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-BLADES")
+        fit_olt.blade_ips = ["192.168.100.2", "192.168.100.4"]
+        fit_olt.save(update_fields=["blade_ips"])
+        telnet_mock.side_effect = ConnectionRefusedError(111, "Connection refused")
+
+        with self.assertRaises(FITCollectorError) as ctx:
+            fit_collector_service.fetch_status_inventory(fit_olt)
+
+        self.assertIn("Blade 192.168.100.2:", str(ctx.exception))
+        self.assertIn("Blade 192.168.100.4:", str(ctx.exception))
+
+    def test_fit_parse_status_output_accepts_rows_with_and_without_uptime(self):
+        raw_output = """
+OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Active Uptime Name
+==============================================================================================
+0/1:1    70:b6:4f:a4:6a:68 Down   V5.0.8   0x741B 1  0  2    NA        V2.1   Yes
+0/1:2    58:d2:37:ea:f4:00 Up     V5.0.8   0x741B 1  0  2    NA        V2.1   Yes client-a
+0/2:1    58:d2:37:ea:da:00 Up     V5.0.8   0x741B 1  0  2    NA        V2.1   Yes 17H 22M 53S
+0/2:2    58:d2:37:ea:db:00 Down   V5.0.8   0x741B 1  0  2    NA        V2.1   Yes 1D 03H 04M 05S client-b
+"""
+
+        rows = fit_collector_service.parse_status_output(raw_output, slot_id=3)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "slot_id": 3,
+                    "pon_id": 1,
+                    "onu_id": 1,
+                    "interface": "0/1",
+                    "status": ONU.STATUS_OFFLINE,
+                    "name": "",
+                },
+                {
+                    "slot_id": 3,
+                    "pon_id": 1,
+                    "onu_id": 2,
+                    "interface": "0/1",
+                    "status": ONU.STATUS_ONLINE,
+                    "name": "client-a",
+                },
+                {
+                    "slot_id": 3,
+                    "pon_id": 2,
+                    "onu_id": 1,
+                    "interface": "0/2",
+                    "status": ONU.STATUS_ONLINE,
+                    "name": "",
+                },
+                {
+                    "slot_id": 3,
+                    "pon_id": 2,
+                    "onu_id": 2,
+                    "interface": "0/2",
+                    "status": ONU.STATUS_OFFLINE,
+                    "name": "client-b",
+                },
+            ],
+        )
+
+    def test_fit_parse_status_output_skips_unauthorized_onus(self):
+        raw_output = """
+OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Active Uptime Name
+==============================================================================================
+0/1:1    70:b6:4f:a4:6a:68 Down   V5.0.8   0x741B 1  0  2    NA        V2.1   Yes
+0/1:2    58:d2:37:ea:f4:00 Up     V5.0.8   0x741B 1  0  2    NA        V2.1   No
+0/2:1    58:d2:37:ea:da:00 Up     V5.0.8   0x741B 1  0  2    NA        V2.1   Nauth
+0/2:2    58:d2:37:ea:db:00 Down   V5.0.8   0x741B 1  0  2    NA        V2.1   Yes client-b
+"""
+
+        rows = fit_collector_service.parse_status_output(raw_output, slot_id=2)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "slot_id": 2,
+                    "pon_id": 1,
+                    "onu_id": 1,
+                    "interface": "0/1",
+                    "status": ONU.STATUS_OFFLINE,
+                    "name": "",
+                },
+                {
+                    "slot_id": 2,
+                    "pon_id": 2,
+                    "onu_id": 2,
+                    "interface": "0/2",
+                    "status": ONU.STATUS_OFFLINE,
+                    "name": "client-b",
+                },
+            ],
+        )
+
+    @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
+    def test_olt_list_include_topology_keeps_fit_telnet_config_and_hides_empty_branches(self, fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-LIST")
+        fit_olt.blade_ips = ["192.168.100.2", "192.168.100.4"]
+        fit_olt.save(update_fields=["blade_ips"])
+        fetch_status_inventory_mock.return_value = [
+            {
+                "slot_id": 1,
+                "pon_id": 1,
+                "onu_id": 7,
+                "interface": "0/1",
+                "status": ONU.STATUS_ONLINE,
+                "name": "",
+            },
+            {
+                "slot_id": 2,
+                "pon_id": 2,
+                "onu_id": 13,
+                "interface": "0/2",
+                "status": ONU.STATUS_ONLINE,
+                "name": "",
+            }
+        ]
+
+        call_command("discover_onus", olt_id=fit_olt.id, force=True)
+
+        request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(request, user=self.user)
+        response = OLTViewSet.as_view({"get": "list"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") if isinstance(response.data, dict) else response.data
+        fit_row = next((row for row in (rows or []) if row.get("id") == fit_olt.id), None)
+        self.assertIsNotNone(fit_row)
+        self.assertEqual(fit_row.get("protocol"), "telnet")
+        self.assertEqual(fit_row.get("blade_ips"), ["192.168.100.2", "192.168.100.4"])
+        self.assertEqual(fit_row.get("telnet_port"), 23)
+        self.assertEqual(fit_row.get("telnet_username"), "bifrost")
+        self.assertEqual(fit_row.get("slot_count"), 2)
+        self.assertEqual(fit_row.get("pon_count"), 2)
+        self.assertEqual([slot.get("slot_number") for slot in fit_row.get("slots", [])], [1, 2])
+
+        slot_one = next((slot for slot in fit_row.get("slots", []) if slot.get("slot_number") == 1), None)
+        slot_two = next((slot for slot in fit_row.get("slots", []) if slot.get("slot_number") == 2), None)
+        self.assertIsNotNone(slot_one)
+        self.assertIsNotNone(slot_two)
+        self.assertEqual(slot_one.get("pon_count"), 1)
+        self.assertEqual([pon.get("pon_number") for pon in slot_one.get("pons", [])], [1])
+        self.assertEqual(slot_two.get("pon_count"), 1)
+        self.assertEqual([pon.get("pon_number") for pon in slot_two.get("pons", [])], [2])
+
+    @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
+    def test_run_discovery_returns_503_for_fit_collector_failure(self, fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-DISCOVERY-ACTION")
+        fetch_status_inventory_mock.side_effect = FITCollectorError(
+            "Blade 192.168.100.2: Telnet connection failed: [Errno 111] Connection refused"
+        )
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-run-discovery",
+            password="admin-fit-run-discovery",
+            email="admin-fit-run-discovery@example.com",
+        )
+        request = self.api_factory.post(f"/api/olts/{fit_olt.id}/run_discovery/", {}, format="json")
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"post": "run_discovery"})(request, pk=str(fit_olt.id))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data.get("status"), "error")
+        self.assertIn("Blade 192.168.100.2:", response.data.get("detail", ""))
+
+    @patch("topology.management.commands.poll_onu_status.fit_collector_service.fetch_status_inventory_for_interfaces")
+    def test_run_polling_returns_503_for_fit_collector_failure(self, fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-POLL-ACTION")
+        self._create_fit_onu(fit_olt, pon_id=2, onu_id=13, status=ONU.STATUS_UNKNOWN)
+        fetch_status_inventory_mock.side_effect = FITCollectorError(
+            "Blade 192.168.100.2: Telnet connection failed: [Errno 111] Connection refused"
+        )
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-run-polling",
+            password="admin-fit-run-polling",
+            email="admin-fit-run-polling@example.com",
+        )
+        request = self.api_factory.post(f"/api/olts/{fit_olt.id}/run_polling/", {}, format="json")
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"post": "run_polling"})(request, pk=str(fit_olt.id))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data.get("status"), "error")
+        self.assertIn("Blade 192.168.100.2:", response.data.get("detail", ""))
+
+    @patch(
+        "topology.management.commands.poll_onu_status.fit_collector_service.fetch_status_inventory_for_interfaces",
+        return_value=[],
+    )
+    def test_run_polling_returns_503_for_fit_empty_status_snapshot_without_marking_unreachable(self, _fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-POLL-EMPTY")
+        self._create_fit_onu(fit_olt, pon_id=2, onu_id=13, status=ONU.STATUS_UNKNOWN)
+        fit_olt.collector_reachable = False
+        fit_olt.collector_failure_count = 2
+        fit_olt.last_collector_error = "previous collector failure"
+        fit_olt.save(
+            update_fields=["collector_reachable", "collector_failure_count", "last_collector_error"]
+        )
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-run-polling-empty",
+            password="admin-fit-run-polling-empty",
+            email="admin-fit-run-polling-empty@example.com",
+        )
+        request = self.api_factory.post(f"/api/olts/{fit_olt.id}/run_polling/", {}, format="json")
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"post": "run_polling"})(request, pk=str(fit_olt.id))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data.get("status"), "error")
+        self.assertIn("no status data returned", response.data.get("detail", "").lower())
+
+        fit_olt.refresh_from_db()
+        self.assertTrue(fit_olt.collector_reachable)
+        self.assertEqual(fit_olt.collector_failure_count, 0)
+        self.assertEqual((fit_olt.last_collector_error or "").strip(), "")
+
+    def test_maintenance_job_marks_fit_discovery_failure_as_failed(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-DISCOVERY-JOB")
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-discovery-job",
+            password="admin-fit-discovery-job",
+            email="admin-fit-discovery-job@example.com",
+        )
+        job = MaintenanceJob.objects.create(
+            olt=fit_olt,
+            kind=MaintenanceJob.KIND_DISCOVERY,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=5,
+            detail="Starting maintenance task.",
+            requested_by=admin_user,
+            started_at=timezone.now(),
+        )
+
+        def fake_run_command(*args, **kwargs):
+            OLT.objects.filter(id=fit_olt.id).update(
+                discovery_healthy=False,
+                last_collector_error="Blade 192.168.100.2: Telnet connection failed: [Errno 111] Connection refused",
+            )
+            return (
+                f"OLT {fit_olt.id}: FIT discovery request failed "
+                "(Blade 192.168.100.2: Telnet connection failed: [Errno 111] Connection refused)."
+            )
+
+        with patch.object(maintenance_job_service, "_run_command_with_timeout", side_effect=fake_run_command):
+            maintenance_job_service._execute_job(job.id)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, MaintenanceJob.STATUS_FAILED)
+        self.assertIn("Blade 192.168.100.2:", job.error)
+
+    def test_maintenance_job_marks_fit_polling_failure_as_failed(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-POLL-JOB")
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-poll-job",
+            password="admin-fit-poll-job",
+            email="admin-fit-poll-job@example.com",
+        )
+        job = MaintenanceJob.objects.create(
+            olt=fit_olt,
+            kind=MaintenanceJob.KIND_POLLING,
+            status=MaintenanceJob.STATUS_RUNNING,
+            progress=5,
+            detail="Starting maintenance task.",
+            requested_by=admin_user,
+            started_at=timezone.now(),
+        )
+
+        def fake_run_command(*args, **kwargs):
+            OLT.objects.filter(id=fit_olt.id).update(
+                collector_reachable=False,
+                last_collector_error="Blade 192.168.100.2: Telnet connection failed: [Errno 111] Connection refused",
+            )
+            return (
+                f"OLT {fit_olt.id}: FIT status polling failed "
+                "(Blade 192.168.100.2: Telnet connection failed: [Errno 111] Connection refused)."
+            )
+
+        with patch.object(maintenance_job_service, "_run_command_with_timeout", side_effect=fake_run_command):
+            maintenance_job_service._execute_job(job.id)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, MaintenanceJob.STATUS_FAILED)
+        self.assertIn("Blade 192.168.100.2:", job.error)
+
     def test_pon_description_update_invalidates_topology_structure_cache(self):
         slot, pon, _ = self._create_topology_onu(
             slot_id=2,
@@ -818,7 +1251,7 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(onu.serial, "ABCD12345678")
         self.assertEqual(onu.name, "client-1")
         self.olt.refresh_from_db()
-        self.assertTrue(self.olt.snmp_reachable)
+        self.assertTrue(self.olt.collector_reachable)
 
     @patch("topology.management.commands.discover_onus.unm_service.fetch_onu_inventory_map")
     @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
@@ -1104,6 +1537,263 @@ class ZabbixModeTests(TestCase):
         self.assertTrue(new_pon.is_active)
         self.assertEqual(new_pon.description, "preserve me")
 
+    @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
+    def test_fit_discover_onus_creates_only_discovered_pons_and_blank_names(self, fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-DISCOVERY")
+        fetch_status_inventory_mock.return_value = [
+            {
+                "slot_id": 1,
+                "pon_id": 2,
+                "onu_id": 13,
+                "interface": "0/2",
+                "status": ONU.STATUS_ONLINE,
+                "name": "",
+            },
+            {
+                "slot_id": 1,
+                "pon_id": 4,
+                "onu_id": 5,
+                "interface": "0/4",
+                "status": ONU.STATUS_OFFLINE,
+                "name": "cliente-fit",
+            },
+        ]
+
+        call_command("discover_onus", olt_id=fit_olt.id, force=True)
+
+        fit_olt.refresh_from_db()
+        self.assertTrue(fit_olt.collector_reachable)
+        self.assertEqual(OLTSlot.objects.filter(olt=fit_olt, is_active=True).count(), 1)
+        self.assertEqual(
+            list(
+                OLTPON.objects.filter(olt=fit_olt, is_active=True)
+                .order_by("pon_id")
+                .values_list("pon_id", flat=True)
+            ),
+            [2, 4],
+        )
+
+        blank_onu = ONU.objects.get(olt=fit_olt, pon_id=2, onu_id=13)
+        named_onu = ONU.objects.get(olt=fit_olt, pon_id=4, onu_id=5)
+        self.assertEqual(blank_onu.name, "")
+        self.assertEqual(blank_onu.serial, "")
+        self.assertEqual(blank_onu.snmp_index, "1/0/2:13")
+        self.assertEqual(named_onu.name, "cliente-fit")
+        self.assertEqual(named_onu.snmp_index, "1/0/4:5")
+
+    @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
+    def test_fit_discover_onus_allows_blank_name_update(self, fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-BLANK-NAME")
+        onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=13,
+            name="old-name",
+            status=ONU.STATUS_ONLINE,
+        )
+        fetch_status_inventory_mock.return_value = [
+            {
+                "slot_id": 1,
+                "pon_id": 2,
+                "onu_id": 13,
+                "interface": "0/2",
+                "status": ONU.STATUS_ONLINE,
+                "name": "",
+            }
+        ]
+
+        call_command("discover_onus", olt_id=fit_olt.id, force=True)
+
+        onu.refresh_from_db()
+        self.assertEqual(onu.name, "")
+
+    @patch("topology.management.commands.poll_onu_status.fit_collector_service.fetch_status_inventory_for_interfaces")
+    def test_fit_poll_onu_status_maps_down_to_offline_unknown(self, fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-POLL")
+        onu_up = self._create_fit_onu(fit_olt, pon_id=2, onu_id=13, status=ONU.STATUS_UNKNOWN)
+        onu_down = self._create_fit_onu(fit_olt, pon_id=2, onu_id=14, status=ONU.STATUS_ONLINE)
+        fetch_status_inventory_mock.return_value = [
+            {
+                "slot_id": 1,
+                "pon_id": 2,
+                "onu_id": 13,
+                "interface": "0/2",
+                "status": ONU.STATUS_ONLINE,
+                "name": "",
+            },
+            {
+                "slot_id": 1,
+                "pon_id": 2,
+                "onu_id": 14,
+                "interface": "0/2",
+                "status": ONU.STATUS_OFFLINE,
+                "name": "",
+            },
+        ]
+
+        call_command("poll_onu_status", olt_id=fit_olt.id, force=True)
+
+        onu_up.refresh_from_db()
+        onu_down.refresh_from_db()
+        fit_olt.refresh_from_db()
+        _, kwargs = fetch_status_inventory_mock.call_args
+        self.assertEqual(kwargs.get("interfaces_by_slot"), {1: ["0/2"]})
+        self.assertTrue(fit_olt.collector_reachable)
+        self.assertEqual(onu_up.status, ONU.STATUS_ONLINE)
+        self.assertEqual(onu_down.status, ONU.STATUS_OFFLINE)
+
+        active_log = ONULog.objects.get(onu=onu_down, offline_until__isnull=True)
+        self.assertEqual(active_log.disconnect_reason, ONULog.REASON_UNKNOWN)
+
+    @patch("topology.services.power_service.fit_collector_service.fetch_power_for_onus")
+    def test_fit_power_service_skips_online_onu_ids_above_64(self, fetch_power_for_onus_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-POWER")
+        supported_onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=64,
+            status=ONU.STATUS_ONLINE,
+        )
+        unsupported_onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=65,
+            status=ONU.STATUS_ONLINE,
+        )
+
+        def _fake_power_fetch(_olt, onus):
+            self.assertEqual([onu.onu_id for onu in onus], [64])
+            return {
+                supported_onu.id: {
+                    "onu_id": supported_onu.id,
+                    "slot_id": supported_onu.slot_id,
+                    "pon_id": supported_onu.pon_id,
+                    "onu_number": supported_onu.onu_id,
+                    "onu_rx_power": -29.5,
+                    "olt_rx_power": None,
+                    "power_read_at": timezone.now().isoformat(),
+                }
+            }
+
+        fetch_power_for_onus_mock.side_effect = _fake_power_fetch
+
+        result = power_service.refresh_for_onus([supported_onu, unsupported_onu], force_refresh=True)
+
+        self.assertEqual(result[supported_onu.id]["onu_rx_power"], -29.5)
+        self.assertIsNone(result[supported_onu.id]["olt_rx_power"])
+        self.assertEqual(result[unsupported_onu.id]["skipped_reason"], "unsupported_onu_id")
+
+    @patch("topology.api.views.check_olt_reachability", return_value=(True, "Telnet login succeeded."))
+    def test_collector_check_reports_telnet_collector_for_fit_vendor(self, _check_reachability_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-CHECK")
+        admin_user = User.objects.create_superuser(
+            username="admin-fit-check",
+            password="admin-fit-check",
+            email="admin-fit-check@example.com",
+        )
+        request = self.api_factory.post(f"/api/olts/{fit_olt.id}/collector_check/", {}, format="json")
+        force_authenticate(request, user=admin_user)
+        response = OLTViewSet.as_view({"post": "collector_check"})(request, pk=str(fit_olt.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("collector"), "telnet")
+        fit_olt.refresh_from_db()
+        self.assertTrue(fit_olt.collector_reachable)
+
+    @patch.object(ONUViewSet, "_has_usable_status_snapshot", return_value=True)
+    @patch(
+        "topology.api.views.power_service.refresh_for_onus",
+        side_effect=FITCollectorError("Telnet connection failed."),
+    )
+    def test_batch_power_refresh_fit_returns_503_on_collector_failure(
+        self,
+        _refresh_for_onus_mock,
+        _has_usable_status_snapshot_mock,
+    ):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-BATCH-POWER")
+        onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=13,
+            status=ONU.STATUS_ONLINE,
+        )
+        operator_user = User.objects.create_user(
+            username="operator-fit-power",
+            password="operator-fit-power",
+        )
+        UserProfile.objects.create(user=operator_user, role=UserProfile.ROLE_OPERATOR)
+        request = self.api_factory.post(
+            "/api/onu/batch-power/",
+            {"onu_ids": [onu.id], "refresh": True},
+            format="json",
+        )
+        force_authenticate(request, user=operator_user)
+        response = ONUViewSet.as_view({"post": "batch_power"})(request)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("Telnet connection failed.", response.data.get("detail", ""))
+
+    @patch("topology.services.fit_collector_service.telnetlib.Telnet")
+    def test_fit_telnet_login_enters_enable_mode_before_commands(self, telnet_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-LOGIN")
+        fake_telnet = _FakeFITTelnet(
+            [
+                b"",
+                (
+                    b"\r\n**************************************** \r\n"
+                    b"Access Verification ../\r\nUsername:"
+                ),
+                b"\r\nPassword:",
+                b"\r\nEPON> ",
+                b"EPON# ",
+            ]
+        )
+        telnet_mock.return_value = fake_telnet
+
+        with _FITTelnetSession(fit_olt):
+            pass
+
+        written = b"".join(fake_telnet.writes)
+        self.assertIn(b"bifrost\r", written)
+        self.assertIn(b"acaidosdeuses%gabisat\r", written)
+        self.assertIn(b"enable\r", written)
+        self.assertTrue(fake_telnet.closed)
+
+    @patch("topology.services.fit_collector_service.telnetlib.Telnet")
+    def test_fit_telnet_run_command_advances_enter_key_pager(self, telnet_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-PAGER")
+        fake_telnet = _FakeFITTelnet(
+            [
+                b"",
+                b"Username:",
+                b"Password:",
+                b"EPON> ",
+                b"EPON# ",
+                (
+                    b"show onu info epon 0/1 all\r\n"
+                    b"0/1:1  a0:94:6a:0e:31:cb Down    312e     9601   1  0  0    --             21     Yes      0H 0M 0S          \r\n"
+                    b"--- Enter Key To Continue ----"
+                ),
+                (
+                    b"\x1b[K\r"
+                    b"0/1:2  70:b6:4f:27:3f:60 Up      3230     9125   1  0  0    CtcNegDone     21     Yes      1D 13H 16M 53S    cliente-fit\r\n"
+                    b"\x1b[K\rEPON# "
+                ),
+            ]
+        )
+        telnet_mock.return_value = fake_telnet
+
+        with _FITTelnetSession(fit_olt) as session:
+            output = session.run_command("show onu info epon 0/1 all")
+
+        written = b"".join(fake_telnet.writes)
+        self.assertIn(b"show onu info epon 0/1 all\r", written)
+        self.assertIn(b" ", written)
+        self.assertNotIn("Enter Key To Continue", output)
+        self.assertNotIn("\x1b[K", output)
+        self.assertIn("0/1:1", output)
+        self.assertIn("0/1:2", output)
+
     @patch("topology.management.commands.run_scheduler.call_command")
     def test_scheduler_tick_runs_discovery_before_polling(self, call_command_mock):
         scheduler = SchedulerCommand()
@@ -1132,8 +1822,8 @@ class ZabbixModeTests(TestCase):
             is_active=True,
         )
         self.olt.last_poll_at = timezone.now() - timedelta(minutes=1)
-        self.olt.snmp_reachable = True
-        self.olt.save(update_fields=["last_poll_at", "snmp_reachable"])
+        self.olt.collector_reachable = True
+        self.olt.save(update_fields=["last_poll_at", "collector_reachable"])
 
         fetch_status_mock.return_value = (
             {
@@ -1154,7 +1844,7 @@ class ZabbixModeTests(TestCase):
         open_log = ONULog.objects.get(onu=onu, offline_until__isnull=True)
         self.assertEqual(open_log.disconnect_reason, ONULog.REASON_LINK_LOSS)
         self.olt.refresh_from_db()
-        self.assertTrue(self.olt.snmp_reachable)
+        self.assertTrue(self.olt.collector_reachable)
 
     @override_settings(ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS=1)
     @patch("topology.management.commands.poll_onu_status.zabbix_service.execute_items_now_by_keys")
@@ -1392,7 +2082,7 @@ class ZabbixModeTests(TestCase):
         onu.refresh_from_db()
         self.assertEqual(onu.status, ONU.STATUS_ONLINE)
         self.olt.refresh_from_db()
-        self.assertFalse(self.olt.snmp_reachable)
+        self.assertFalse(self.olt.collector_reachable)
         self.assertFalse(ONULog.objects.filter(onu=onu, offline_until__isnull=True).exists())
 
     @override_settings(ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS=0)
@@ -1445,8 +2135,8 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(onu.status, ONU.STATUS_ONLINE)
         self.assertFalse(ONULog.objects.filter(onu=onu, offline_until__isnull=True).exists())
         self.olt.refresh_from_db()
-        self.assertTrue(self.olt.snmp_reachable)
-        self.assertEqual((self.olt.last_snmp_error or "").strip(), "")
+        self.assertTrue(self.olt.collector_reachable)
+        self.assertEqual((self.olt.last_collector_error or "").strip(), "")
         execute_now_mock.assert_called_once()
         check_reachability_mock.assert_called_once()
 
@@ -3168,23 +3858,23 @@ class ZabbixModeTests(TestCase):
         self.assertFalse(reachable)
         self.assertIn("no samples", detail.lower())
 
-    @patch("topology.management.commands.run_scheduler.zabbix_service.check_olt_reachability")
+    @patch("topology.management.commands.run_scheduler.check_olt_reachability")
     def test_scheduler_recovery_schedules_immediate_poll(self, check_reachability_mock):
-        self.olt.snmp_reachable = False
-        self.olt.snmp_failure_count = 3
-        self.olt.last_snmp_check_at = None
+        self.olt.collector_reachable = False
+        self.olt.collector_failure_count = 3
+        self.olt.last_collector_check_at = None
         self.olt.next_poll_at = timezone.now() + timedelta(hours=1)
         self.olt.save(
-            update_fields=["snmp_reachable", "snmp_failure_count", "last_snmp_check_at", "next_poll_at"]
+            update_fields=["collector_reachable", "collector_failure_count", "last_collector_check_at", "next_poll_at"]
         )
 
         check_reachability_mock.return_value = (True, "")
         command = SchedulerCommand()
-        command._run_snmp_checks(base_interval_seconds=30, max_backoff_seconds=1800)
+        command._run_collector_checks(base_interval_seconds=30, max_backoff_seconds=1800)
 
         self.olt.refresh_from_db()
-        self.assertTrue(self.olt.snmp_reachable)
-        self.assertEqual(self.olt.snmp_failure_count, 0)
+        self.assertTrue(self.olt.collector_reachable)
+        self.assertEqual(self.olt.collector_failure_count, 0)
         self.assertIsNotNone(self.olt.next_poll_at)
         self.assertLessEqual(
             abs((timezone.now() - self.olt.next_poll_at).total_seconds()),

@@ -33,7 +33,8 @@
     - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied at container start (`shared_buffers=2GB`, `synchronous_commit=off`, `wal_buffers=64MB`, `checkpoint_timeout=15min`, `effective_io_concurrency=200`, WAL/checkpoint settings).
 
 Backend collection runtime:
-- Discovery/status/power are read from Zabbix API item keys.
+- Default path is Zabbix API item keys.
+- Exception: `FIT / FNCS4000` uses a direct backend Telnet collector because the device does not expose an equivalent Zabbix/SNMP runtime path for the required topology/status/power workflow.
 
 Container/runtime health:
 - Backend exposes a public liveness endpoint at `GET /api/healthz/` (`{"status":"ok"}`).
@@ -117,9 +118,9 @@ When to split into dedicated `discovery` and `poller` workers:
 - or you need independent autoscaling by job type.
 
 ## Data Model Highlights
-- `VendorProfile`: vendor/model OID templates and capabilities. Seeded profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei UNIFICADO, Fiberhome UNIFICADO.
-- `OLT`: scheduler intervals and runtime reachability state fields (`snmp_*` field names kept for compatibility).
-- `OLTSlot` and `OLTPON`: discovered topology map.
+- `VendorProfile`: vendor/model OID templates and capabilities. Seeded profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei UNIFICADO, Fiberhome UNIFICADO, FIT FNCS4000.
+- `OLT`: scheduler intervals and runtime reachability state fields (`collector_*` canonically, with `snmp_*` API aliases kept for compatibility). `blade_ips` JSONField supports multi-blade chassis (e.g. FIT FNCS4000 with 3 blades); `get_blade_ips()` returns the list or falls back to `[ip_address]`.
+- `OLTSlot` and `OLTPON`: discovered topology map. Empty PONs (0 active ONUs) and empty slots are excluded from topology structure payloads.
 - `ONU`: per-OLT endpoint with active/inactive lifecycle and status.
 - `ONULog`: offline event history and disconnect reasons.
 - `ONUPowerSample`: persisted ONU power snapshots used by Power Report and Alarm History trend APIs.
@@ -128,23 +129,27 @@ When to split into dedicated `discovery` and `poller` workers:
 ## Key Backend Flows
 ### 1. Discovery (`discover_onus`)
 - Reads vendor templates from `VendorProfile.oid_templates`.
-- Uses Zabbix discovery item/rule (`oid_templates.zabbix.discovery_item_key`).
+- Uses the configured collector:
+  - Zabbix vendors read `oid_templates.zabbix.discovery_item_key`.
+  - FIT `FNCS4000` reads configured EPON interfaces (`0/1..0/4` by default) over Telnet with `show onu info epon 0/x all`. Multi-blade chassis iterate over `blade_ips`; only **authorized** ONUs are kept, so only blades/PONs that return authorized ONUs are materialized in topology.
 - Manual discovery can request immediate upstream execution before read (`--refresh-upstream`).
 - Discovers ONUs and topology links.
 - Upserts ONUs as active.
-- Applies Zabbix-style lost-resource lifecycle:
-  - missing resources stay active during `disable_lost_after_minutes` grace,
-  - then become inactive,
-  - and can be hard-deleted after `delete_lost_after_minutes` (optional).
-- Updates OLT discovery health and SNMP reachability.
+- Applies immediate missing-resource deactivation policy:
+  - `deactivate_missing=true`;
+  - `disable_lost_after_minutes=0` (missing ONUs/PONs/slots leave active topology immediately);
+  - optional hard delete after `delete_lost_after_minutes` (default retention: 7 days).
+- Updates OLT discovery health and collector reachability.
 
 ### 2. Polling (`poll_onu_status`)
-- Polls ONU status via per-ONU Zabbix status/reason item keys (`oid_templates.zabbix.status_item_key_pattern` / `reason_item_key_pattern`).
+- Polls ONU status via the configured collector:
+  - Zabbix vendors use per-ONU status/reason item keys (`oid_templates.zabbix.status_item_key_pattern` / `reason_item_key_pattern`).
+  - FIT `FNCS4000` reads `show onu info epon 0/x all` per blade and maps `Up -> online`, `Down -> offline/unknown`. Parser accepts field variants both with and without the `Uptime` column because firmware output differs across blades.
 - Manual/scoped polling can request immediate upstream execution before read (`--refresh-upstream`).
 - Maps source values to canonical status/reason.
 - Tracks online/offline transitions with `ONULog`.
 - Marks missing statuses as `unknown` without generating false offline alarms.
-- Marks OLT unreachable when no status data is returned from the active collector.
+- Marks OLT unreachable on collector transport failure; an empty FIT status snapshot after successful Telnet login is treated as a polling failure without flipping collector reachability to false.
 
 ### 3. OLT <-> Zabbix Runtime Sync
 - On OLT create/update, Varuna synchronizes Zabbix host runtime (group, tags, interface macro refs, macro values).
@@ -153,15 +158,15 @@ When to split into dedicated `discovery` and `poller` workers:
 - On Varuna OLT delete, backend attempts Zabbix `host.delete` for the resolved host.
 
 ## Unreachable OLT Behavior
-- Backend persists SNMP availability (`snmp_reachable`, `last_snmp_check_at`, `snmp_failure_count`, `last_snmp_error`).
+- Backend persists collector availability (`collector_reachable`, `last_collector_check_at`, `collector_failure_count`, `last_collector_error`).
 - The backend scheduler runs reachability checks **before** dispatching any collection jobs (every `30s` by default via `COLLECTOR_CHECK_SECONDS`).
 - Reachability checks are due-aware per OLT and run at fixed cadence (no runtime exponential backoff delay).
 - Reachability source is collector-mode aware:
   - `zabbix`: host/interface availability plus sentinel/status freshness.
   - interface backoff signals (`errors_from`, `disable_until`) are treated as early unreachable signals before `available=2` convergence.
   - if template key `varunaSnmpAvailability` exists (`zabbix.availability_item_key`), its freshness is validated first for fast gray/green transitions.
-- Polling, discovery, and power collection skip OLTs with `snmp_reachable=False` and `snmp_failure_count >= 2`.
-- Frontend derives OLT health from backend fields (`snmp_reachable`, `snmp_failure_count >= 2`) and renders unreachable OLT nodes as gray.
+- Polling, discovery, and power collection skip OLTs with `collector_reachable=False` and `collector_failure_count >= 2`.
+- Frontend derives OLT health from backend reachability + freshness (`collector_reachable` with legacy `snmp_reachable` fallback and `last_poll_at` stale window) and renders OLT gray immediately when reachability is `false`.
 - ONU state is preserved during hard collector outages to avoid false state corruption.
 
 ## Manual Maintenance Queue
@@ -170,7 +175,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - A backend in-process runner claims queued jobs with row locking and updates progress/status (`queued -> running -> completed|failed|canceled`).
 - Discovery/polling queue workers execute commands with hard runtime timeouts; stale `running` jobs beyond timeout are auto-failed to unblock the OLT queue.
 - Frontend polls `GET /api/olts/{id}/maintenance_status/` for durable progress, so in-flight visibility does not depend on in-memory API view state.
-- `snmp_check` remains the API action name for compatibility; implementation is now Zabbix-only.
+- `collector_check` is the canonical API action name; legacy `snmp_check` remains as a compatibility alias and both dispatch through the collector-aware implementation.
 
 ## Role-Based Access Control
 - Users have roles (`admin`, `operator`, `viewer`) via `UserProfile.role`.
@@ -188,7 +193,11 @@ When to split into dedicated `discovery` and `poller` workers:
 - Scheduler supports per-tick OLT caps (`max-poll`, `max-discovery`, `max-power`) for load shaping during high-scale deployments.
 - `--force` flag bypasses due checks for manual/emergency runs.
 - Polling command enforces a runtime budget (`max_runtime_seconds`, default 180s) to prevent long-running jobs.
-- Power service reads directly from Zabbix and persists fresh samples to PostgreSQL for topology/report/history surfaces.
+- Power service persists fresh samples to PostgreSQL for topology/report/history surfaces.
+- FIT `FNCS4000` power collection is constrained by the device CLI:
+  - only online ONUs are queried;
+  - only ONU IDs `<= 64` support `show onu optical-ddm`;
+  - only ONU RX is collected; OLT RX is unsupported.
 
 ## Performance Decisions
 - Removed global `ONU.snmp_index` uniqueness in favor of per-OLT uniqueness (`(olt, snmp_index)`), enabling multi-vendor/multi-OLT scale.
