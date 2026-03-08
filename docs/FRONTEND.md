@@ -26,6 +26,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Settings, Power Report, and Alarm History are lazy-loaded from `App.jsx`; Topology stays eager because it is the primary operational surface.
 - `frontend/src/services/api.js`: Axios API client with auth token interceptor.
 - `frontend/src/utils/stats.js`: ONU status classification helpers.
+- `frontend/src/utils/placeholders.js`: shared `MISSING_VALUE_PLACEHOLDER` (`'—'`) and `PLACEHOLDER_CLASS` (`'text-[11px] text-slate-300 dark:text-slate-600'`). All missing-data placeholders across views must use these constants for visual consistency.
 
 ## Authentication
 - App checks for stored token on mount by calling `GET /api/auth/me/`. If valid, user proceeds to the main app. If invalid/missing, the login page is shown.
@@ -202,9 +203,9 @@ The UI remains topology-first. No dashboard page is required for current product
   2. **Connection row**:
      - SNMP vendors: IP, SNMP Community, Port.
      - Telnet vendors (FIT `FNCS4000`): Username, Password, Port (no standalone IP field; blade list is the source of management IPs).
-  3. **Blade IPs section** (Telnet vendors only, below connection row): always visible with at least one blade entry. Dynamic list of labeled IP inputs (`Blade N / Slot N`) with delete buttons (disabled on last remaining blade) and "Add Blade" button. Blade IPs are sent as a JSON array; `ip_address` is auto-derived from the first blade on save.
+  3. **Blade IPs section** (Telnet vendors only, below connection row): wrapped in a subtle `rounded-xl` container with tinted background (`bg-slate-50/50 dark:bg-slate-800/30`) and thin border, always visible with at least one blade entry. Dynamic list of labeled IP inputs (`Blade N / Slot N`) with muted delete buttons (slate → red on hover with bg tint) and a full-width dashed-border "Add Blade" button (slate → emerald on hover). Blade IPs are sent as a JSON array; `ip_address` is auto-derived from the first blade on save.
   4. Topology renders only populated branches: PONs with no active ONUs and slots with no populated PONs are omitted, including FIT multi-blade OLTs.
-- UNM integration section (bottom of Device tab) uses a bordered card that changes border/bg color based on enabled state (emerald when enabled, slate when disabled). An `UnmToggle` switch component toggles the section; fields collapse/expand with a CSS grid-rows animation. When enabled on an existing OLT with a saved MNEID, a green pulsing dot appears next to the label. Field labels use short generic keys (`Host`, `Port`, `MNEID`, `Username`, `Password`) instead of `UNM`-prefixed labels.
+- UNM integration section (bottom of Device tab) has a collapsible chevron header (`ChevronDown`/`ChevronRight`) with `SectionLabel` and an `UnmToggle` switch. Clicking the chevron expands/collapses the fields via CSS `grid-rows` animation; the toggle controls `unm_enabled` independently. Field labels use short keys (`IP`, `MySQL port`, `MNEID`, `Username`, `Password`). Create form uses `unmCreateExpanded` state; edit form uses per-card `unmExpandedCards[oltId]` state.
 - Vendor and Model selects use a custom Radix `DropdownMenu` (`FieldSelect` component) matching the sort dropdown pattern from the topology view — portaled content, check indicator for selected item, emerald accent, keyboard navigation. Native `<select>` elements are not used.
 - In PT-BR UI, model labels for vendor profiles with `vendor=FIBERHOME` or `vendor=HUAWEI` are normalized to `UNIFICADO` in Settings cards/forms while keeping the underlying `vendor_profile` ID and backend `model_name` unchanged.
 - Intervals tab uses a responsive grid (`grid-cols-2` on mobile, `grid-cols-4` on `lg+`) with:
@@ -237,6 +238,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - Run and Save controls remain available; duplicate submissions are handled by backend `already_running` responses and surfaced as inline messages.
   - When backend returns `detail` (for example, `already_running` due to another maintenance action), frontend translates known backend messages via `translateBackendMessage()` from `frontend/src/utils/apiErrorMessages.js`, preferring its own translated strings for queued action responses.
 - Number input spinner arrows are hidden via CSS (`appearance: textfield`, `::-webkit-*` pseudo-elements).
+- **Placeholder convention**: descriptive placeholders use translated `t('ph.*')` keys (e.g. `Nome da OLT`, `Endereço IP`, `IP do UNM`, `ID do elemento`) — never real environment data. Standard protocol defaults (`23`, `161`, `3306`, `public`) and format hints (`5h`, `5m`) stay as literal strings since they communicate expected values. All placeholders render in italic via `placeholder:italic` on `FieldInput`.
 
 ## Settings API Contract Expectations
 - OLT removal from Settings maps to backend soft-deactivation (not hard delete), so removed OLTs disappear from active UI while history is preserved server-side.

@@ -27,6 +27,7 @@ import { classifyOnu, getOnuStats } from './utils/stats'
 import { deriveOltHealthState } from './utils/oltHealth'
 import { getPowerColor, powerColorClass } from './utils/powerThresholds'
 import { getApiErrorMessage } from './utils/apiErrorMessages'
+import { MISSING_VALUE_PLACEHOLDER, PLACEHOLDER_CLASS } from './utils/placeholders'
 
 const SettingsPanel = lazy(() =>
   import('./components/SettingsPanel').then((module) => ({ default: module.SettingsPanel }))
@@ -67,13 +68,12 @@ const SELECTED_OLT_IDS_STORAGE_KEY = 'varuna.selectedOltIds'
 const THEME_STORAGE_KEY = 'varuna.theme'
 
 const formatPowerValue = (value) => {
-  if (value === null || value === undefined || value === '') return '—'
+  if (value === null || value === undefined || value === '') return MISSING_VALUE_PLACEHOLDER
   const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return '—'
+  if (!Number.isFinite(numeric)) return MISSING_VALUE_PLACEHOLDER
   return `${numeric.toFixed(2)} dBm`
 }
 
-const MISSING_VALUE_PLACEHOLDER = '—'
 
 const getDisplaySerial = (onu) => {
   const raw = String(onu?.serial_number ?? onu?.serial ?? '').trim()
@@ -367,10 +367,10 @@ const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
 
 const formatDisconnectionWindow = (startValue, endValue, language) => {
   const anchorValue = endValue || startValue
-  if (!anchorValue) return '—'
+  if (!anchorValue) return MISSING_VALUE_PLACEHOLDER
 
   const anchor = new Date(anchorValue)
-  if (Number.isNaN(anchor.getTime())) return '—'
+  if (Number.isNaN(anchor.getTime())) return MISSING_VALUE_PLACEHOLDER
 
   const locale = language === 'pt' ? 'pt-BR' : 'en-US'
   const timestampFormatter = new Intl.DateTimeFormat(locale, {
@@ -385,7 +385,7 @@ const formatDisconnectionWindow = (startValue, endValue, language) => {
 }
 
 const formatReadingAt = (value, language) => {
-  if (!value) return '—'
+  if (!value) return MISSING_VALUE_PLACEHOLDER
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
   return new Intl.DateTimeFormat(language === 'pt' ? 'pt-BR' : 'en-US', {
@@ -1077,8 +1077,8 @@ const App = () => {
   const selectedPonNumber = selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id
   const selectedPonPath = [
     selectedPonData?.olt?.name || 'OLT',
-    `${t('SLOT')} ${selectedSlotNumber ?? '—'}`,
-    `PON ${selectedPonNumber ?? '—'}`
+    `${t('SLOT')} ${selectedSlotNumber ?? MISSING_VALUE_PLACEHOLDER}`,
+    `PON ${selectedPonNumber ?? MISSING_VALUE_PLACEHOLDER}`
   ]
   const isPonPanelOpen = activeNav === 'topology' && Boolean(selectedPonId)
 
@@ -1499,17 +1499,6 @@ const App = () => {
     return 'bg-slate-400'
   }
 
-  const disconnectPlaceholderClass = (statusKey) => {
-    if (isSelectedOltGray) return 'text-slate-500 dark:text-slate-400'
-    if (statusKey === 'online') return 'text-emerald-600 dark:text-emerald-300'
-    if (statusKey === 'dying_gasp') return 'text-blue-600 dark:text-blue-300'
-    if (statusKey === 'unknown') return 'text-purple-600 dark:text-purple-300'
-    if (statusKey === 'link_loss') return 'text-rose-500 dark:text-rose-400'
-    return 'text-slate-500 dark:text-slate-400'
-  }
-
-  const serialPlaceholderClass = (statusKey) => `text-[11px] font-semibold tabular-nums ${disconnectPlaceholderClass(statusKey)}`
-
   const disconnectWindowClass = (statusKey, disconnectWindow) => {
     if (disconnectWindow !== MISSING_VALUE_PLACEHOLDER) {
       return 'text-slate-500 dark:text-slate-400'
@@ -1800,7 +1789,7 @@ const App = () => {
                 if (!canOperateTopology) {
                   return (
                     <span
-                      className={`text-[12px] font-semibold leading-none ${
+                      className={`text-[11px] font-medium truncate leading-none ${
                         description
                           ? 'text-slate-500 dark:text-slate-400'
                           : 'text-slate-400/60 dark:text-slate-500/70'
@@ -1822,8 +1811,8 @@ const App = () => {
               <div className="h-full min-h-0 flex flex-col">
                 {/* Desktop header */}
                 <div className="hidden lg:flex pl-8 pr-4 py-3.5 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 items-center">
-                  <div className="w-full flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex flex-col">
+                  <div className="w-full flex items-start gap-3">
+                    <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                       <div className="flex items-center gap-1.5 text-[12px] font-semibold tracking-[0.03em]">
                         {selectedPonPath.map((part, idx) => (
                           <React.Fragment key={`${part}-${idx}`}>
@@ -1848,7 +1837,7 @@ const App = () => {
                 {/* Mobile header */}
                 <div className="flex lg:hidden flex-col px-4 py-3 border-b border-slate-200/70 dark:border-slate-700/50 bg-white dark:bg-slate-900 gap-1">
                   <div className="flex items-start gap-2">
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                       <div className="flex items-center gap-1.5 text-[12px] font-semibold tracking-[0.03em]">
                         {selectedPonPath.map((part, idx) => (
                           <React.Fragment key={`m-${part}-${idx}`}>
@@ -2061,13 +2050,17 @@ const App = () => {
                                     {onuNumber}
                                   </td>
                                   <td className="px-2.5 py-0 align-middle">
-                                    <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
-                                      {clientLabel}
-                                    </span>
+                                    {rawClientName ? (
+                                      <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
+                                        {clientLabel}
+                                      </span>
+                                    ) : (
+                                      <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
+                                    )}
                                   </td>
                                   <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
                                     {hasSerial ? serialValue : (
-                                      <span className={serialPlaceholderClass(statusKey)}>{serialValue}</span>
+                                      <span className={PLACEHOLDER_CLASS}>{serialValue}</span>
                                     )}
                                   </td>
                                   <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
@@ -2179,7 +2172,7 @@ const App = () => {
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
                                 ) : (
-                                  <span className={`block text-center ${serialPlaceholderClass(statusKey)}`}>{serialValue}</span>
+                                  <span className={`block text-center ${PLACEHOLDER_CLASS}`}>{serialValue}</span>
                                 )}
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-1">
@@ -2312,20 +2305,24 @@ const App = () => {
                                     {onuNumber}
                                   </td>
                                   <td className="px-2.5 py-0 align-middle">
-                                    <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
-                                      {clientLabel}
-                                    </span>
+                                    {rawClientName ? (
+                                      <span className="block text-[12px] font-bold text-slate-800 dark:text-slate-100 leading-[1.15] truncate">
+                                        {clientLabel}
+                                      </span>
+                                    ) : (
+                                      <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
+                                    )}
                                   </td>
                                   <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
                                     {hasSerial ? serialValue : (
-                                      <span className="text-[11px] font-semibold tabular-nums text-slate-300 dark:text-slate-600">{serialValue}</span>
+                                      <span className={PLACEHOLDER_CLASS}>{serialValue}</span>
                                     )}
                                   </td>
                                   <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>
-                                    {onuRxFormatted || '—'}
+                                    {onuRxFormatted || MISSING_VALUE_PLACEHOLDER}
                                   </td>
                                   <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>
-                                    {oltRxFormatted || '—'}
+                                    {oltRxFormatted || MISSING_VALUE_PLACEHOLDER}
                                   </td>
                                   <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${hasReading ? 'text-slate-500 dark:text-slate-400' : 'text-slate-300 dark:text-slate-600'}`}>
                                     {readingAt}

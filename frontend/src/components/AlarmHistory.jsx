@@ -5,6 +5,7 @@ import { Search, X } from 'lucide-react'
 import api from '../services/api'
 import { getApiErrorMessage } from '../utils/apiErrorMessages'
 import { getPowerColor, powerColorClass } from '../utils/powerThresholds'
+import { MISSING_VALUE_PLACEHOLDER, PLACEHOLDER_CLASS } from '../utils/placeholders'
 
 const toDateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
@@ -14,9 +15,9 @@ const formatDateLabel = (key) => {
 }
 
 const formatTimestamp = (value) => {
-  if (!value) return '—'
+  if (!value) return MISSING_VALUE_PLACEHOLDER
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '—'
+  if (Number.isNaN(date.getTime())) return MISSING_VALUE_PLACEHOLDER
   const d = String(date.getDate()).padStart(2, '0')
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const y = String(date.getFullYear()).slice(2)
@@ -35,13 +36,13 @@ const formatDuration = (startValue, endValue, explicitSeconds = null) => {
     if (hours > 0) return `${hours}h ${mins % 60}m`
     return `${mins}m`
   }
-  if (!startValue || !endValue) return '—'
+  if (!startValue || !endValue) return MISSING_VALUE_PLACEHOLDER
   const start = new Date(startValue)
   const end = new Date(endValue)
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '—'
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return MISSING_VALUE_PLACEHOLDER
 
   const diff = end.getTime() - start.getTime()
-  if (diff <= 0) return '—'
+  if (diff <= 0) return MISSING_VALUE_PLACEHOLDER
 
   const mins = Math.floor(diff / 60000)
   const hours = Math.floor(mins / 60)
@@ -503,8 +504,8 @@ export const AlarmHistory = () => {
                     ) : sortedPowerHistory.map((pt, idx) => (
                       <tr key={pt.timestamp} className={`h-9 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'} hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors`}>
                         <td className="px-3 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums whitespace-nowrap">{formatTimestamp(new Date(pt.timestamp).toISOString())}</td>
-                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold tabular-nums text-right">{pt.onuRx != null ? <span className={powerColorClass(getPowerColor(pt.onuRx, 'onu_rx', selectedClient.olt_id))}>{pt.onuRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
-                        <td className="px-3 py-0 align-middle text-[10px] font-semibold tabular-nums text-right">{pt.oltRx != null ? <span className={powerColorClass(getPowerColor(pt.oltRx, 'olt_rx', selectedClient.olt_id))}>{pt.oltRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold tabular-nums text-right">{pt.onuRx != null ? <span className={powerColorClass(getPowerColor(pt.onuRx, 'onu_rx', selectedClient.olt_id))}>{pt.onuRx.toFixed(2)}</span> : <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
+                        <td className="px-3 py-0 align-middle text-[10px] font-semibold tabular-nums text-right">{pt.oltRx != null ? <span className={powerColorClass(getPowerColor(pt.oltRx, 'olt_rx', selectedClient.olt_id))}>{pt.oltRx.toFixed(2)}</span> : <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -619,10 +620,10 @@ export const AlarmHistory = () => {
                         <tr key={pt.timestamp} className={`h-8 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'}`}>
                           <td className="px-3 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums whitespace-nowrap">{formatTimestamp(new Date(pt.timestamp).toISOString())}</td>
                           <td className="px-2 py-0 align-middle text-[9px] font-semibold tabular-nums text-center">
-                            {pt.onuRx != null ? <span className={powerColorClass(getPowerColor(pt.onuRx, 'onu_rx', selectedClient.olt_id))}>{pt.onuRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                            {pt.onuRx != null ? <span className={powerColorClass(getPowerColor(pt.onuRx, 'onu_rx', selectedClient.olt_id))}>{pt.onuRx.toFixed(2)}</span> : <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}
                           </td>
                           <td className="px-2 py-0 align-middle text-[9px] font-semibold tabular-nums text-center">
-                            {pt.oltRx != null ? <span className={powerColorClass(getPowerColor(pt.oltRx, 'olt_rx', selectedClient.olt_id))}>{pt.oltRx.toFixed(2)}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                            {pt.oltRx != null ? <span className={powerColorClass(getPowerColor(pt.oltRx, 'olt_rx', selectedClient.olt_id))}>{pt.oltRx.toFixed(2)}</span> : <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}
                           </td>
                         </tr>
                       ))}

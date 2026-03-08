@@ -76,7 +76,7 @@ export const InlineEditableText = ({ value, placeholder, onSave }) => {
       className="group/desc flex items-center gap-1.5 min-w-0 max-w-full rounded-md px-1 -mx-1 py-0.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60"
     >
       <span
-        className={`text-[12px] font-semibold truncate leading-none ${
+        className={`text-[11px] font-medium truncate leading-none ${
           value
             ? 'text-slate-500 dark:text-slate-400'
             : 'text-slate-400/60 dark:text-slate-500/70'

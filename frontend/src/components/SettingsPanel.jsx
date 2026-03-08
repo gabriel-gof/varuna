@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Trash2, RefreshCcw, Check, AlertCircle, CheckCircle2, ChevronDown, Server, Clock } from 'lucide-react'
+import { Plus, Trash2, RefreshCcw, Check, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Server, Clock } from 'lucide-react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useTranslation } from 'react-i18next'
 import { DEFAULT_THRESHOLDS, getOltThresholds, saveOltThresholds } from '../utils/powerThresholds'
@@ -157,7 +157,8 @@ const FieldInput = React.forwardRef(({ className = '', ...props }, ref) => (
     ref={ref}
     {...props}
     className={`h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
-      text-[11px] text-compact font-semibold text-slate-800 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600
+      text-[11px] text-compact font-semibold text-slate-800 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600 placeholder:italic placeholder:font-medium
+      hover:border-slate-300 dark:hover:border-slate-600
       focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all
       [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${className}`}
   />
@@ -178,6 +179,7 @@ const FieldSelect = ({ value, onChange, options = [], disabled, className = '' }
           ref={triggerRef}
           className={`group h-8 w-full px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60
             text-[11px] text-compact font-semibold text-slate-800 dark:text-slate-200
+            hover:border-slate-300 dark:hover:border-slate-600
             focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all
             disabled:opacity-50 disabled:cursor-not-allowed
             flex items-center justify-center relative ${className}`}
@@ -225,7 +227,7 @@ const FieldSelect = ({ value, onChange, options = [], disabled, className = '' }
 }
 
 const SectionLabel = ({ children }) => (
-  <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-300 dark:text-slate-600 select-none">{children}</span>
+  <span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-500 dark:text-slate-400 select-none">{children}</span>
 )
 
 const UnmToggle = ({ enabled, onChange }) => (
@@ -491,6 +493,8 @@ export const SettingsPanel = ({
   const [thresholdForms, setThresholdForms] = useState({})
   const [originalThresholdsMap, setOriginalThresholdsMap] = useState({})
   const [createThresholdForm, setCreateThresholdForm] = useState(DEFAULT_THRESHOLDS)
+  const [unmCreateExpanded, setUnmCreateExpanded] = useState(false)
+  const [unmExpandedCards, setUnmExpandedCards] = useState({})
 
   const vendorOptions = useMemo(() => {
     return [...new Set((vendorProfiles || []).map((item) => item?.vendor).filter(Boolean))]
@@ -894,12 +898,12 @@ export const SettingsPanel = ({
   const createBusy = Boolean(actionBusy?.create)
 
   return (
-    <div className="w-full h-full overflow-y-auto custom-scrollbar">
+    <div className="w-full h-full overflow-y-auto custom-scrollbar bg-slate-100 dark:bg-slate-950">
       <div className="max-w-2xl mx-auto px-6 lg:px-10 py-8 space-y-6 animate-in fade-in duration-500">
 
         {/* Header row */}
         <div className="w-full flex items-center justify-between">
-          <p className="text-[11px] font-black text-slate-300 dark:text-slate-600 uppercase tracking-widest select-none">
+          <p className="text-[11px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest select-none">
             {t('Add OLT')}
           </p>
           <button
@@ -995,7 +999,7 @@ export const SettingsPanel = ({
                                     value={form.name}
                                     onChange={(e) => setField('name', e.target.value.slice(0, MAX_OLT_NAME))}
                                     maxLength={MAX_OLT_NAME}
-                                    placeholder="OLT-01"
+                                    placeholder={t('ph.olt_name')}
                                   />
                                </div>
                                <div className="flex flex-col gap-1.5">
@@ -1025,7 +1029,7 @@ export const SettingsPanel = ({
                                     className="text-center"
                                     value={form.ip_address}
                                     onChange={(e) => setField('ip_address', e.target.value)}
-                                    placeholder="10.0.0.1"
+                                    placeholder={t('ph.ip_address')}
                                   />
                                </div>
                                )}
@@ -1037,7 +1041,7 @@ export const SettingsPanel = ({
                                         className="text-center"
                                         value={form.telnet_username}
                                         onChange={(e) => setField('telnet_username', e.target.value)}
-                                        placeholder="bifrost"
+                                        placeholder={t('ph.username')}
                                       />
                                    </div>
                                    <div className="flex flex-col gap-1.5">
@@ -1052,7 +1056,7 @@ export const SettingsPanel = ({
                                       />
                                    </div>
                                    <div className="flex flex-col gap-1.5">
-                                      <FieldLabel>{t('Port')}</FieldLabel>
+                                      <FieldLabel>{t('Telnet port')}</FieldLabel>
                                       <FieldInput
                                         className="text-center"
                                         type="number"
@@ -1076,7 +1080,7 @@ export const SettingsPanel = ({
                                       />
                                    </div>
                                    <div className="flex flex-col gap-1.5">
-                                      <FieldLabel>{t('Port')}</FieldLabel>
+                                      <FieldLabel>{t('SNMP port')}</FieldLabel>
                                       <FieldInput
                                         className="text-center"
                                         type="number"
@@ -1093,45 +1097,47 @@ export const SettingsPanel = ({
 
                         {/* Blade IPs — Telnet only */}
                         {createSelectedProtocol === 'telnet' && (
-                          <div className="w-full max-w-xl mt-3">
-                            <FieldLabel>{t('Blade IPs')}</FieldLabel>
-                            <div className="flex flex-col gap-1.5">
-                              {((form.blade_ips || []).length === 0 ? [''] : form.blade_ips).map((ip, idx, arr) => (
-                                <div key={idx} className="flex items-center gap-1.5">
-                                  <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
-                                    Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
-                                  </span>
-                                  <FieldInput
-                                    className="text-center flex-1"
-                                    value={ip}
-                                    onChange={(e) => {
-                                      const updated = [...arr]
-                                      updated[idx] = e.target.value
-                                      setField('blade_ips', updated)
-                                    }}
-                                    placeholder={`10.0.0.${idx + 1}`}
-                                  />
-                                  {arr.length > 1 && (
-                                  <button
-                                    type="button"
-                                    className="p-1 text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400"
-                                    onClick={() => {
-                                      const updated = arr.filter((_, i) => i !== idx)
-                                      setField('blade_ips', updated)
-                                    }}
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
-                                  )}
-                                </div>
-                              ))}
-                              <button
-                                type="button"
-                                className="text-[10px] font-semibold text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 self-start mt-0.5"
-                                onClick={() => { const cur = (form.blade_ips || []).length === 0 ? [''] : form.blade_ips; setField('blade_ips', [...cur, '']) }}
-                              >
-                                + {t('Add Blade')}
-                              </button>
+                          <div className="w-full max-w-xl mt-4">
+                            <div className="rounded-xl border border-slate-200/60 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-800/30 px-3 pt-2.5 pb-3">
+                              <FieldLabel>{t('Blade IPs')}</FieldLabel>
+                              <div className="flex flex-col gap-2 mt-2">
+                                {((form.blade_ips || []).length === 0 ? [''] : form.blade_ips).map((ip, idx, arr) => (
+                                  <div key={idx} className="flex items-center gap-1.5">
+                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
+                                      Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
+                                    </span>
+                                    <FieldInput
+                                      className="text-center w-[200px]"
+                                      value={ip}
+                                      onChange={(e) => {
+                                        const updated = [...arr]
+                                        updated[idx] = e.target.value
+                                        setField('blade_ips', updated)
+                                      }}
+                                      placeholder={t('ph.blade_ip')}
+                                    />
+                                    {arr.length > 1 && (
+                                    <button
+                                      type="button"
+                                      className="p-1 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 dark:text-slate-600 dark:hover:text-red-400 dark:hover:bg-red-500/10 transition-colors"
+                                      onClick={() => {
+                                        const updated = arr.filter((_, i) => i !== idx)
+                                        setField('blade_ips', updated)
+                                      }}
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                    )}
+                                  </div>
+                                ))}
+                                <button
+                                  type="button"
+                                  className="w-full rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-[10px] font-semibold text-slate-400 hover:text-emerald-500 hover:border-emerald-400 dark:text-slate-500 dark:hover:text-emerald-400 dark:hover:border-emerald-500 py-1.5 transition-colors mt-0.5"
+                                  onClick={() => { const cur = (form.blade_ips || []).length === 0 ? [''] : form.blade_ips; setField('blade_ips', [...cur, '']) }}
+                                >
+                                  + {t('Add Blade')}
+                                </button>
+                              </div>
                             </div>
                           </div>
                         )}
@@ -1139,85 +1145,86 @@ export const SettingsPanel = ({
                         {/* UNM Integration — FiberHome only */}
                         {isFiberhomeVendor(form.vendor) && (
                         <div className="w-full max-w-xl mt-5">
-                          <div className={`rounded-lg transition-colors duration-200 ${
-                            form.unm_enabled
-                              ? 'border border-emerald-200/60 bg-emerald-50/30 dark:border-emerald-500/20 dark:bg-emerald-500/5'
-                              : 'bg-slate-50/80 dark:bg-slate-800/20'
-                          }`}>
-                            <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
-                              <div className="flex items-center gap-2">
-                                <SectionLabel>{t('UNM integration')}</SectionLabel>
-                              </div>
-                              <UnmToggle
-                                enabled={form.unm_enabled}
-                                onChange={() => setField('unm_enabled', !form.unm_enabled)}
-                              />
-                            </div>
-
-                            <div
-                              className={`grid transition-all duration-200 ease-in-out ${
-                                form.unm_enabled
-                                  ? 'grid-rows-[1fr] opacity-100'
-                                  : 'grid-rows-[0fr] opacity-0'
-                              }`}
-                              {...(!form.unm_enabled && { inert: '' })}
+                          <div className="flex items-center justify-between">
+                            <button
+                              type="button"
+                              onClick={() => setUnmCreateExpanded((prev) => !prev)}
+                              className="flex items-center gap-1.5 py-1 -ml-0.5"
                             >
-                              <div className="overflow-hidden">
-                                <div className="px-3.5 pb-3 pt-0.5 space-y-2.5">
-                                  <div className="grid grid-cols-3 gap-x-3 gap-y-2.5">
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Host')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        value={form.unm_host}
-                                        onChange={(e) => setField('unm_host', e.target.value)}
-                                        placeholder="192.168.30.101"
-                                      />
-                                    </div>
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Port')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center px-1"
-                                        type="number"
-                                        min={1}
-                                        max={65535}
-                                        value={form.unm_port}
-                                        onChange={(e) => setField('unm_port', e.target.value)}
-                                        placeholder="3306"
-                                      />
-                                    </div>
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('MNEID')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        value={form.unm_mneid}
-                                        onChange={(e) => setField('unm_mneid', e.target.value)}
-                                        placeholder="13172740"
-                                      />
-                                    </div>
-                                  </div>
+                              {unmCreateExpanded
+                                ? <ChevronDown className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                                : <ChevronRight className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                              }
+                              <SectionLabel>{t('UNM integration')}</SectionLabel>
+                            </button>
+                            <UnmToggle
+                              enabled={form.unm_enabled}
+                              onChange={() => setField('unm_enabled', !form.unm_enabled)}
+                            />
+                          </div>
 
-                                  <div className="grid grid-cols-2 gap-x-3">
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Username')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        value={form.unm_username}
-                                        onChange={(e) => setField('unm_username', e.target.value)}
-                                        placeholder="unm2000"
-                                      />
-                                    </div>
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Password')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        type="password"
-                                        autoComplete="off"
-                                        value={form.unm_password}
-                                        onChange={(e) => setField('unm_password', e.target.value)}
-                                        placeholder="••••••••"
-                                      />
-                                    </div>
+                          <div
+                            className={`grid transition-all duration-200 ease-in-out ${
+                              unmCreateExpanded
+                                ? 'grid-rows-[1fr] opacity-100'
+                                : 'grid-rows-[0fr] opacity-0'
+                            }`}
+                            {...(!unmCreateExpanded && { inert: '' })}
+                          >
+                            <div className="overflow-hidden">
+                              <div className="pt-2 space-y-2.5">
+                                <div className="grid grid-cols-3 gap-x-3 gap-y-2.5">
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>IP</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      value={form.unm_host}
+                                      onChange={(e) => setField('unm_host', e.target.value)}
+                                      placeholder={t('ph.unm_ip')}
+                                    />
+                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('MySQL port')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center px-1"
+                                      type="number"
+                                      min={1}
+                                      max={65535}
+                                      value={form.unm_port}
+                                      onChange={(e) => setField('unm_port', e.target.value)}
+                                      placeholder="3306"
+                                    />
+                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('MNEID')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      value={form.unm_mneid}
+                                      onChange={(e) => setField('unm_mneid', e.target.value)}
+                                      placeholder={t('ph.mneid')}
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-x-3">
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('Username')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      value={form.unm_username}
+                                      onChange={(e) => setField('unm_username', e.target.value)}
+                                    />
+                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('Password')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      type="password"
+                                      autoComplete="off"
+                                      value={form.unm_password}
+                                      onChange={(e) => setField('unm_password', e.target.value)}
+                                      placeholder="••••••••"
+                                    />
                                   </div>
                                 </div>
                               </div>
@@ -1470,7 +1477,7 @@ export const SettingsPanel = ({
                                 value={cardEditForm.name}
                                 onChange={(e) => setEditField(oltId, 'name', e.target.value.slice(0, MAX_OLT_NAME))}
                                 maxLength={MAX_OLT_NAME}
-                                placeholder="OLT-01"
+                                placeholder={t('ph.olt_name')}
                               />
                            </div>
 
@@ -1502,7 +1509,7 @@ export const SettingsPanel = ({
                                 className="text-center"
                                 value={cardEditForm.ip_address}
                                 onChange={(e) => setEditField(oltId, 'ip_address', e.target.value)}
-                                placeholder="10.0.0.1"
+                                placeholder={t('ph.ip_address')}
                               />
                            </div>
                            )}
@@ -1515,7 +1522,7 @@ export const SettingsPanel = ({
                                     className="text-center"
                                     value={cardEditForm.telnet_username}
                                     onChange={(e) => setEditField(oltId, 'telnet_username', e.target.value)}
-                                    placeholder="bifrost"
+                                    placeholder={t('ph.username')}
                                   />
                                </div>
 
@@ -1529,15 +1536,10 @@ export const SettingsPanel = ({
                                     onChange={(e) => setEditField(oltId, 'telnet_password', e.target.value)}
                                     placeholder="••••••••"
                                   />
-                                  {olt.telnet_password_configured && (
-                                    <span className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 text-center">
-                                      {t('Leave blank to keep current password')}
-                                    </span>
-                                  )}
                                </div>
 
                                <div className="flex flex-col gap-1.5">
-                                  <FieldLabel>{t('Port')}</FieldLabel>
+                                  <FieldLabel>{t('Telnet port')}</FieldLabel>
                                   <FieldInput
                                     className="text-center px-1"
                                     type="number"
@@ -1562,7 +1564,7 @@ export const SettingsPanel = ({
                                </div>
 
                                <div className="flex flex-col gap-1.5">
-                                  <FieldLabel>{t('Port')}</FieldLabel>
+                                  <FieldLabel>{t('SNMP port')}</FieldLabel>
                                   <FieldInput
                                     className="text-center px-1"
                                     type="number"
@@ -1580,146 +1582,144 @@ export const SettingsPanel = ({
 
                         {/* Blade IPs — Telnet only (edit) */}
                         {getProfileProtocol(cardEditSelectedProfile, olt?.protocol || 'snmp') === 'telnet' && (
-                          <div className="w-full max-w-xl mt-3">
-                            <FieldLabel>{t('Blade IPs')}</FieldLabel>
-                            <div className="flex flex-col gap-1.5">
-                              {((cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips).map((ip, idx, arr) => (
-                                <div key={idx} className="flex items-center gap-1.5">
-                                  <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
-                                    Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
-                                  </span>
-                                  <FieldInput
-                                    className="text-center flex-1"
-                                    value={ip}
-                                    onChange={(e) => {
-                                      const updated = [...arr]
-                                      updated[idx] = e.target.value
-                                      setEditField(oltId, 'blade_ips', updated)
-                                    }}
-                                    placeholder={`10.0.0.${idx + 1}`}
-                                  />
-                                  {arr.length > 1 && (
-                                  <button
-                                    type="button"
-                                    className="p-1 text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400"
-                                    onClick={() => {
-                                      const updated = arr.filter((_, i) => i !== idx)
-                                      setEditField(oltId, 'blade_ips', updated)
-                                    }}
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
-                                  )}
-                                </div>
-                              ))}
-                              <button
-                                type="button"
-                                className="text-[10px] font-semibold text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 self-start mt-0.5"
-                                onClick={() => { const cur = (cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips; setEditField(oltId, 'blade_ips', [...cur, '']) }}
-                              >
-                                + {t('Add Blade')}
-                              </button>
+                          <div className="w-full max-w-xl mt-4">
+                            <div className="rounded-xl border border-slate-200/60 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-800/30 px-3 pt-2.5 pb-3">
+                              <FieldLabel>{t('Blade IPs')}</FieldLabel>
+                              <div className="flex flex-col gap-2 mt-2">
+                                {((cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips).map((ip, idx, arr) => (
+                                  <div key={idx} className="flex items-center gap-1.5">
+                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
+                                      Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
+                                    </span>
+                                    <FieldInput
+                                      className="text-center w-[200px]"
+                                      value={ip}
+                                      onChange={(e) => {
+                                        const updated = [...arr]
+                                        updated[idx] = e.target.value
+                                        setEditField(oltId, 'blade_ips', updated)
+                                      }}
+                                      placeholder={t('ph.blade_ip')}
+                                    />
+                                    {arr.length > 1 && (
+                                    <button
+                                      type="button"
+                                      className="p-1 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 dark:text-slate-600 dark:hover:text-red-400 dark:hover:bg-red-500/10 transition-colors"
+                                      onClick={() => {
+                                        const updated = arr.filter((_, i) => i !== idx)
+                                        setEditField(oltId, 'blade_ips', updated)
+                                      }}
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                    )}
+                                  </div>
+                                ))}
+                                <button
+                                  type="button"
+                                  className="w-full rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-[10px] font-semibold text-slate-400 hover:text-emerald-500 hover:border-emerald-400 dark:text-slate-500 dark:hover:text-emerald-400 dark:hover:border-emerald-500 py-1.5 transition-colors mt-0.5"
+                                  onClick={() => { const cur = (cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips; setEditField(oltId, 'blade_ips', [...cur, '']) }}
+                                >
+                                  + {t('Add Blade')}
+                                </button>
+                              </div>
                             </div>
                           </div>
                         )}
 
                         {/* UNM Integration — FiberHome only */}
-                        {isFiberhomeVendor(cardEditForm.vendor) && (
+                        {isFiberhomeVendor(cardEditForm.vendor) && (() => {
+                          const unmExpanded = Boolean(unmExpandedCards[oltId])
+                          return (
                         <div className="w-full max-w-xl mt-5">
-                          <div className={`rounded-lg transition-colors duration-200 ${
-                            cardEditForm.unm_enabled
-                              ? 'border border-emerald-200/60 bg-emerald-50/30 dark:border-emerald-500/20 dark:bg-emerald-500/5'
-                              : 'bg-slate-50/80 dark:bg-slate-800/20'
-                          }`}>
-                            <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
-                              <div className="flex items-center gap-2">
-                                <SectionLabel>{t('UNM integration')}</SectionLabel>
-                                {cardEditForm.unm_enabled && hasDisplayValue(olt.unm_mneid) && (
-                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                                )}
-                              </div>
-                              <UnmToggle
-                                enabled={cardEditForm.unm_enabled}
-                                onChange={() => setEditField(oltId, 'unm_enabled', !cardEditForm.unm_enabled)}
-                              />
-                            </div>
-
-                            <div
-                              className={`grid transition-all duration-200 ease-in-out ${
-                                cardEditForm.unm_enabled
-                                  ? 'grid-rows-[1fr] opacity-100'
-                                  : 'grid-rows-[0fr] opacity-0'
-                              }`}
-                              {...(!cardEditForm.unm_enabled && { inert: '' })}
+                          <div className="flex items-center justify-between">
+                            <button
+                              type="button"
+                              onClick={() => setUnmExpandedCards((prev) => ({ ...prev, [oltId]: !prev[oltId] }))}
+                              className="flex items-center gap-1.5 py-1 -ml-0.5"
                             >
-                              <div className="overflow-hidden">
-                                <div className="px-3.5 pb-3 pt-0.5 space-y-2.5">
-                                  <div className="grid grid-cols-3 gap-x-3 gap-y-2.5">
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Host')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        value={cardEditForm.unm_host}
-                                        onChange={(e) => setEditField(oltId, 'unm_host', e.target.value)}
-                                        placeholder="192.168.30.101"
-                                      />
-                                    </div>
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Port')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center px-1"
-                                        type="number"
-                                        min={1}
-                                        max={65535}
-                                        value={cardEditForm.unm_port}
-                                        onChange={(e) => setEditField(oltId, 'unm_port', e.target.value)}
-                                        placeholder="3306"
-                                      />
-                                    </div>
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('MNEID')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        value={cardEditForm.unm_mneid}
-                                        onChange={(e) => setEditField(oltId, 'unm_mneid', e.target.value)}
-                                        placeholder="13172740"
-                                      />
-                                    </div>
-                                  </div>
+                              {unmExpanded
+                                ? <ChevronDown className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                                : <ChevronRight className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                              }
+                              <SectionLabel>{t('UNM integration')}</SectionLabel>
+                            </button>
+                            <UnmToggle
+                              enabled={cardEditForm.unm_enabled}
+                              onChange={() => setEditField(oltId, 'unm_enabled', !cardEditForm.unm_enabled)}
+                            />
+                          </div>
 
-                                  <div className="grid grid-cols-2 gap-x-3">
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Username')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        value={cardEditForm.unm_username}
-                                        onChange={(e) => setEditField(oltId, 'unm_username', e.target.value)}
-                                        placeholder="unm2000"
-                                      />
-                                    </div>
-                                    <div className="flex flex-col gap-1">
-                                      <FieldLabel>{t('Password')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        type="password"
-                                        autoComplete="off"
-                                        value={cardEditForm.unm_password}
-                                        onChange={(e) => setEditField(oltId, 'unm_password', e.target.value)}
-                                        placeholder="••••••••"
-                                      />
-                                      {olt.unm_password_configured && (
-                                        <span className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 text-center">
-                                          {t('Leave blank to keep current password')}
-                                        </span>
-                                      )}
-                                    </div>
+                          <div
+                            className={`grid transition-all duration-200 ease-in-out ${
+                              unmExpanded
+                                ? 'grid-rows-[1fr] opacity-100'
+                                : 'grid-rows-[0fr] opacity-0'
+                            }`}
+                            {...(!unmExpanded && { inert: '' })}
+                          >
+                            <div className="overflow-hidden">
+                              <div className="pt-2 space-y-2.5">
+                                <div className="grid grid-cols-3 gap-x-3 gap-y-2.5">
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>IP</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      value={cardEditForm.unm_host}
+                                      onChange={(e) => setEditField(oltId, 'unm_host', e.target.value)}
+                                      placeholder={t('ph.unm_ip')}
+                                    />
+                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('MySQL port')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center px-1"
+                                      type="number"
+                                      min={1}
+                                      max={65535}
+                                      value={cardEditForm.unm_port}
+                                      onChange={(e) => setEditField(oltId, 'unm_port', e.target.value)}
+                                      placeholder="3306"
+                                    />
+                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('MNEID')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      value={cardEditForm.unm_mneid}
+                                      onChange={(e) => setEditField(oltId, 'unm_mneid', e.target.value)}
+                                      placeholder={t('ph.mneid')}
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-x-3">
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('Username')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      value={cardEditForm.unm_username}
+                                      onChange={(e) => setEditField(oltId, 'unm_username', e.target.value)}
+                                    />
+                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                    <FieldLabel>{t('Password')}</FieldLabel>
+                                    <FieldInput
+                                      className="text-center"
+                                      type="password"
+                                      autoComplete="off"
+                                      value={cardEditForm.unm_password}
+                                      onChange={(e) => setEditField(oltId, 'unm_password', e.target.value)}
+                                      placeholder="••••••••"
+                                    />
                                   </div>
                                 </div>
                               </div>
                             </div>
                           </div>
                         </div>
-                        )}
+                          )
+                        })()}
                       </div>
                     )}
 

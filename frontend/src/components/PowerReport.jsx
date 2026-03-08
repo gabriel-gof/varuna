@@ -5,6 +5,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 
 import api from '../services/api'
 import { getPowerColor, powerColorClass } from '../utils/powerThresholds'
+import { MISSING_VALUE_PLACEHOLDER, PLACEHOLDER_CLASS } from '../utils/placeholders'
 
 const INITIAL_VISIBLE_ROWS = 300
 const LOAD_MORE_ROWS = 300
@@ -30,10 +31,10 @@ const classifySignal = (onuRx, oltRx, oltId) => {
 }
 
 const formatReadingAt = (value, language) => {
-  if (!value) return '—'
+  if (!value) return MISSING_VALUE_PLACEHOLDER
   try {
     const date = new Date(value)
-    if (isNaN(date.getTime())) return '—'
+    if (isNaN(date.getTime())) return MISSING_VALUE_PLACEHOLDER
     return new Intl.DateTimeFormat(language === 'pt' ? 'pt-BR' : 'en-US', {
       day: '2-digit',
       month: '2-digit',
@@ -42,7 +43,7 @@ const formatReadingAt = (value, language) => {
       minute: '2-digit'
     }).format(date)
   } catch {
-    return '—'
+    return MISSING_VALUE_PLACEHOLDER
   }
 }
 
@@ -586,10 +587,10 @@ export const PowerReport = () => {
                       <td className="px-2 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{row.slotNumber}</td>
                       <td className="px-2 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{row.ponNumber}</td>
                       <td className="px-2 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{row.onuId}</td>
-                      <td className="px-3 py-0 align-middle text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate">{row.clientName || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
-                      <td className="px-3 py-0 align-middle text-[11px] font-semibold font-mono tracking-tight text-slate-500 dark:text-slate-400 truncate">{row.serial || <span className="text-slate-300 dark:text-slate-600">—</span>}</td>
-                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || '—'}</td>
-                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || '—'}</td>
+                      <td className="px-3 py-0 align-middle text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate">{row.clientName || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
+                      <td className="px-3 py-0 align-middle text-[11px] font-semibold font-mono tracking-tight text-slate-500 dark:text-slate-400 truncate">{row.serial || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
+                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || MISSING_VALUE_PLACEHOLDER}</td>
+                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || MISSING_VALUE_PLACEHOLDER}</td>
                       <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${row.readingAt ? 'text-slate-500 dark:text-slate-400' : 'text-slate-300 dark:text-slate-600'}`}>{formatReadingAt(row.readingAt, i18n.language)}</td>
                     </tr>
                   )
@@ -645,12 +646,12 @@ export const PowerReport = () => {
                     {row.clientName ? (
                       <span className="text-[12px] font-bold text-slate-800 dark:text-slate-100 truncate">{row.clientName}</span>
                     ) : (
-                      <span className="text-[11px] text-slate-300 dark:text-slate-600">—</span>
+                      <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
                     )}
                     {hasSerial ? (
                       <span className="text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{row.serial}</span>
                     ) : (
-                      <span className="text-[11px] text-slate-300 dark:text-slate-600">—</span>
+                      <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
                     )}
                   </div>
                   <div className="shrink-0 flex flex-col gap-1">
@@ -658,18 +659,18 @@ export const PowerReport = () => {
                       <>
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                           <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                          <span className={`w-[76px] text-right font-semibold ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || '—'}</span>
+                          <span className={`w-[76px] text-right font-semibold ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || MISSING_VALUE_PLACEHOLDER}</span>
                         </span>
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
                           <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                          <span className={`w-[76px] text-right font-semibold ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || '—'}</span>
+                          <span className={`w-[76px] text-right font-semibold ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || MISSING_VALUE_PLACEHOLDER}</span>
                         </span>
                         <span className="self-stretch text-left text-[10px] font-semibold tabular-nums text-slate-400 dark:text-slate-500">
                           {formatReadingAt(row.readingAt, i18n.language)}
                         </span>
                       </>
                     ) : (
-                      <span className="text-[11px] font-semibold tabular-nums text-slate-300 dark:text-slate-600">—</span>
+                      <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
                     )}
                   </div>
                 </div>
