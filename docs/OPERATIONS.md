@@ -63,9 +63,9 @@ Backend collection contract:
   - optional `ZABBIX_DISCONNECT_HISTORY_MAX_ITEMS` (default `512`) to cap per-run history lookups for offline transition validation.
   - optional `ZABBIX_DISCONNECT_WINDOW_MARGIN_SECONDS` (default `90`) as trust margin for `online -> offline` timestamp window validation.
   - optional `ZABBIX_STATUS_STALE_MARGIN_SECONDS` (default `90`) as stale-sample safety margin for status freshness checks.
-  - optional `ZABBIX_HOST_GROUP_NAME` (default `OLT`) to place OLT hosts into a client-specific Zabbix host group (recommended Title Case with spaces/slashes, for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`).
+  - optional `ZABBIX_HOST_GROUP_NAME` (default `OLT`) to place OLT hosts into a client-specific Zabbix host group. Convention: `Varuna/{ClientTitle}` with title case client name (for example `Varuna/Gabisat`, `Varuna/Vianet`, `Varuna/Pontal`).
   - optional `ZABBIX_HOST_GROUP_LEGACY_NAMES` (default `OLT,OLTs`) to define old group names that should be removed from managed hosts during sync.
-  - optional `ZABBIX_HOST_NAME_PREFIX` (default empty) to namespace host names per client instance (for example `GabSAT-`, producing `GabSAT-OLT-BSJ-01`).
+  - optional `ZABBIX_HOST_NAME_PREFIX` (default empty) to namespace host names per client instance. Convention: ALL CAPS with trailing hyphen (for example `GABISAT-`, producing `GABISAT-OLT-BSJ-01`; `PONTAL-`, producing `PONTAL-OLT-ZTE-01`).
   - optional `COLLECTOR_CHECK_SECONDS` (default `30`) for scheduler reachability cadence.
   - optional `COLLECTOR_CHECK_MAX_BACKOFF_SECONDS` (default `1800`, compatibility knob).
 
@@ -218,8 +218,8 @@ Shared vs per-instance responsibility:
   - `redis`.
 
 Per-instance mandatory identity in shared Zabbix:
-- `ZABBIX_HOST_GROUP_NAME` must be unique per client namespace (for example `Varuna/GabSAT`, `Varuna/VNET`).
-- `ZABBIX_HOST_NAME_PREFIX` must be unique per client (for example `GabSAT-`, `VNET-`) to avoid host name collisions.
+- `ZABBIX_HOST_GROUP_NAME` must be unique per client namespace (for example `Varuna/Gabisat`, `Varuna/Vianet`, `Varuna/Pontal`).
+- `ZABBIX_HOST_NAME_PREFIX` must be unique per client, ALL CAPS (for example `GABISAT-`, `PONTAL-`) to avoid host name collisions.
 - Keep a dedicated API user for Varuna (for example `varuna_api`) and a separate personal/admin user for manual Zabbix UI access.
 
 Recommended practical deployment on one VM:
