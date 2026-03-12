@@ -50,6 +50,16 @@ Backend collection contract:
 - Zabbix integration requires:
   - `ZABBIX_API_URL`
   - either `ZABBIX_API_TOKEN` or (`ZABBIX_USERNAME` + `ZABBIX_PASSWORD`)
+  - optional read-only latest-item DB path for status/power hot reads:
+    - `ZABBIX_DB_ENABLED=1`
+    - `ZABBIX_DB_NAME`
+    - `ZABBIX_DB_USER`
+    - `ZABBIX_DB_PASSWORD`
+    - `ZABBIX_DB_HOST`
+    - `ZABBIX_DB_PORT`
+    - optional `ZABBIX_DB_CONN_MAX_AGE` (default `60`)
+    - optional `ZABBIX_DB_STATEMENT_TIMEOUT_MS` (default `5000`)
+    - optional `ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE` (default `1000`)
   - optional `ZABBIX_HOST_NAME_BY_OLT_JSON` for OLT->host alias mapping.
   - optional `TOPOLOGY_STRUCTURE_CACHE_TTL` (default `43200`) for per-OLT topology structure cache lifetime in Redis.
   - optional `ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS` (default `512`) to cap immediate `task.create` executions; explicit manual refresh paths can bypass via `--force-upstream`.
@@ -63,9 +73,9 @@ Backend collection contract:
   - optional `ZABBIX_DISCONNECT_HISTORY_MAX_ITEMS` (default `512`) to cap per-run history lookups for offline transition validation.
   - optional `ZABBIX_DISCONNECT_WINDOW_MARGIN_SECONDS` (default `90`) as trust margin for `online -> offline` timestamp window validation.
   - optional `ZABBIX_STATUS_STALE_MARGIN_SECONDS` (default `90`) as stale-sample safety margin for status freshness checks.
-  - optional `ZABBIX_HOST_GROUP_NAME` (default `OLT`) to place OLT hosts into a client-specific Zabbix host group (recommended Title Case with spaces/slashes, for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`).
+  - optional `ZABBIX_HOST_GROUP_NAME` (default `OLT`) to place OLT hosts into a client-specific Zabbix host group (recommended Title Case with spaces/slashes, for example `Varuna/Gabisat`, `Varuna/Pontal`, `Varuna/Demo`).
   - optional `ZABBIX_HOST_GROUP_LEGACY_NAMES` (default `OLT,OLTs`) to define old group names that should be removed from managed hosts during sync.
-  - optional `ZABBIX_HOST_NAME_PREFIX` (default empty) to namespace host names per client instance (for example `GabSAT-`, producing `GabSAT-OLT-BSJ-01`).
+  - optional `ZABBIX_HOST_NAME_PREFIX` (default empty) to namespace host names per client instance (for example `GABISAT-`, producing `GABISAT-OLT-BSJ-01`).
   - optional `COLLECTOR_CHECK_SECONDS` (default `30`) for scheduler reachability cadence.
   - optional `COLLECTOR_CHECK_MAX_BACKOFF_SECONDS` (default `1800`, compatibility knob).
 
@@ -130,7 +140,9 @@ Template import workflow:
   - Varuna backend power normalization discards out-of-range values, so UI/history stays clean while Zabbix items remain supported.
   - `OLT ZTE C600` uses a different status code map from `OLT ZTE C300`; live validation on `192.168.7.151` (`sysName=ZTE-PONTAL`) confirmed `3/4 -> online`, `2 -> link_loss`, `5 -> dying_gasp`, `7 -> offline`, with `1 -> link_loss` retained as a compatible LOS-class fallback.
   - The C600 ONU name OID is still `1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`; if the OLT returns `""`, treat the ONU as nameless rather than substituting numeric placeholders.
+  - ZTE discovery JS must not classify arbitrary names as serials. Real ONU names such as `ct25473.thiago` contain enough alphanumeric characters to look serial-like to a loose regex, so `normalizeSerial()` must return a value only for positively serial-like tokens; otherwise `{#ONU_NAME}` is blanked during LLD preprocessing.
   - C600 serial payloads may include numeric prefixes such as `1,<serial>`; template preprocessing should strip the prefix before Varuna discovery/polling runs.
+  - If malformed discovery rows are already persisted on hosts (for example blank serial plus `cliente 1`), import the updated `zte-template.yaml`, run `Execute now` on ONU discovery for the affected Zabbix host, then re-run Varuna discovery for the OLT. The template/backend fix prevents new bad rows, but existing stale inventory still needs one clean rediscovery to self-heal.
 - Template default macro values are bootstrap-only (`5m`, `1m`, `5m`, `30s`, `7d`) and are overridden per OLT by Varuna settings.
 - Varuna ONU LLD rules in all production ONU templates (`fiberhome-template.yaml`, `huawei-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`) are configured with immediate lost-resource cleanup (`Delete lost resources = Immediately` / `lifetime_type: DELETE_IMMEDIATELY`) so stale ONU item prototypes are removed as soon as discovery no longer returns them.
 - FIT `FNCS4000` is Telnet-based (no Zabbix LLD), but follows the same policy in Varuna runtime/vendor profile discovery config: `deactivate_missing=true`, `disable_lost_after_minutes=0`, `delete_lost_after_minutes=10080`.
@@ -146,6 +158,8 @@ Template import workflow:
 - Zabbix host resolution is self-healing across host recreation: stale cached host IDs are validated and re-resolved by host name/IP automatically.
 - Huawei and Fiberhome vendor profiles are standardized to model `UNIFICADO`; host tag `model` is synced as lowercase `unified` (English normalization in Zabbix).
 - FIT `FNCS4000` operational notes:
+  - `blade_ips` stores per-blade `{"ip": "...", "port": ...}` objects; there is no global telnet port;
+  - Varuna no longer falls back to legacy `ip_address:23` for FIT. Every blade must be configured explicitly with both IP and Telnet port;
   - fixed EPON interfaces `0/1..0/4`;
   - Telnet sessions land on `EPON>` and require an `enable` step before collector commands;
   - discovery reads all configured interfaces from Telnet CLI (`show onu info epon 0/x all`) and keeps only authorized ONUs (`Active` column);
@@ -156,6 +170,22 @@ Template import workflow:
   - if status polling returns an empty FIT snapshot after successful Telnet login, Varuna reports polling failure but keeps collector reachability healthy; check `last_poll_at` staleness before treating the OLT as unreachable;
   - power is per-ONU only (`show onu optical-ddm epon 0/x <onu_id>`) and skips ONU IDs above `64`;
   - no OLT RX power and no vendor-specific disconnect-reason history.
+- UNM alarm-history notes:
+  - Varuna resolves the target ONU in UNM inventory by `slot + pon + onu_id` and uses the resulting `cobjectid` for alarm queries; ONU name/serial are not the alarm-history lookup key.
+  - UNM alarm history schemas are not consistent across deployments. Some expose `alarmdb.t_alarmloghist_merge`; others expose only `alarmdb.t_alarmloghist` plus partition tables like `t_alarmloghist_1_1`.
+  - Varuna now discovers the available UNM history tables at runtime and reads them without SQL `ORDER BY coccurutctime`, because older schemas often lack a usable `cobjectid` index and ordered per-ONU queries time out even when the object lookup itself succeeds.
+  - If a direct per-ONU UNM history query still times out, Varuna falls back to bounded recent-window reads against the time indexes and filters the target ONU in Python. This is the intended recovery path for schemas like `VIANET / OLT-AN6000`.
+- Alarm-history power row merge:
+  - Zabbix-backed ONU Rx and OLT Rx samples are merged into one row when their timestamps fall within the backend merge window.
+  - Default merge window is automatic from `OLT.power_interval_seconds` and capped at `60s`.
+  - Per-instance override: `ALARM_HISTORY_POWER_MERGE_WINDOW_SECONDS`.
+  - `VIANET` canary value: `90`.
+- Latest-power read canary:
+  - `POWER_LATEST_READS_USE_ZABBIX=1` switches `GET /api/onu/{id}/power/`, `POST /api/onu/batch-power/` with `refresh=false`, and `GET /api/onu/power-report/` from `ONU.latest_*` snapshots to live Zabbix latest-value reads.
+  - The live latest-value path is still DB-first (`ZABBIX_DB_ENABLED=1`), so normal power reads avoid `api_jsonrpc.php` fanout and use JSON-RPC only as fallback.
+  - `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS` bounds history-fallback fanout on the request path. Keep it high enough for single ONU / PON reads, but low enough that `power-report` stays operational.
+  - Current production rollout is enabled on every Zabbix-backed stack (`VIANET`, `DEMO`, `GABISAT`, `PONTAL`, `FLASHNET`).
+  - Operational caveat: when a request touches more ONU indexes than `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS`, large reads use only current latest values from Zabbix. This keeps `power-report` fast, but can differ from the latest valid history-backed value when the current item is invalid.
 - Trends are disabled in Varuna templates (`trends=0`) to reduce Zabbix storage overhead.
 - Item history in Varuna templates is driven by `{$VARUNA.HISTORY_DAYS}` (default `7d`) for ONU status and power metrics.
 - ONU item prototypes include `slot` and `pon` tags (`slot={#SLOT}`, `pon={#PON}`) for direct slot/PON filtering in Zabbix item views.
@@ -218,8 +248,8 @@ Shared vs per-instance responsibility:
   - `redis`.
 
 Per-instance mandatory identity in shared Zabbix:
-- `ZABBIX_HOST_GROUP_NAME` must be unique per client namespace (for example `Varuna/GabSAT`, `Varuna/VNET`).
-- `ZABBIX_HOST_NAME_PREFIX` must be unique per client (for example `GabSAT-`, `VNET-`) to avoid host name collisions.
+- `ZABBIX_HOST_GROUP_NAME` must be unique per client namespace (for example `Varuna/Gabisat`, `Varuna/Pontal`).
+- `ZABBIX_HOST_NAME_PREFIX` must be unique per client (for example `GABISAT-`, `PONTAL-`) to avoid host name collisions.
 - Keep a dedicated API user for Varuna (for example `varuna_api`) and a separate personal/admin user for manual Zabbix UI access.
 
 Recommended practical deployment on one VM:
@@ -229,6 +259,11 @@ Recommended practical deployment on one VM:
   - `zabbix-server` + `zabbix-web`.
 - per-client application stack:
   - `frontend` + `backend` + `redis`.
+- When enabling the direct latest-item DB reader on a new canary stack, start with one instance only and keep API fallback enabled. The current production fleet already runs this path on all Zabbix-backed instances (`VIANET`, `DEMO`, `GABISAT`, `PONTAL`, `FLASHNET`).
+
+Current production observations:
+- If status is stale on `DEMO` or `GABISAT`, treat that as upstream Zabbix/OLT freshness degradation first. Varuna can stay coherent with Zabbix while the source items themselves are already old.
+- If large `power-report` reads differ from the last valid power sample on very large OLTs, check whether the request exceeded `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS` before assuming the DB reader is wrong.
 
 `docker-compose.prod.yml` reads these instance-specific compose variables:
 - `VARUNA_ENV_FILE`
@@ -316,6 +351,27 @@ Example: `demo` instance (`demo.varuna.network`, ports 18100/18101):
 ```bash
 cd /Users/gabriel/Documents/varuna
 docker compose -p varuna_demo --env-file docker/prod.demo.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build
+```
+
+Example: `vianet` instance (`vianet.varuna.network`, ports 18090/18091):
+```bash
+cd /Users/gabriel/Documents/varuna
+docker compose -p varuna_vianet --env-file docker/prod.vianet.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build
+```
+
+Example: `flashnet` instance (`flashnet.varuna.network`, ports 18130/18131):
+```bash
+cd /Users/gabriel/Documents/varuna
+docker compose -p varuna_flashnet --env-file docker/prod.flashnet.env \
+  -f docker-compose.prod.shared-pg.yml up -d --build
+```
+
+Example: `pontal` instance (`pontal.varuna.network`, ports 18120/18121):
+```bash
+cd /Users/gabriel/Documents/varuna
+docker compose -p varuna_pontal --env-file /etc/varuna/prod.pontal.env \
   -f docker-compose.prod.shared-pg.yml up -d --build
 ```
 
@@ -504,6 +560,13 @@ backend/venv/bin/python backend/manage.py prune_history
 
 ## Background Collection (Scheduler)
 The `run_scheduler` management command runs as a background process when backend env sets `ENABLE_SCHEDULER=1`. Current dev/prod env templates enable this by default. It automatically dispatches polling, discovery, power collection, collector reachability checks, and history prune cycles.
+
+Latest-power sync contract:
+- Zabbix-backed OLTs keep a fast local latest-power snapshot on `ONU` for UI reads.
+- Scheduler refreshes that snapshot on the configured `power_interval_seconds` for every collector type.
+- Routine Zabbix scheduler sync is a light current-item read only; it does not walk Zabbix history during normal background collection.
+- Manual/scoped power refresh is the heavier path: it may request immediate Zabbix execution and may use recent-history fallback when current power items are invalid.
+- `ONUPowerSample` remains the retained history/trend store, not the primary latest-value read path.
 
 ```bash
 # Scheduler starts automatically when ENABLE_SCHEDULER=1.

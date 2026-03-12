@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Dict, Iterable, Optional
 
-from django.db.models import F, OuterRef, Subquery
-
 from django.utils import timezone
 
 from topology.models import ONU, ONUPowerSample
@@ -96,6 +94,79 @@ def persist_power_samples(
     return len(rows_to_insert)
 
 
+def sync_latest_power_snapshots(
+    onus: Iterable[ONU],
+    result_map: Dict[int, Dict],
+    *,
+    preserve_existing_empty_online: bool = False,
+) -> int:
+    """
+    Update the per-ONU latest power snapshot used by fast UI read paths.
+
+    Rows with no valid power value clear the latest snapshot so stale readings do
+    not survive after an offline/unknown sync.
+    """
+
+    normalized_onus = []
+    seen = set()
+    for onu in onus:
+        if not onu:
+            continue
+        onu_id = int(onu.id)
+        if onu_id in seen:
+            continue
+        seen.add(onu_id)
+        normalized_onus.append(onu)
+
+    if not normalized_onus:
+        return 0
+
+    rows_to_update = []
+    for onu in normalized_onus:
+        payload = result_map.get(int(onu.id)) or {}
+        onu_rx_power = normalize_power_value(payload.get('onu_rx_power'))
+        olt_rx_power = normalize_power_value(payload.get('olt_rx_power'))
+        skipped_reason = str(payload.get('skipped_reason') or '').strip().lower()
+
+        if (
+            preserve_existing_empty_online
+            and onu_rx_power is None
+            and olt_rx_power is None
+            and str(getattr(onu, 'status', '') or '').lower() == ONU.STATUS_ONLINE
+            and skipped_reason not in {'offline', 'unknown', 'not_online'}
+        ):
+            continue
+
+        read_at = None
+        if onu_rx_power is not None or olt_rx_power is not None:
+            read_at = _to_aware_datetime(payload.get('power_read_at'))
+            if read_at is None:
+                onu_rx_power = None
+                olt_rx_power = None
+
+        if (
+            normalize_power_value(getattr(onu, 'latest_onu_rx_power', None)) == onu_rx_power
+            and normalize_power_value(getattr(onu, 'latest_olt_rx_power', None)) == olt_rx_power
+            and getattr(onu, 'latest_power_read_at', None) == read_at
+        ):
+            continue
+
+        onu.latest_onu_rx_power = onu_rx_power
+        onu.latest_olt_rx_power = olt_rx_power
+        onu.latest_power_read_at = read_at
+        rows_to_update.append(onu)
+
+    if not rows_to_update:
+        return 0
+
+    ONU.objects.bulk_update(
+        rows_to_update,
+        ['latest_onu_rx_power', 'latest_olt_rx_power', 'latest_power_read_at'],
+        batch_size=1000,
+    )
+    return len(rows_to_update)
+
+
 def _normalize_onu_ids(onu_ids: Iterable[int]) -> list[int]:
     normalized = []
     seen = set()
@@ -113,34 +184,29 @@ def _normalize_onu_ids(onu_ids: Iterable[int]) -> list[int]:
 
 def get_latest_power_snapshot_map(onu_ids: Iterable[int]) -> Dict[int, Dict]:
     """
-    Return the latest persisted power sample per ONU as a read-model payload.
+    Return the latest synced power snapshot per ONU as a read-model payload.
     """
 
     normalized_ids = _normalize_onu_ids(onu_ids)
     if not normalized_ids:
         return {}
 
-    latest_read_at_subquery = (
-        ONUPowerSample.objects.filter(onu_id=OuterRef('onu_id'))
-        .order_by('-read_at')
-        .values('read_at')[:1]
-    )
-    latest_rows = (
-        ONUPowerSample.objects.filter(onu_id__in=normalized_ids)
-        .annotate(_latest_read_at=Subquery(latest_read_at_subquery))
-        .filter(read_at=F('_latest_read_at'))
-        .values('onu_id', 'onu_rx_power', 'olt_rx_power', 'read_at')
+    latest_rows = ONU.objects.filter(id__in=normalized_ids).values(
+        'id',
+        'latest_onu_rx_power',
+        'latest_olt_rx_power',
+        'latest_power_read_at',
     )
 
     result: Dict[int, Dict] = {}
     for row in latest_rows:
-        onu_id = int(row['onu_id'])
-        onu_rx_power = normalize_power_value(row.get('onu_rx_power'))
-        olt_rx_power = normalize_power_value(row.get('olt_rx_power'))
+        onu_id = int(row['id'])
+        onu_rx_power = normalize_power_value(row.get('latest_onu_rx_power'))
+        olt_rx_power = normalize_power_value(row.get('latest_olt_rx_power'))
         if onu_rx_power is None and olt_rx_power is None:
             continue
 
-        read_at = row.get('read_at')
+        read_at = row.get('latest_power_read_at')
         result[onu_id] = {
             'onu_rx_power': onu_rx_power,
             'olt_rx_power': olt_rx_power,

@@ -32,8 +32,9 @@ import { MISSING_VALUE_PLACEHOLDER, PLACEHOLDER_CLASS } from './utils/placeholde
 const SettingsPanel = lazy(() =>
   import('./components/SettingsPanel').then((module) => ({ default: module.SettingsPanel }))
 )
+const importPowerReportModule = () => import('./components/PowerReport')
 const PowerReport = lazy(() =>
-  import('./components/PowerReport').then((module) => ({ default: module.PowerReport }))
+  importPowerReportModule().then((module) => ({ default: module.PowerReport }))
 )
 const AlarmHistory = lazy(() =>
   import('./components/AlarmHistory').then((module) => ({ default: module.AlarmHistory }))
@@ -45,6 +46,7 @@ const normalizeList = (data) => {
   return []
 }
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
+const SOURCE_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/
 const parseTimestampMs = (value) => {
   if (!value) return null
   const ms = Date.parse(value)
@@ -66,6 +68,13 @@ const ALARM_REASON_TO_STATUS_KEY = {
 const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
 const SELECTED_OLT_IDS_STORAGE_KEY = 'varuna.selectedOltIds'
 const THEME_STORAGE_KEY = 'varuna.theme'
+
+const parseSourceTimestamp = (value) => {
+  const match = String(value || '').trim().match(SOURCE_TIMESTAMP_RE)
+  if (!match) return null
+  const [, year, month, day, hour, minute, second = '00'] = match
+  return { year, month, day, hour, minute, second }
+}
 
 const formatPowerValue = (value) => {
   if (value === null || value === undefined || value === '') return MISSING_VALUE_PLACEHOLDER
@@ -154,6 +163,8 @@ const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
 const TOPOLOGY_REFRESH_DEFAULT_INTERVAL_MS = 30_000
 const TOPOLOGY_REFRESH_RECOVERY_INTERVAL_MS = 5_000
+const POWER_REPORT_WARM_DELAY_MS = 1200
+const POWER_REPORT_WARM_IDLE_TIMEOUT_MS = 2500
 const SEARCH_HIGHLIGHT_STYLE = {
   boxShadow: 'inset 0 0 0 2px rgba(16, 185, 129, 0.6)',
   background: 'rgba(16, 185, 129, 0.06)',
@@ -365,9 +376,17 @@ const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
   return changed ? mergedOlts : nextOlts
 }
 
-const formatDisconnectionWindow = (startValue, endValue, language) => {
+const formatDisconnectionWindow = (startValue, endValue, language, options = {}) => {
+  const { preserveSourceClock = false } = options
   const anchorValue = endValue || startValue
   if (!anchorValue) return MISSING_VALUE_PLACEHOLDER
+
+  if (preserveSourceClock) {
+    const parts = parseSourceTimestamp(anchorValue)
+    if (parts) {
+      return `${parts.day}/${parts.month}/${parts.year} ${parts.hour}:${parts.minute}`
+    }
+  }
 
   const anchor = new Date(anchorValue)
   if (Number.isNaN(anchor.getTime())) return MISSING_VALUE_PLACEHOLDER
@@ -656,6 +675,7 @@ const App = () => {
   const previousHtmlCursorRef = useRef('')
   const fetchOltsInflightRef = useRef({})
   const powerSnapshotLoadKeyRef = useRef('')
+  const powerReportWarmStartedRef = useRef(false)
 
   useEffect(() => {
     try {
@@ -667,6 +687,50 @@ const App = () => {
     }
     document.documentElement.classList.toggle('dark', isDarkMode)
   }, [isDarkMode])
+
+  useEffect(() => {
+    if (!authToken) {
+      powerReportWarmStartedRef.current = false
+      return
+    }
+    if (powerReportWarmStartedRef.current || loading || !olts.length) return
+
+    powerReportWarmStartedRef.current = true
+    let cancelled = false
+
+    const warm = async () => {
+      try {
+        const module = await importPowerReportModule()
+        if (!cancelled) {
+          await module.warmPowerReportData?.()
+        }
+      } catch {
+        // Power report still loads on demand if background warming fails.
+      }
+    }
+
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      const idleId = window.requestIdleCallback(() => {
+        if (!cancelled) {
+          void warm()
+        }
+      }, { timeout: POWER_REPORT_WARM_IDLE_TIMEOUT_MS })
+      return () => {
+        cancelled = true
+        window.cancelIdleCallback?.(idleId)
+      }
+    }
+
+    const timer = window.setTimeout(() => {
+      if (!cancelled) {
+        void warm()
+      }
+    }, POWER_REPORT_WARM_DELAY_MS)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [authToken, loading, olts.length])
 
   const showPonPanelError = useCallback((message) => {
     setPonPanelError(message)
@@ -1191,6 +1255,7 @@ const App = () => {
     const onus = asList(selectedPonData?.pon?.onus)
     return [...onus].sort((a, b) => (a?.onu_number ?? 0) - (b?.onu_number ?? 0))
   }, [selectedPonData])
+  const shouldPreserveUnmStatusClock = Boolean(selectedPonData?.olt?.unm_enabled)
 
 
   const availableStatusCounts = useMemo(() => {
@@ -1247,7 +1312,7 @@ const App = () => {
   const activeSortOptions = activeTab === 'power' ? powerSortOptions : statusSortOptions
   const currentSortMode = activeTab === 'power' ? powerSortMode : statusSortMode
   const currentSortLabel = activeSortOptions.find((option) => option.id === currentSortMode)?.label || activeSortOptions[0]?.label || t('ONU ID')
-  const isSidebarRefreshBusy = isRefreshingPonPanel || isLoadingPonPowerSnapshot || refreshCooldownActive
+  const isSidebarRefreshBusy = isRefreshingPonPanel || refreshCooldownActive || (activeTab === 'power' && isLoadingPonPowerSnapshot)
   const setCurrentSortMode = (mode) => {
     if (activeTab === 'power') {
       setPowerSortMode(mode)
@@ -1429,7 +1494,7 @@ const App = () => {
   }, [selectedOnus])
 
   useEffect(() => {
-    if (activeNav !== 'topology' || activeTab !== 'power') return
+    if (activeNav !== 'topology') return
     if (!selectedPonId || !selectedPonData?.olt?.id) return
 
     const loadKey = `${selectedPonId}:${selectedPonOnuSignature}`
@@ -1442,7 +1507,6 @@ const App = () => {
     powerSnapshotLoadKeyRef.current = loadKey
     let cancelled = false
     setIsLoadingPonPowerSnapshot(true)
-    setPonPanelError('')
 
     const loadSnapshot = async () => {
       try {
@@ -1450,12 +1514,10 @@ const App = () => {
         if (cancelled) return
         if (!result?.ok) {
           powerSnapshotLoadKeyRef.current = ''
-          showPonPanelError(result?.message || t('Failed to load power data'))
         }
       } catch (err) {
         if (cancelled) return
         powerSnapshotLoadKeyRef.current = ''
-        showPonPanelError(getApiErrorMessage(err, t('Failed to load power data'), t))
       } finally {
         if (!cancelled) {
           setIsLoadingPonPowerSnapshot(false)
@@ -1469,7 +1531,7 @@ const App = () => {
       cancelled = true
       setIsLoadingPonPowerSnapshot(false)
     }
-  }, [activeNav, activeTab, selectedPonData, selectedPonId, selectedPonOnuSignature, hasSelectedPonPowerSnapshot, collectPowerForSelectedPon, showPonPanelError, t])
+  }, [activeNav, selectedPonData, selectedPonId, selectedPonOnuSignature, hasSelectedPonPowerSnapshot, collectPowerForSelectedPon])
 
   const GRAY_STATUS_STYLE = 'bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200 dark:bg-slate-700/50 dark:text-slate-400 dark:ring-slate-500/40'
 
@@ -1975,7 +2037,7 @@ const App = () => {
 
                   {activeTab === 'status' ? (
                     <div className="relative flex flex-col w-full max-h-full min-h-0">
-                    {(isRefreshingPonPanel || isLoadingPonPowerSnapshot) && (
+                    {isRefreshingPonPanel && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
                         <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
                       </div>
@@ -2029,7 +2091,8 @@ const App = () => {
                                 : formatDisconnectionWindow(
                                     onu.disconnect_window_start,
                                     onu.disconnect_window_end,
-                                    i18n.language
+                                    i18n.language,
+                                    { preserveSourceClock: shouldPreserveUnmStatusClock }
                                   )
                               const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
                                 (ponHighlightTarget.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(ponHighlightTarget.serial)) ||
@@ -2148,7 +2211,8 @@ const App = () => {
                             : formatDisconnectionWindow(
                                 onu.disconnect_window_start,
                                 onu.disconnect_window_end,
-                                i18n.language
+                                i18n.language,
+                                { preserveSourceClock: shouldPreserveUnmStatusClock }
                               )
                           const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
                             (ponHighlightTarget.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(ponHighlightTarget.serial)) ||
@@ -2232,7 +2296,7 @@ const App = () => {
 
                   ) : (
                     <div className="relative flex flex-col w-full max-h-full min-h-0">
-                    {(isRefreshingPonPanel || isLoadingPonPowerSnapshot) && (
+                    {isRefreshingPonPanel && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-[1px] rounded-xl transition-opacity duration-200">
                         <div className="w-5 h-5 border-2 border-slate-300 dark:border-slate-600 border-t-emerald-500 dark:border-t-emerald-400 rounded-full animate-spin" />
                       </div>

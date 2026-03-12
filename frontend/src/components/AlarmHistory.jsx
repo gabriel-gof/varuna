@@ -8,14 +8,35 @@ import { getPowerColor, powerColorClass } from '../utils/powerThresholds'
 import { MISSING_VALUE_PLACEHOLDER, PLACEHOLDER_CLASS } from '../utils/placeholders'
 
 const toDateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const SOURCE_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/
 
 const formatDateLabel = (key) => {
   const [, m, d] = key.split('-')
   return `${d}/${m}`
 }
 
-const formatTimestamp = (value) => {
+const parseSourceTimestamp = (value) => {
+  const match = String(value || '').trim().match(SOURCE_TIMESTAMP_RE)
+  if (!match) return null
+  const [, year, month, day, hour, minute, second = '00'] = match
+  return { year, month, day, hour, minute, second }
+}
+
+const toSourceDateKey = (value) => {
+  const parts = parseSourceTimestamp(value)
+  if (!parts) return null
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
+const formatTimestamp = (value, options = {}) => {
+  const { preserveSourceClock = false } = options
   if (!value) return MISSING_VALUE_PLACEHOLDER
+  if (preserveSourceClock) {
+    const parts = parseSourceTimestamp(value)
+    if (parts) {
+      return `${parts.day}/${parts.month}/${parts.year.slice(2)} ${parts.hour}:${parts.minute}`
+    }
+  }
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return MISSING_VALUE_PLACEHOLDER
   const d = String(date.getDate()).padStart(2, '0')
@@ -102,6 +123,7 @@ export const AlarmHistory = () => {
   const [detailError, setDetailError] = useState('')
   const [alarms, setAlarms] = useState([])
   const [powerHistory, setPowerHistory] = useState([])
+  const [detailSource, setDetailSource] = useState(null)
 
   // Local search state
   const [searchTerm, setSearchTerm] = useState('')
@@ -180,6 +202,7 @@ export const AlarmHistory = () => {
     if (!selectedClient?.id) {
       setAlarms([])
       setPowerHistory([])
+      setDetailSource(null)
       setDetailError('')
       setDetailLoading(false)
       return
@@ -206,10 +229,12 @@ export const AlarmHistory = () => {
 
         setAlarms(nextAlarms)
         setPowerHistory(nextPower)
+        setDetailSource(payload.source || null)
       } catch (error) {
         if (cancelled) return
         setAlarms([])
         setPowerHistory([])
+        setDetailSource(null)
         setDetailError(getApiErrorMessage(error, t('Failed to load OLT data'), t))
       } finally {
         if (!cancelled) setDetailLoading(false)
@@ -260,13 +285,15 @@ export const AlarmHistory = () => {
     const buckets = {}
     for (const alarm of alarms) {
       if (!alarm.start) continue
-      const key = toDateKey(new Date(alarm.start))
+      const key = detailSource === 'unm'
+        ? (toSourceDateKey(alarm.start) || toDateKey(new Date(alarm.start)))
+        : toDateKey(new Date(alarm.start))
       if (!buckets[key]) buckets[key] = { date: key, link_loss: 0, dying_gasp: 0, unknown: 0 }
       const reason = alarm.type === 'link_loss' ? 'link_loss' : alarm.type === 'dying_gasp' ? 'dying_gasp' : 'unknown'
       buckets[key][reason]++
     }
     return lastNDays.map(date => buckets[date] || { date, link_loss: 0, dying_gasp: 0, unknown: 0 })
-  }, [alarms, lastNDays])
+  }, [alarms, detailSource, lastNDays])
 
   const sortedPowerAsc = useMemo(() =>
     [...powerHistory].sort((a, b) => a.timestamp - b.timestamp),
@@ -445,14 +472,14 @@ export const AlarmHistory = () => {
                     )}
                     {alarms.map((alarm, idx) => (
                     <tr key={alarm.id} className={`h-9 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50 dark:bg-slate-800/50'} hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors`}>
-                      <td className="px-3 py-0 align-middle">
+                        <td className="px-3 py-0 align-middle">
                           <span title={alarm.code ? `${eventTypeLabel(alarm)} (${alarm.code})` : eventTypeLabel(alarm)} className={`inline-flex max-w-[160px] items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-black uppercase whitespace-nowrap ${eventTypeStyle(alarm.type, alarm.severity)}`}>
                             <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${eventTypeDot(alarm.type, alarm.severity)}`} />
                             <span className="truncate">{eventTypeLabel(alarm)}</span>
                           </span>
                         </td>
-                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start)}</td>
-                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end)}</td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start, { preserveSourceClock: detailSource === 'unm' })}</td>
+                        <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end, { preserveSourceClock: detailSource === 'unm' })}</td>
                         <td className="px-2.5 py-0 align-middle text-[10px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end, alarm.durationSeconds)}</td>
                       </tr>
                     ))}
@@ -565,8 +592,8 @@ export const AlarmHistory = () => {
                               <span className="truncate">{eventTypeLabel(alarm)}</span>
                             </span>
                           </td>
-                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start)}</td>
-                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end)}</td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.start, { preserveSourceClock: detailSource === 'unm' })}</td>
+                          <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-600 dark:text-slate-300 tabular-nums text-center whitespace-nowrap">{formatTimestamp(alarm.end, { preserveSourceClock: detailSource === 'unm' })}</td>
                           <td className="px-2 py-0 align-middle text-[9px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center whitespace-nowrap">{formatDuration(alarm.start, alarm.end, alarm.durationSeconds)}</td>
                         </tr>
                       ))}

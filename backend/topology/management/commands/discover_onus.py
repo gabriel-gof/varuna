@@ -16,7 +16,7 @@ from topology.services.olt_health_service import mark_olt_reachable, mark_olt_un
 from topology.services.topology_counter_service import topology_counter_service
 from topology.services.unm_service import UNMServiceError, unm_service
 from topology.services.vendor_profile import COLLECTOR_TYPE_FIT_TELNET, get_collector_type, parse_onu_index
-from topology.services.zabbix_service import zabbix_service
+from topology.services.zabbix_service import normalize_discovery_onu_name, zabbix_service
 
 
 logger = logging.getLogger(__name__)
@@ -215,8 +215,8 @@ class Command(BaseCommand):
         olt: OLT,
         normalized_entries: List[Dict[str, Any]],
     ) -> Tuple[Dict[str, Dict[str, Any]], Dict[Tuple[str, str], Dict[str, Any]]]:
-        blade_ips = olt.get_blade_ips()
-        multi_blade = len(blade_ips) > 1
+        blades = olt.get_blades()
+        multi_blade = len(blades) > 1
         slot_specs: Dict[str, Dict[str, Any]] = {}
         pon_specs: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for entry in normalized_entries:
@@ -708,7 +708,10 @@ class Command(BaseCommand):
             serial_value = _normalize_serial(
                 self._discovery_macro(row, "{#SERIAL}") or self._discovery_macro(row, "{#ONU_SERIAL}")
             )
-            name_value = self._discovery_macro(row, "{#ONU_NAME}")
+            name_value = normalize_discovery_onu_name(
+                self._discovery_macro(row, "{#ONU_NAME}"),
+                serial=serial_value,
+            )
             normalized_entries.append(
                 {
                     "slot_id": int(parsed_slot),

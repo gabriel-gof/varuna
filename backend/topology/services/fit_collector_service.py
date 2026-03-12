@@ -55,13 +55,13 @@ class FITCollectorError(RuntimeError):
 
 
 class _FITTelnetSession:
-    def __init__(self, olt: OLT, *, host: str | None = None):
+    def __init__(self, olt: OLT, *, host: str | None = None, port: int | None = None):
         telnet_ctor = getattr(telnetlib, "Telnet", None)
         if telnet_ctor is None:
             raise FITCollectorError("telnetlib is unavailable in this Python runtime.")
         self.olt = olt
         self.host = str(host or olt.ip_address or "").strip()
-        self.port = int(getattr(olt, "telnet_port", 23) or 23)
+        self.port = int(port or 23)
         self.username = str(getattr(olt, "telnet_username", "") or "")
         self.password = str(getattr(olt, "telnet_password", "") or "")
         self.connect_timeout = float(getattr(settings, "FIT_TELNET_TIMEOUT_SECONDS", 12) or 12)
@@ -211,6 +211,15 @@ class FITCollectorService:
         return self._interfaces(olt)
 
     @staticmethod
+    def _configured_blades(olt: OLT) -> List[Dict[str, int | str]]:
+        blades = olt.get_blades()
+        if blades:
+            return blades
+        raise FITCollectorError(
+            "FIT blade configuration is required. Configure at least one blade with explicit IP and Telnet port."
+        )
+
+    @staticmethod
     def _blade_error(blade_ip: str, exc: Exception) -> FITCollectorError:
         message = str(exc or "").strip() or "Unknown FIT collector error."
         prefix = f"Blade {blade_ip}: "
@@ -249,14 +258,17 @@ class FITCollectorService:
             raise FITCollectorError(f"Invalid FIT interface label: {interface}")
 
     def check_reachability(self, olt: OLT) -> tuple[bool, str]:
-        blade_ips = olt.get_blade_ips()
+        try:
+            blades = self._configured_blades(olt)
+        except FITCollectorError as exc:
+            return False, str(exc)
         errors: List[str] = []
-        for blade_ip in blade_ips:
+        for blade in blades:
             try:
-                with _FITTelnetSession(olt, host=blade_ip):
+                with _FITTelnetSession(olt, host=blade["ip"], port=blade["port"]):
                     pass
             except FITCollectorError as exc:
-                errors.append(str(self._blade_error(blade_ip, exc)))
+                errors.append(str(self._blade_error(blade["ip"], exc)))
         if errors:
             return False, "; ".join(errors)
         return True, "Telnet login succeeded."
@@ -316,10 +328,10 @@ class FITCollectorService:
         interfaces_by_slot: Optional[Dict[int, List[str]]] = None,
     ) -> List[Dict]:
         rows: List[Dict] = []
-        blade_ips = olt.get_blade_ips()
+        blades = self._configured_blades(olt)
         default_interfaces = self._interfaces(olt)
         errors: List[str] = []
-        for blade_index, blade_ip in enumerate(blade_ips):
+        for blade_index, blade in enumerate(blades):
             slot_id = blade_index + 1
             if interfaces_by_slot is not None:
                 slot_interfaces = interfaces_by_slot.get(slot_id) or []
@@ -329,12 +341,12 @@ class FITCollectorService:
             else:
                 slot_interfaces = default_interfaces
             try:
-                with _FITTelnetSession(olt, host=blade_ip) as session:
+                with _FITTelnetSession(olt, host=blade["ip"], port=blade["port"]) as session:
                     for interface in slot_interfaces:
                         output = session.run_command(f"show onu info epon {interface} all")
                         rows.extend(self.parse_status_output(output, slot_id=slot_id))
             except FITCollectorError as exc:
-                errors.append(str(self._blade_error(blade_ip, exc)))
+                errors.append(str(self._blade_error(blade["ip"], exc)))
         rows.sort(key=lambda row: (int(row["slot_id"]), int(row["pon_id"]), int(row["onu_id"])))
         if errors:
             raise FITCollectorError("; ".join(errors))
@@ -348,7 +360,7 @@ class FITCollectorService:
         if not ordered_onus:
             return {}
 
-        blade_ips = olt.get_blade_ips()
+        blades = self._configured_blades(olt)
         onus_by_slot: Dict[int, List[ONU]] = {}
         for onu in ordered_onus:
             onus_by_slot.setdefault(int(onu.slot_id or 1), []).append(onu)
@@ -358,9 +370,9 @@ class FITCollectorService:
         errors: List[str] = []
         for slot_id, slot_onus in onus_by_slot.items():
             blade_index = slot_id - 1
-            blade_ip = blade_ips[blade_index] if blade_index < len(blade_ips) else blade_ips[0]
+            blade = blades[blade_index] if blade_index < len(blades) else blades[0]
             try:
-                with _FITTelnetSession(olt, host=blade_ip) as session:
+                with _FITTelnetSession(olt, host=blade["ip"], port=blade["port"]) as session:
                     for onu in slot_onus:
                         interface = f"0/{int(onu.pon_id)}"
                         output = session.run_command(
@@ -378,7 +390,7 @@ class FITCollectorService:
                             "power_read_at": read_at if onu_rx_power is not None else None,
                         }
             except FITCollectorError as exc:
-                errors.append(str(self._blade_error(blade_ip, exc)))
+                errors.append(str(self._blade_error(blade["ip"], exc)))
         if errors:
             raise FITCollectorError("; ".join(errors))
         return results

@@ -11,7 +11,10 @@ from django.utils import timezone
 
 from topology.models import OLT, ONUPowerSample
 from topology.services.collector_service import check_olt_reachability, collector_name_for_olt
-from topology.services.maintenance_runtime import collect_power_for_olt as collect_power_runtime
+from topology.services.maintenance_runtime import (
+    collect_power_for_olt as collect_power_runtime,
+    get_power_sync_interval_seconds,
+)
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 
 
@@ -28,12 +31,13 @@ def _optional_positive_int(value):
 
 
 def _is_power_due(olt, now):
-    if olt.next_power_at:
-        return olt.next_power_at <= now
+    interval_seconds = get_power_sync_interval_seconds(olt)
+    due_from_last = True
     if olt.last_power_at:
-        interval_seconds = max(int(olt.power_interval_seconds or 0), 1)
-        return (olt.last_power_at + timedelta(seconds=interval_seconds)) <= now
-    return True
+        due_from_last = (olt.last_power_at + timedelta(seconds=interval_seconds)) <= now
+    if olt.next_power_at:
+        return olt.next_power_at <= now or due_from_last
+    return due_from_last
 
 
 def _collector_check_interval_seconds(olt, base_interval_seconds: int, max_backoff_seconds: int) -> int:
@@ -59,12 +63,14 @@ def _collect_power_for_olt(olt):
         force_refresh=True,
         include_results=False,
         history_source=ONUPowerSample.SOURCE_SCHEDULER,
+        use_history_fallback=False,
     )
     logger.info(
-        "scheduler: power collected for OLT %s (collected=%s/%s stored=%s).",
+        "scheduler: power collected for OLT %s (collected=%s/%s synced=%s stored=%s).",
         olt.id,
         payload.get('collected_count', 0),
         payload.get('count', 0),
+        payload.get('synced_count', 0),
         payload.get('stored_count', 0),
     )
 

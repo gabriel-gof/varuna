@@ -121,6 +121,7 @@ class PowerService:
         *,
         refresh_upstream: bool = False,
         force_upstream: bool = False,
+        use_history_fallback: bool = True,
     ) -> Dict[int, Dict]:
         base_onus = [onu for onu in onus if onu and onu.olt_id and onu.is_active]
         if not base_onus:
@@ -276,6 +277,7 @@ class PowerService:
                         index_to_onu.keys(),
                         onu_rx_item_key_pattern=onu_pattern,
                         olt_rx_item_key_pattern=olt_pattern,
+                        history_fallback=use_history_fallback,
                     )
                 except Exception as exc:
                     logger.warning("Power refresh OLT %s via Zabbix failed: %s", olt.id, exc)

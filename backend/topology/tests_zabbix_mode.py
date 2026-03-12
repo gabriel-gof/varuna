@@ -1,3 +1,5 @@
+import json
+
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone as dt_timezone
 
@@ -8,14 +10,19 @@ from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from topology.api.auth_views import me_view
-from topology.api.serializers import VendorProfileSerializer
+from topology.api.serializers import OLTSerializer, VendorProfileSerializer
 from topology.api.views import OLTViewSet, OLTPONViewSet, ONUViewSet
 from topology.models import MaintenanceJob, OLT, OLTPON, OLTSlot, ONU, ONULog, ONUPowerSample, UserProfile, VendorProfile
 from topology.services.cache_service import cache_service
 from topology.services.fit_collector_service import FITCollectorError, _FITTelnetSession, fit_collector_service
-from topology.services.history_service import persist_power_samples
+from topology.services.history_service import persist_power_samples, sync_latest_power_snapshots
 from topology.services.maintenance_job_service import maintenance_job_service
-from topology.services.maintenance_runtime import collect_power_for_olt, has_usable_status_snapshot
+from topology.services.maintenance_runtime import (
+    collect_power_for_olt,
+    get_power_sync_interval_seconds,
+    has_usable_status_snapshot,
+)
+from topology.services.unm_service import UNMService, UNMServiceError, _UNM_TIMEZONE_CACHE
 from topology.services.power_service import power_service
 from topology.services.zabbix_service import (
     DEFAULT_AVAILABILITY_ITEM_KEY,
@@ -33,7 +40,7 @@ from topology.services.zabbix_service import (
     VARUNA_STATUS_INTERVAL_MACRO,
     ZabbixService,
 )
-from topology.management.commands.run_scheduler import Command as SchedulerCommand
+from topology.management.commands.run_scheduler import Command as SchedulerCommand, _is_power_due
 from topology.management.commands.discover_onus import _normalize_serial
 
 
@@ -79,6 +86,7 @@ class _FakeFITTelnet:
 
 class ZabbixModeTests(TestCase):
     def setUp(self):
+        _UNM_TIMEZONE_CACHE.clear()
         self.api_factory = APIRequestFactory()
         self.user = User.objects.create_user(username="zabbix-api", password="zabbix-api")
         self.vendor = VendorProfile.objects.create(
@@ -158,9 +166,9 @@ class ZabbixModeTests(TestCase):
             snmp_port=161,
             snmp_community="public",
             snmp_version="v2c",
-            telnet_port=23,
             telnet_username="bifrost",
             telnet_password="acaidosdeuses%gabisat",
+            blade_ips=[{"ip": ip_address, "port": 23}],
             discovery_enabled=True,
             polling_enabled=True,
             discovery_interval_minutes=60,
@@ -306,6 +314,7 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(pon.description, "after")
 
     @patch("topology.api.views.persist_power_samples", return_value=1)
+    @patch("topology.api.views.sync_latest_power_snapshots", return_value=1)
     @patch("topology.api.views.power_service.refresh_for_onus")
     @patch.object(ONUViewSet, "_has_usable_status_snapshot", return_value=True)
     @patch.object(ONUViewSet, "_run_scoped_status_refresh")
@@ -314,6 +323,7 @@ class ZabbixModeTests(TestCase):
         run_scoped_status_refresh_mock,
         has_usable_status_snapshot_mock,
         refresh_for_onus_mock,
+        sync_latest_power_snapshots_mock,
         persist_power_samples_mock,
     ):
         operator_user = User.objects.create_user(username="operator-refresh", password="operator-refresh")
@@ -374,6 +384,7 @@ class ZabbixModeTests(TestCase):
         refresh_for_onus_mock.assert_called_once()
         self.assertTrue(refresh_for_onus_mock.call_args.kwargs.get("refresh_upstream"))
         self.assertTrue(refresh_for_onus_mock.call_args.kwargs.get("force_upstream"))
+        sync_latest_power_snapshots_mock.assert_called_once()
         persist_power_samples_mock.assert_called_once()
 
     def test_viewer_cannot_update_pon_description_or_refresh_topology_actions(self):
@@ -570,6 +581,123 @@ class ZabbixModeTests(TestCase):
         self.assertIsNone(onu_row.get("onu_rx_power"))
         self.assertIsNone(onu_row.get("olt_rx_power"))
         self.assertIsNone(onu_row.get("power_read_at"))
+
+    @patch("topology.services.topology_service.unm_service.localize_alarm_datetime")
+    @patch("topology.services.topology_service.unm_service.is_enabled_for_olt", return_value=True)
+    def test_olt_topology_detail_uses_unm_source_clock_for_disconnect_window(
+        self,
+        _is_enabled_mock,
+        localize_alarm_datetime_mock,
+    ):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=24,
+            snmp_index="28.24",
+            serial="TPLGUNM00024",
+            name="cliente-unm-topology",
+            status=ONU.STATUS_OFFLINE,
+        )
+
+        raw_utc = datetime(2026, 3, 9, 14, 2, 36, tzinfo=dt_timezone.utc)
+        source_clock = datetime(2026, 3, 9, 11, 2, 36, tzinfo=dt_timezone(timedelta(hours=-3)))
+        localize_alarm_datetime_mock.side_effect = lambda *, olt, value: source_clock
+        ONULog.objects.create(
+            onu=onu,
+            offline_since=raw_utc,
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+            disconnect_window_start=raw_utc,
+            disconnect_window_end=raw_utc,
+        )
+
+        request = self.api_factory.get(f"/api/olts/{self.olt.id}/topology/")
+        force_authenticate(request, user=self.user)
+        response = OLTViewSet.as_view({"get": "topology"})(request, pk=str(self.olt.id))
+
+        self.assertEqual(response.status_code, 200)
+        onu_row = response.data["slots"]["2"]["pons"]["2/8"]["onus"][0]
+        self.assertEqual(onu_row.get("offline_since"), source_clock.isoformat())
+        self.assertEqual(onu_row.get("disconnect_window_start"), source_clock.isoformat())
+        self.assertEqual(onu_row.get("disconnect_window_end"), source_clock.isoformat())
+
+    @patch("topology.api.views.unm_service.localize_alarm_datetime")
+    @patch("topology.api.views.unm_service.is_enabled_for_olt", return_value=True)
+    def test_batch_status_uses_unm_source_clock_for_disconnect_window(
+        self,
+        _is_enabled_mock,
+        localize_alarm_datetime_mock,
+    ):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=31,
+            snmp_index="11.31",
+            serial="ABCD12340031",
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        raw_utc = datetime(2026, 3, 9, 14, 2, 36, tzinfo=dt_timezone.utc)
+        source_clock = datetime(2026, 3, 9, 11, 2, 36, tzinfo=dt_timezone(timedelta(hours=-3)))
+        localize_alarm_datetime_mock.side_effect = lambda *, olt, value: source_clock
+        ONULog.objects.create(
+            onu=onu,
+            offline_since=raw_utc,
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+            disconnect_window_start=raw_utc,
+            disconnect_window_end=raw_utc,
+        )
+
+        request = self.api_factory.post(
+            "/api/onu/batch-status/",
+            {
+                "olt_id": self.olt.id,
+                "slot_id": onu.slot_id,
+                "pon_id": onu.pon_id,
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"post": "batch_status"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        row = next((item for item in (response.data.get("results") or []) if item.get("id") == onu.id), None)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.get("offline_since"), source_clock.isoformat())
+        self.assertEqual(row.get("disconnect_window_start"), source_clock.isoformat())
+        self.assertEqual(row.get("disconnect_window_end"), source_clock.isoformat())
 
     def test_olt_topology_detail_leaves_power_empty_until_scoped_snapshot_load(self):
         self.vendor.oid_templates = {
@@ -787,7 +915,6 @@ class ZabbixModeTests(TestCase):
                 "vendor_profile": self.fit_vendor.id,
                 "protocol": "telnet",
                 "ip_address": "192.168.100.10",
-                "telnet_port": 23,
                 "telnet_username": "",
                 "telnet_password": "",
                 "discovery_enabled": True,
@@ -832,7 +959,7 @@ class ZabbixModeTests(TestCase):
     @patch("topology.services.fit_collector_service.telnetlib.Telnet")
     def test_fit_status_inventory_error_lists_each_failed_blade(self, telnet_mock):
         fit_olt = self._create_fit_olt(name="OLT-FIT-BLADES")
-        fit_olt.blade_ips = ["192.168.100.2", "192.168.100.4"]
+        fit_olt.blade_ips = [{"ip": "192.168.100.2", "port": 23}, {"ip": "192.168.100.4", "port": 23}]
         fit_olt.save(update_fields=["blade_ips"])
         telnet_mock.side_effect = ConnectionRefusedError(111, "Connection refused")
 
@@ -841,6 +968,33 @@ class ZabbixModeTests(TestCase):
 
         self.assertIn("Blade 192.168.100.2:", str(ctx.exception))
         self.assertIn("Blade 192.168.100.4:", str(ctx.exception))
+
+    def test_fit_reachability_requires_explicit_blade_configuration(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-NO-BLADES")
+        fit_olt.blade_ips = None
+        fit_olt.save(update_fields=["blade_ips"])
+
+        reachable, detail = fit_collector_service.check_reachability(fit_olt)
+
+        self.assertFalse(reachable)
+        self.assertIn("explicit IP and Telnet port", detail)
+
+    def test_fit_olt_serializer_rejects_missing_blade_port(self):
+        serializer = OLTSerializer(
+            data={
+                "name": "OLT-FIT-SERIALIZER",
+                "vendor_profile": self.fit_vendor.id,
+                "protocol": "telnet",
+                "ip_address": "192.168.100.40",
+                "telnet_username": "bifrost",
+                "telnet_password": "acaidosdeuses%gabisat",
+                "blade_ips": [{"ip": "192.168.100.40"}],
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("blade_ips", serializer.errors)
+        self.assertIn("Port is required for blade 192.168.100.40.", str(serializer.errors["blade_ips"]))
 
     def test_fit_parse_status_output_accepts_rows_with_and_without_uptime(self):
         raw_output = """
@@ -929,7 +1083,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
     @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
     def test_olt_list_include_topology_keeps_fit_telnet_config_and_hides_empty_branches(self, fetch_status_inventory_mock):
         fit_olt = self._create_fit_olt(name="OLT-FIT-LIST")
-        fit_olt.blade_ips = ["192.168.100.2", "192.168.100.4"]
+        fit_olt.blade_ips = [{"ip": "192.168.100.2", "port": 23}, {"ip": "192.168.100.4", "port": 23}]
         fit_olt.save(update_fields=["blade_ips"])
         fetch_status_inventory_mock.return_value = [
             {
@@ -961,8 +1115,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         fit_row = next((row for row in (rows or []) if row.get("id") == fit_olt.id), None)
         self.assertIsNotNone(fit_row)
         self.assertEqual(fit_row.get("protocol"), "telnet")
-        self.assertEqual(fit_row.get("blade_ips"), ["192.168.100.2", "192.168.100.4"])
-        self.assertEqual(fit_row.get("telnet_port"), 23)
+        self.assertEqual(fit_row.get("blade_ips"), [{"ip": "192.168.100.2", "port": 23}, {"ip": "192.168.100.4", "port": 23}])
         self.assertEqual(fit_row.get("telnet_username"), "bifrost")
         self.assertEqual(fit_row.get("slot_count"), 2)
         self.assertEqual(fit_row.get("pon_count"), 2)
@@ -1142,7 +1295,8 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(update_response.status_code, 200)
         self.assertIsNone(cache_service.get_topology_structure(self.olt.id))
 
-    def test_onu_power_snapshot_reads_latest_persisted_sample_without_refresh(self):
+    @patch("topology.api.views.power_service.refresh_for_onus")
+    def test_onu_power_snapshot_reads_latest_synced_sample_without_refresh(self, refresh_for_onus_mock):
         _, _, onu = self._create_topology_onu(
             slot_id=2,
             pon_id=8,
@@ -1150,17 +1304,51 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
             snmp_index="28.40",
             serial="TPLGPOW0040",
         )
-        read_at = timezone.now() - timedelta(minutes=1)
-        ONUPowerSample.objects.create(
-            olt=self.olt,
-            onu=onu,
-            slot_id=onu.slot_id,
-            pon_id=onu.pon_id,
-            onu_number=onu.onu_id,
-            onu_rx_power=-19.7,
-            olt_rx_power=-23.9,
-            read_at=read_at,
-            source=ONUPowerSample.SOURCE_SCHEDULER,
+        snapshot_read_at = timezone.now() - timedelta(minutes=4)
+        ONU.objects.filter(id=onu.id).update(
+            latest_onu_rx_power=-18.4,
+            latest_olt_rx_power=-22.1,
+            latest_power_read_at=snapshot_read_at,
+        )
+
+        request = self.api_factory.get(f"/api/onu/{onu.id}/power/")
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "power"})(request, pk=str(onu.id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get("onu_rx_power"), -18.4)
+        self.assertEqual(response.data.get("power_read_at"), snapshot_read_at.isoformat())
+        refresh_for_onus_mock.assert_not_called()
+
+    @override_settings(POWER_LATEST_READS_USE_ZABBIX=True)
+    @patch("topology.api.views.zabbix_service.fetch_power_by_index")
+    def test_onu_power_without_refresh_reads_live_zabbix_power_when_enabled(self, fetch_power_mock):
+        templates = dict(self.vendor.oid_templates or {})
+        templates["power"] = {"supports_olt_rx_power": True}
+        self.vendor.oid_templates = templates
+        self.vendor.save(update_fields=["oid_templates"])
+        _, _, onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=43,
+            snmp_index="28.43",
+            serial="TPLGPOW0043",
+        )
+        snapshot_read_at = timezone.now() - timedelta(days=1)
+        ONU.objects.filter(id=onu.id).update(
+            latest_onu_rx_power=-18.4,
+            latest_olt_rx_power=-22.1,
+            latest_power_read_at=snapshot_read_at,
+        )
+        fetch_power_mock.return_value = (
+            {
+                "28.43": {
+                    "onu_rx_power": -19.7,
+                    "olt_rx_power": -24.2,
+                    "power_read_at": "2026-03-10T00:08:20+00:00",
+                }
+            },
+            "2026-03-10T00:08:20+00:00",
         )
 
         request = self.api_factory.get(f"/api/onu/{onu.id}/power/")
@@ -1169,10 +1357,13 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data.get("onu_rx_power"), -19.7)
-        self.assertEqual(response.data.get("olt_rx_power"), -23.9)
-        self.assertEqual(response.data.get("power_read_at"), read_at.isoformat())
+        self.assertEqual(response.data.get("olt_rx_power"), -24.2)
+        self.assertEqual(response.data.get("power_read_at"), "2026-03-10T00:08:20+00:00")
+        fetch_power_mock.assert_called_once()
+        self.assertTrue(fetch_power_mock.call_args.kwargs.get("history_fallback"))
 
-    def test_batch_power_without_refresh_reads_latest_persisted_sample(self):
+    @patch("topology.api.views.power_service.refresh_for_onus")
+    def test_batch_power_without_refresh_reads_latest_synced_samples(self, refresh_for_onus_mock):
         slot, pon, onu_a = self._create_topology_onu(
             slot_id=2,
             pon_id=8,
@@ -1193,17 +1384,11 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
             status=ONU.STATUS_ONLINE,
             is_active=True,
         )
-        read_at = timezone.now() - timedelta(minutes=1)
-        ONUPowerSample.objects.create(
-            olt=self.olt,
-            onu=onu_a,
-            slot_id=onu_a.slot_id,
-            pon_id=onu_a.pon_id,
-            onu_number=onu_a.onu_id,
-            onu_rx_power=-18.8,
-            olt_rx_power=-22.4,
-            read_at=read_at,
-            source=ONUPowerSample.SOURCE_SCHEDULER,
+        snapshot_read_at = timezone.now() - timedelta(minutes=2)
+        ONU.objects.filter(id=onu_a.id).update(
+            latest_onu_rx_power=-17.6,
+            latest_olt_rx_power=-21.5,
+            latest_power_read_at=snapshot_read_at,
         )
 
         request = self.api_factory.post(
@@ -1220,12 +1405,72 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         row_b = next((row for row in rows if int(row.get("onu_id") or 0) == int(onu_b.id)), None)
         self.assertIsNotNone(row_a)
         self.assertIsNotNone(row_b)
-        self.assertEqual(row_a.get("onu_rx_power"), -18.8)
-        self.assertEqual(row_a.get("olt_rx_power"), -22.4)
-        self.assertEqual(row_a.get("power_read_at"), read_at.isoformat())
+        self.assertEqual(row_a.get("onu_rx_power"), -17.6)
+        self.assertEqual(row_a.get("power_read_at"), snapshot_read_at.isoformat())
         self.assertIsNone(row_b.get("onu_rx_power"))
         self.assertIsNone(row_b.get("olt_rx_power"))
         self.assertIsNone(row_b.get("power_read_at"))
+        refresh_for_onus_mock.assert_not_called()
+
+    @override_settings(POWER_LATEST_READS_USE_ZABBIX=True)
+    @patch("topology.api.views.zabbix_service.fetch_power_by_index")
+    def test_batch_power_without_refresh_reads_live_zabbix_power_when_enabled(self, fetch_power_mock):
+        slot, pon, onu_a = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=44,
+            snmp_index="28.44",
+            serial="TPLGPOW0044",
+        )
+        onu_b = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=slot,
+            pon_ref=pon,
+            slot_id=slot.slot_id,
+            pon_id=pon.pon_id,
+            onu_id=45,
+            snmp_index="28.45",
+            serial="TPLGPOW0045",
+            name="cliente-power-live-b",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+            latest_onu_rx_power=-17.1,
+            latest_olt_rx_power=-21.0,
+            latest_power_read_at=timezone.now() - timedelta(days=1),
+        )
+        fetch_power_mock.return_value = (
+            {
+                "28.44": {
+                    "onu_rx_power": -16.8,
+                    "olt_rx_power": -20.9,
+                    "power_read_at": "2026-03-10T00:09:00+00:00",
+                },
+                "28.45": {
+                    "onu_rx_power": -18.0,
+                    "olt_rx_power": -22.2,
+                    "power_read_at": "2026-03-10T00:09:10+00:00",
+                },
+            },
+            "2026-03-10T00:09:10+00:00",
+        )
+
+        request = self.api_factory.post(
+            "/api/onu/batch-power/",
+            {"olt_id": self.olt.id, "slot_id": 2, "pon_id": 8, "refresh": False},
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"post": "batch_power"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") or []
+        row_a = next((row for row in rows if int(row.get("onu_id") or 0) == int(onu_a.id)), None)
+        row_b = next((row for row in rows if int(row.get("onu_id") or 0) == int(onu_b.id)), None)
+        self.assertEqual(row_a.get("onu_rx_power"), -16.8)
+        self.assertEqual(row_b.get("onu_rx_power"), -18.0)
+        self.assertEqual(row_b.get("power_read_at"), "2026-03-10T00:09:10+00:00")
+        fetch_power_mock.assert_called_once()
+        self.assertTrue(fetch_power_mock.call_args.kwargs.get("history_fallback"))
 
     @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
     def test_discover_onus_uses_zabbix_rows(self, fetch_discovery_rows_mock):
@@ -1351,6 +1596,34 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(_normalize_serial("TPLG-D22D7400, thiago.sodre100"), "TPLGD22D7400")
         self.assertEqual(_normalize_serial("1,DD72E68F39E5"), "DD72E68F39E5")
         self.assertEqual(_normalize_serial("1"), "")
+
+    @patch("topology.management.commands.discover_onus.zabbix_service.get_hostid", return_value=None)
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_normalizes_trailing_numeric_suffix_when_serial_missing(
+        self,
+        fetch_discovery_rows_mock,
+        _get_hostid_mock,
+    ):
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "3",
+                    "{#PON}": "4",
+                    "{#ONU_ID}": "5",
+                    "{#PON_ID}": "285278980",
+                    "{#SNMPINDEX}": "285278980.5",
+                    "{#SERIAL}": "",
+                    "{#ONU_NAME}": "alexandre.silva 1",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        onu = ONU.objects.get(olt=self.olt, slot_id=3, pon_id=4, onu_id=5)
+        self.assertEqual(onu.name, "alexandre.silva")
+        self.assertEqual(onu.serial, "")
 
     @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
     def test_discover_onus_clears_placeholder_name_when_c600_name_oid_is_blank(
@@ -1845,6 +2118,195 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(open_log.disconnect_reason, ONULog.REASON_LINK_LOSS)
         self.olt.refresh_from_db()
         self.assertTrue(self.olt.collector_reachable)
+
+    @patch("topology.management.commands.poll_onu_status.unm_service.fetch_current_alarm_state_map")
+    @patch("topology.management.commands.poll_onu_status.zabbix_service.fetch_status_by_index")
+    def test_poll_onu_status_uses_unm_current_alarm_for_topology_timestamp(
+        self,
+        fetch_status_mock,
+        fetch_current_alarm_mock,
+    ):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=3,
+            snmp_index="11.3",
+            serial="ABCD12345678",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        fetch_status_mock.return_value = (
+            {
+                "11.3": {
+                    "status": ONU.STATUS_OFFLINE,
+                    "reason": ONULog.REASON_LINK_LOSS,
+                    "status_clock_epoch": int(timezone.now().timestamp()),
+                    "status_itemid": "901",
+                }
+            },
+            timezone.now().isoformat(),
+        )
+        unm_time = datetime(2026, 3, 9, 11, 4, 11, tzinfo=dt_timezone(timedelta(hours=-3)))
+        fetch_current_alarm_mock.return_value = {
+            onu.id: {
+                "disconnect_reason": ONULog.REASON_DYING_GASP,
+                "occurred_at": unm_time,
+            }
+        }
+
+        call_command("poll_onu_status", olt_id=self.olt.id, force=True)
+
+        log = ONULog.objects.get(onu=onu, offline_until__isnull=True)
+        self.assertEqual(log.disconnect_reason, ONULog.REASON_DYING_GASP)
+        self.assertEqual(log.offline_since, unm_time)
+        self.assertEqual(log.disconnect_window_start, unm_time)
+        self.assertEqual(log.disconnect_window_end, unm_time)
+        fetch_current_alarm_mock.assert_called_once()
+
+    @patch("topology.management.commands.poll_onu_status.unm_service.fetch_current_alarm_state_map")
+    @patch("topology.management.commands.poll_onu_status.zabbix_service.fetch_status_by_index")
+    def test_poll_onu_status_unm_falls_back_to_unknown_without_current_alarm(
+        self,
+        fetch_status_mock,
+        fetch_current_alarm_mock,
+    ):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=4,
+            snmp_index="11.4",
+            serial="ABCD12345679",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+
+        current_epoch = int(timezone.now().timestamp())
+        fetch_status_mock.return_value = (
+            {
+                "11.4": {
+                    "status": ONU.STATUS_OFFLINE,
+                    "reason": ONULog.REASON_LINK_LOSS,
+                    "status_clock_epoch": current_epoch,
+                    "status_itemid": "902",
+                }
+            },
+            timezone.now().isoformat(),
+        )
+        fetch_current_alarm_mock.return_value = {}
+
+        call_command("poll_onu_status", olt_id=self.olt.id, force=True)
+
+        log = ONULog.objects.get(onu=onu, offline_until__isnull=True)
+        expected_point = datetime.fromtimestamp(current_epoch, tz=dt_timezone.utc)
+        self.assertEqual(log.disconnect_reason, ONULog.REASON_UNKNOWN)
+        self.assertEqual(log.offline_since, expected_point)
+        self.assertEqual(log.disconnect_window_start, expected_point)
+        self.assertEqual(log.disconnect_window_end, expected_point)
+        fetch_current_alarm_mock.assert_called_once()
+
+    @patch("topology.management.commands.poll_onu_status.unm_service.fetch_current_alarm_state_map")
+    @patch("topology.management.commands.poll_onu_status.zabbix_service.fetch_status_by_index")
+    def test_poll_onu_status_updates_existing_open_log_with_unm_current_alarm(
+        self,
+        fetch_status_mock,
+        fetch_current_alarm_mock,
+    ):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=5,
+            snmp_index="11.5",
+            serial="ABCD12345680",
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        old_point = timezone.now() - timedelta(hours=3)
+        ONULog.objects.create(
+            onu=onu,
+            offline_since=old_point,
+            disconnect_reason=ONULog.REASON_UNKNOWN,
+            disconnect_window_start=old_point,
+            disconnect_window_end=old_point,
+        )
+
+        fetch_status_mock.return_value = (
+            {
+                "11.5": {
+                    "status": ONU.STATUS_OFFLINE,
+                    "reason": ONULog.REASON_UNKNOWN,
+                    "status_clock_epoch": int(timezone.now().timestamp()),
+                    "status_itemid": "903",
+                }
+            },
+            timezone.now().isoformat(),
+        )
+        unm_time = datetime(2026, 3, 9, 12, 15, 0, tzinfo=dt_timezone(timedelta(hours=-3)))
+        fetch_current_alarm_mock.return_value = {
+            onu.id: {
+                "disconnect_reason": ONULog.REASON_LINK_LOSS,
+                "occurred_at": unm_time,
+            }
+        }
+
+        call_command("poll_onu_status", olt_id=self.olt.id, force=True)
+
+        log = ONULog.objects.get(onu=onu, offline_until__isnull=True)
+        self.assertEqual(log.disconnect_reason, ONULog.REASON_LINK_LOSS)
+        self.assertEqual(log.offline_since, unm_time)
+        self.assertEqual(log.disconnect_window_start, unm_time)
+        self.assertEqual(log.disconnect_window_end, unm_time)
 
     @override_settings(ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS=1)
     @patch("topology.management.commands.poll_onu_status.zabbix_service.execute_items_now_by_keys")
@@ -2439,6 +2901,151 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(rows[0].get("{#ONU_ID}"), "3")
         self.assertTrue(read_at)
 
+    def test_fetch_power_by_index_falls_back_to_latest_valid_history_when_current_value_is_invalid(self):
+        service = ZabbixService()
+        with (
+            patch.object(service, "get_hostid", return_value="10090"),
+            patch("topology.services.zabbix_service.time.time", return_value=1763066623),
+            patch.object(
+                service,
+                "get_items_by_keys",
+                return_value={
+                    "onuRxPower[28.40]": {
+                        "itemid": "2001",
+                        "key_": "onuRxPower[28.40]",
+                        "lastvalue": "-80",
+                        "lastclock": "1773014405",
+                        "value_type": "0",
+                    },
+                    "oltRxPower[28.40]": {
+                        "itemid": "2002",
+                        "key_": "oltRxPower[28.40]",
+                        "lastvalue": "0",
+                        "lastclock": "0",
+                        "value_type": "0",
+                    },
+                },
+            ),
+            patch.object(
+                service,
+                "get_latest_valid_power_history_samples",
+                return_value={
+                    "2001": {
+                        "value": -23.01,
+                        "clock": "2026-03-08T00:00:37+00:00",
+                        "clock_epoch": 1772928037,
+                    },
+                    "2002": {
+                        "value": -26.90,
+                        "clock": "2026-03-08T00:00:12+00:00",
+                        "clock_epoch": 1772928012,
+                    },
+                },
+            ) as history_fallback_mock,
+        ):
+            rows, read_at = service.fetch_power_by_index(
+                self.olt,
+                ["28.40"],
+                onu_rx_item_key_pattern="onuRxPower[{index}]",
+                olt_rx_item_key_pattern="oltRxPower[{index}]",
+            )
+
+        history_fallback_mock.assert_called_once_with(
+            item_specs={"2001": "0", "2002": "0"},
+            time_from=1762461823,
+        )
+        row = rows.get("28.40") or {}
+        self.assertEqual(row.get("onu_rx_power"), -23.01)
+        self.assertEqual(row.get("olt_rx_power"), -26.90)
+        self.assertEqual(row.get("power_read_at"), "2026-03-08T00:00:37+00:00")
+        self.assertEqual(read_at, "2026-03-08T00:00:37+00:00")
+
+    def test_get_latest_valid_power_history_samples_falls_back_per_item_when_batch_result_is_incomplete(self):
+        service = ZabbixService()
+        with (
+            patch.object(
+                service,
+                "_call",
+                return_value=[
+                    {"itemid": "2001", "clock": "1772928037", "value": "-23.01"},
+                    {"itemid": "2002", "clock": "1772928012", "value": "0"},
+                ],
+            ) as call_mock,
+            patch.object(
+                service,
+                "get_latest_valid_power_history_sample",
+                return_value=(-26.90, "2026-03-08T00:00:12+00:00", 1772928012),
+            ) as single_fallback_mock,
+        ):
+            rows = service.get_latest_valid_power_history_samples(
+                item_specs={"2001": "0", "2002": "0"},
+                time_from=1772000000,
+                limit_per_item=10,
+            )
+
+        call_mock.assert_called_once()
+        single_fallback_mock.assert_called_once_with(
+            itemid="2002",
+            value_type="0",
+            time_from=1772000000,
+            limit=10,
+        )
+        self.assertEqual(
+            rows,
+            {
+                "2001": {
+                    "value": -23.01,
+                    "clock": "2026-03-08T00:00:37+00:00",
+                    "clock_epoch": 1772928037,
+                },
+                "2002": {
+                    "value": -26.90,
+                    "clock": "2026-03-08T00:00:12+00:00",
+                    "clock_epoch": 1772928012,
+                },
+            },
+        )
+
+    @override_settings(ZABBIX_DB_ENABLED=True)
+    def test_get_latest_valid_power_history_samples_prefers_db_before_api(self):
+        service = ZabbixService()
+        with (
+            patch.object(
+                service,
+                "_get_latest_valid_power_history_samples_from_db",
+                return_value={
+                    "2001": {
+                        "value": -23.01,
+                        "clock": "2026-03-08T00:00:37+00:00",
+                        "clock_epoch": 1772928037,
+                    }
+                },
+            ) as db_fallback_mock,
+            patch.object(service, "_call") as call_mock,
+        ):
+            rows = service.get_latest_valid_power_history_samples(
+                item_specs={"2001": "0"},
+                time_from=1772000000,
+                limit_per_item=10,
+            )
+
+        db_fallback_mock.assert_called_once_with(
+            item_specs={"2001": "0"},
+            time_from=1772000000,
+            limit_per_item=10,
+        )
+        call_mock.assert_not_called()
+        self.assertEqual(
+            rows,
+            {
+                "2001": {
+                    "value": -23.01,
+                    "clock": "2026-03-08T00:00:37+00:00",
+                    "clock_epoch": 1772928037,
+                }
+            },
+        )
+
     def test_discovery_rows_fallback_to_status_items_huawei(self):
         service = ZabbixService()
         with (
@@ -2731,6 +3338,90 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertFalse(row.get("{#ONU_NAME}"))
         self.assertEqual(row.get("{#SERIAL}"), "DD72E68F39E5")
 
+    def test_fetch_discovery_rows_repairs_malformed_lld_identity_with_status_fallback(self):
+        zte_templates = _zabbix_vendor_templates()
+        zte_templates["indexing"] = {
+            "format": "pon_onu",
+            "pon_encoding": "0x11rrsspp",
+            "slot_from": "shelf",
+            "pon_from": "port",
+        }
+        vendor = VendorProfile.objects.create(
+            vendor="zte",
+            model_name="C600-ZABBIX-TEST-REPAIR",
+            description="Zabbix mode test vendor zte c600 malformed identity repair",
+            oid_templates=zte_templates,
+            supports_onu_discovery=True,
+            supports_onu_status=True,
+            supports_power_monitoring=True,
+            supports_disconnect_reason=False,
+            default_thresholds={},
+            is_active=True,
+        )
+        olt = OLT.objects.create(
+            name="OLT-ZTE-C600-ZABBIX-TEST-REPAIR",
+            vendor_profile=vendor,
+            protocol="snmp",
+            ip_address="10.0.0.27",
+            snmp_port=161,
+            snmp_community="public",
+            snmp_version="v2c",
+            discovery_enabled=True,
+            polling_enabled=True,
+            discovery_interval_minutes=60,
+            polling_interval_seconds=300,
+            power_interval_seconds=300,
+            is_active=True,
+        )
+        service = ZabbixService()
+        malformed_lld = json.dumps(
+            [
+                {
+                    "{#SNMPINDEX}": "285278980.5",
+                    "{#SLOT}": "3",
+                    "{#PON}": "4",
+                    "{#ONU_ID}": "5",
+                    "{#PON_ID}": "285278980",
+                    "{#ONU_NAME}": "alexandre.silva 1",
+                    "{#SERIAL}": "",
+                }
+            ]
+        )
+        with (
+            patch.object(service, "get_hostid", return_value="10090"),
+            patch.object(
+                service,
+                "get_single_item",
+                return_value={
+                    "itemid": "4496",
+                    "key_": "onuDiscovery",
+                    "value_type": "4",
+                    "status": "0",
+                    "state": "0",
+                    "lastclock": "1710000005",
+                    "lastvalue": malformed_lld,
+                },
+            ),
+            patch.object(
+                service,
+                "get_items_by_key_prefix",
+                return_value=[
+                    {
+                        "key_": "onuStatusValue[285278980.5]",
+                        "name": "ONU 3/4/5 alexandre.silva 42061D3261D0: Status",
+                        "lastclock": "1710000006",
+                    }
+                ],
+            ),
+        ):
+            rows, read_at = service.fetch_discovery_rows(olt, "onuDiscovery")
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.get("{#ONU_NAME}"), "alexandre.silva")
+        self.assertEqual(row.get("{#SERIAL}"), "42061D3261D0")
+        self.assertTrue(read_at)
+
     def test_discovery_rows_fallback_to_status_items_fiberhome_without_pon_prefix(self):
         vendor = VendorProfile.objects.create(
             vendor="Fiberhome",
@@ -2900,6 +3591,58 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(rows.get("4"), {"status": "offline", "reason": "link_loss"})
         self.assertTrue(read_at)
 
+    def test_get_items_by_keys_prefers_zabbix_db_reader_when_available(self):
+        service = ZabbixService()
+        db_rows = {
+            "onuStatusValue[1]": {
+                "itemid": "5001",
+                "key_": "onuStatusValue[1]",
+                "lastvalue": "online",
+                "prevvalue": "offline",
+                "lastclock": "1710000200",
+                "state": "0",
+                "status": "0",
+                "error": "",
+                "value_type": "4",
+            }
+        }
+
+        with (
+            patch.object(service, "_get_items_by_keys_from_db", return_value=db_rows) as db_reader_mock,
+            patch.object(service, "_call") as api_call_mock,
+        ):
+            rows = service.get_items_by_keys("10001", ["onuStatusValue[1]"])
+
+        self.assertEqual(rows, db_rows)
+        db_reader_mock.assert_called_once_with("10001", ["onuStatusValue[1]"])
+        api_call_mock.assert_not_called()
+
+    def test_get_items_by_keys_falls_back_to_api_when_zabbix_db_reader_unavailable(self):
+        service = ZabbixService()
+        api_rows = [
+            {
+                "itemid": "5002",
+                "key_": "onuStatusValue[2]",
+                "lastvalue": "online",
+                "prevvalue": "offline",
+                "lastclock": "1710000300",
+                "state": "0",
+                "status": "0",
+                "error": "",
+                "value_type": "4",
+            }
+        ]
+
+        with (
+            patch.object(service, "_get_items_by_keys_from_db", return_value=None) as db_reader_mock,
+            patch.object(service, "_call", return_value=api_rows) as api_call_mock,
+        ):
+            rows = service.get_items_by_keys("10002", ["onuStatusValue[2]"])
+
+        self.assertEqual(rows.get("onuStatusValue[2]", {}).get("itemid"), "5002")
+        db_reader_mock.assert_called_once_with("10002", ["onuStatusValue[2]"])
+        api_call_mock.assert_called_once()
+
     @patch("topology.services.power_service.zabbix_service.fetch_power_by_index")
     def test_collect_power_persists_recent_zabbix_readings(self, fetch_power_mock):
         onu = ONU.objects.create(
@@ -2929,10 +3672,145 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
 
         payload = collect_power_for_olt(self.olt, force_refresh=True, include_results=False)
         self.assertEqual(payload.get("stored_count"), 1)
+        self.assertEqual(payload.get("synced_count"), 1)
 
         sample = ONUPowerSample.objects.get(onu=onu)
         self.assertEqual(sample.onu_rx_power, -19.5)
         self.assertEqual(sample.olt_rx_power, -23.1)
+        onu.refresh_from_db()
+        self.assertEqual(onu.latest_onu_rx_power, -19.5)
+        self.assertEqual(onu.latest_olt_rx_power, -23.1)
+        self.assertEqual(onu.latest_power_read_at, read_at)
+
+    def test_sync_latest_power_snapshots_clears_stale_values(self):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=33,
+            snmp_index="11.33",
+            serial="ABCD12349999",
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+            latest_onu_rx_power=-19.1,
+            latest_olt_rx_power=-23.0,
+            latest_power_read_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        updated = sync_latest_power_snapshots(
+            [onu],
+            {
+                onu.id: {
+                    "onu_rx_power": None,
+                    "olt_rx_power": None,
+                    "power_read_at": None,
+                }
+            },
+        )
+
+        self.assertEqual(updated, 1)
+        onu.refresh_from_db()
+        self.assertIsNone(onu.latest_onu_rx_power)
+        self.assertIsNone(onu.latest_olt_rx_power)
+        self.assertIsNone(onu.latest_power_read_at)
+
+    def test_sync_latest_power_snapshots_preserves_existing_online_snapshot_when_requested(self):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=34,
+            snmp_index="11.34",
+            serial="ABCD12340034",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+            latest_onu_rx_power=-18.7,
+            latest_olt_rx_power=-22.4,
+            latest_power_read_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        updated = sync_latest_power_snapshots(
+            [onu],
+            {
+                onu.id: {
+                    "onu_rx_power": None,
+                    "olt_rx_power": None,
+                    "power_read_at": None,
+                }
+            },
+            preserve_existing_empty_online=True,
+        )
+
+        self.assertEqual(updated, 0)
+        onu.refresh_from_db()
+        self.assertEqual(onu.latest_onu_rx_power, -18.7)
+        self.assertEqual(onu.latest_olt_rx_power, -22.4)
+        self.assertIsNotNone(onu.latest_power_read_at)
+
+    @patch("topology.services.power_service.zabbix_service.fetch_power_by_index")
+    def test_collect_power_for_scheduler_preserves_existing_online_snapshot_when_current_value_is_invalid(
+        self,
+        fetch_power_mock,
+    ):
+        existing_read_at = timezone.now() - timedelta(hours=2)
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=2,
+            onu_id=35,
+            snmp_index="11.35",
+            serial="ABCD12340035",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+            latest_onu_rx_power=-18.1,
+            latest_olt_rx_power=-22.0,
+            latest_power_read_at=existing_read_at,
+        )
+        self.olt.last_poll_at = timezone.now()
+        self.olt.save(update_fields=["last_poll_at"])
+
+        fetch_power_mock.return_value = (
+            {
+                "11.35": {
+                    "onu_rx_power": None,
+                    "olt_rx_power": None,
+                    "power_read_at": None,
+                }
+            },
+            None,
+        )
+
+        payload = collect_power_for_olt(
+            self.olt,
+            force_refresh=True,
+            include_results=False,
+            history_source=ONUPowerSample.SOURCE_SCHEDULER,
+            use_history_fallback=False,
+        )
+
+        self.assertEqual(payload.get("stored_count"), 0)
+        self.assertEqual(payload.get("synced_count"), 0)
+        onu.refresh_from_db()
+        self.assertEqual(onu.latest_onu_rx_power, -18.1)
+        self.assertEqual(onu.latest_olt_rx_power, -22.0)
+        self.assertEqual(onu.latest_power_read_at, existing_read_at)
+        self.assertFalse(fetch_power_mock.call_args.kwargs.get("history_fallback", True))
+
+    def test_scheduler_respects_configured_zabbix_power_sync_interval_even_when_power_interval_is_daily(self):
+        self.olt.power_interval_seconds = 86400
+        self.olt.last_power_at = timezone.now() - timedelta(minutes=10)
+        self.olt.next_power_at = timezone.now() + timedelta(hours=23)
+        self.olt.save(update_fields=["power_interval_seconds", "last_power_at", "next_power_at"])
+
+        self.assertEqual(get_power_sync_interval_seconds(self.olt), 86400)
+        self.assertFalse(_is_power_due(self.olt, timezone.now()))
+
+    def test_fit_power_sync_interval_keeps_configured_schedule(self):
+        fit_olt = self._create_fit_olt()
+        fit_olt.power_interval_seconds = 1800
+        fit_olt.save(update_fields=["power_interval_seconds"])
+
+        self.assertEqual(get_power_sync_interval_seconds(fit_olt), 1800)
 
     def test_sync_olt_interval_macros_creates_missing_macros(self):
         service = ZabbixService()
@@ -3951,6 +4829,52 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertIsNotNone(power_history[0].get("onu_rx_power"))
         self.assertIsNotNone(power_history[0].get("olt_rx_power"))
 
+    @override_settings(ALARM_HISTORY_POWER_MERGE_WINDOW_SECONDS=90)
+    @patch("topology.api.views.zabbix_service.fetch_onu_item_timelines")
+    def test_alarm_history_merges_nearby_onu_and_olt_power_samples_with_override(self, fetch_timeline_mock):
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=151,
+            snmp_index="11.151",
+            serial="ABCD01020151",
+            name="cliente-hist-merge-window",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        base_epoch = int(timezone.now().timestamp())
+        fetch_timeline_mock.return_value = {
+            "status_samples": [
+                {"clock_epoch": base_epoch - 900, "clock": None, "value": "online"},
+            ],
+            "status_previous": {"clock_epoch": base_epoch - 1200, "value": "online"},
+            "onu_rx_samples": [
+                {"clock_epoch": base_epoch - 121, "clock": None, "value": "-20.86"},
+            ],
+            "olt_rx_samples": [
+                {"clock_epoch": base_epoch - 60, "clock": None, "value": "-26.02"},
+            ],
+        }
+
+        request = self.api_factory.get(
+            f"/api/onu/{onu.id}/alarm-history/",
+            {
+                "alarm_days": 7,
+                "power_days": 7,
+                "alarm_limit": 1000,
+                "max_power_points": 744,
+            },
+        )
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "alarm_history"})(request, pk=str(onu.id))
+
+        self.assertEqual(response.status_code, 200)
+        power_history = response.data.get("power_history") or []
+        self.assertEqual(len(power_history), 1)
+        self.assertEqual(power_history[0].get("onu_rx_power"), -20.86)
+        self.assertEqual(power_history[0].get("olt_rx_power"), -26.02)
+
     def test_alarm_clients_returns_hyphen_when_name_is_missing(self):
         onu = ONU.objects.create(
             olt=self.olt,
@@ -4134,8 +5058,6 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
 
     @patch("topology.api.views.unm_service.fetch_onu_alarm_history")
     def test_alarm_history_returns_503_when_unm_lookup_fails(self, fetch_unm_alarm_history_mock):
-        from topology.services.unm_service import UNMServiceError
-
         self.olt.unm_enabled = True
         self.olt.unm_host = "192.168.30.101"
         self.olt.unm_port = 3306
@@ -4175,7 +5097,617 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data.get("detail"), "UNM query failed.")
 
-    def test_power_report_discards_sentinel_power_values(self):
+    def test_unm_alarm_history_service_uses_available_history_tables_without_merge(self):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu = self._create_topology_onu(onu_id=109, snmp_index="11.109", name="cliente-unm-service")
+        service = UNMService()
+        now = timezone.now()
+        queries = []
+
+        def fake_query(_olt, query, params):
+            queries.append(" ".join(str(query).split()))
+            if "FROM integratecfgdb.t_ontdevice" in query:
+                return [
+                    {
+                        "cobjectid": 196700109,
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 109,
+                        "cobjectname": "cliente-unm-service",
+                        "caliasname": "",
+                        "clogicalsn": "",
+                    }
+                ]
+            if "TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())" in query:
+                return [{"utc_offset_seconds": -10800}]
+            if str(query).strip() == "SHOW TABLES FROM alarmdb":
+                return [
+                    {"Tables_in_alarmdb": "t_alarmlogcur"},
+                    {"Tables_in_alarmdb": "t_alarmloghist"},
+                    {"Tables_in_alarmdb": "t_alarmloghist_1_1"},
+                ]
+            if "FROM alarmdb.t_alarmlogcur" in query:
+                self.assertNotIn("ORDER BY", query)
+                return [
+                    {
+                        "clogid": 11,
+                        "cobjectid": 196700109,
+                        "cneid": 13172740,
+                        "calarmcode": 2340,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(minutes=5)),
+                        "cclearutctime": None,
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "DYING_GASP",
+                        "calarmexinfo": "",
+                    }
+                ]
+            if "FROM alarmdb.t_alarmloghist" in query and "t_alarmloghist_1_1" not in query:
+                self.assertNotIn("ORDER BY", query)
+                return [
+                    {
+                        "clogid": 10,
+                        "cobjectid": 196700109,
+                        "cneid": 13172740,
+                        "calarmcode": 2400,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(hours=1)),
+                        "cclearutctime": timezone.make_naive(now - timedelta(minutes=45)),
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "LINK LOSS",
+                        "calarmexinfo": "",
+                    }
+                ]
+            if "FROM alarmdb.t_alarmloghist_1_1" in query:
+                self.assertNotIn("ORDER BY", query)
+                return [
+                    {
+                        "clogid": 9,
+                        "cobjectid": 196700109,
+                        "cneid": 13172740,
+                        "calarmcode": 2592,
+                        "calarmlevel": 1,
+                        "coccurutctime": timezone.make_naive(now - timedelta(days=1)),
+                        "cclearutctime": timezone.make_naive(now - timedelta(days=1, minutes=-2)),
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "TX POWER HIGH ALARM",
+                        "calarmexinfo": "",
+                    }
+                ]
+            self.fail(f"Unexpected UNM query: {query}")
+
+        with patch.object(service, "_query", side_effect=fake_query):
+            alarms = service.fetch_onu_alarm_history(
+                olt=self.olt,
+                onu=onu,
+                alarm_cutoff=now - timedelta(days=7),
+                alarm_end=now,
+                alarm_limit=10,
+            )
+
+        self.assertEqual([alarm.get("event_code") for alarm in alarms], [2340, 2400, 2592])
+        self.assertEqual([alarm.get("status") for alarm in alarms], ["active", "resolved", "resolved"])
+        self.assertFalse(any("t_alarmloghist_merge" in query for query in queries))
+        self.assertFalse(any("ORDER BY" in query for query in queries if "t_alarmlog" in query))
+
+    def test_unm_alarm_history_service_falls_back_to_recent_window_when_direct_object_query_times_out(self):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu = self._create_topology_onu(onu_id=110, snmp_index="11.110", name="cliente-unm-fallback")
+        service = UNMService()
+        now = timezone.now()
+        queries = []
+
+        def fake_query(_olt, query, params):
+            normalized_query = " ".join(str(query).split())
+            queries.append(normalized_query)
+            if "FROM integratecfgdb.t_ontdevice" in query:
+                return [
+                    {
+                        "cobjectid": 196700110,
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 110,
+                        "cobjectname": "cliente-unm-fallback",
+                        "caliasname": "",
+                        "clogicalsn": "",
+                    }
+                ]
+            if "TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())" in query:
+                return [{"utc_offset_seconds": -10800}]
+            if str(query).strip() == "SHOW TABLES FROM alarmdb":
+                return [{"Tables_in_alarmdb": "t_alarmlogcur"}]
+            if "FROM alarmdb.t_alarmlogcur" in query and "WHERE cneid = %s" in query:
+                raise UNMServiceError("UNM query failed.")
+            if "FROM alarmdb.t_alarmlogcur" in query and "WHERE coccurutctime >= %s" in query:
+                return [
+                    {
+                        "clogid": 21,
+                        "cobjectid": 196700110,
+                        "cneid": 13172740,
+                        "calarmcode": 2400,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(days=2)),
+                        "cclearutctime": timezone.make_naive(now - timedelta(days=2, minutes=-5)),
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "LINK LOSS",
+                        "calarmexinfo": "",
+                    },
+                    {
+                        "clogid": 22,
+                        "cobjectid": 196799999,
+                        "cneid": 13172740,
+                        "calarmcode": 2592,
+                        "calarmlevel": 1,
+                        "coccurutctime": timezone.make_naive(now - timedelta(days=1)),
+                        "cclearutctime": timezone.make_naive(now - timedelta(days=1, minutes=-1)),
+                        "clocationinfo": "OTHER",
+                        "clineport": "",
+                        "calarminfo": "OTHER",
+                        "calarmexinfo": "",
+                    },
+                ]
+            if "FROM alarmdb.t_alarmlogcur" in query and "WHERE cclearutctime IS NULL" in query:
+                return [
+                    {
+                        "clogid": 23,
+                        "cobjectid": 196700110,
+                        "cneid": 13172740,
+                        "calarmcode": 2340,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(days=30)),
+                        "cclearutctime": None,
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "DYING_GASP",
+                        "calarmexinfo": "",
+                    },
+                    {
+                        "clogid": 24,
+                        "cobjectid": 196799999,
+                        "cneid": 13172740,
+                        "calarmcode": 2400,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(days=20)),
+                        "cclearutctime": None,
+                        "clocationinfo": "OTHER",
+                        "clineport": "",
+                        "calarminfo": "OTHER ACTIVE",
+                        "calarmexinfo": "",
+                    },
+                ]
+            self.fail(f"Unexpected UNM query: {query}")
+
+        with patch.object(service, "_query", side_effect=fake_query):
+            alarms = service.fetch_onu_alarm_history(
+                olt=self.olt,
+                onu=onu,
+                alarm_cutoff=now - timedelta(days=7),
+                alarm_end=now,
+                alarm_limit=10,
+            )
+
+        self.assertEqual([alarm.get("event_code") for alarm in alarms], [2400, 2340])
+        self.assertEqual([alarm.get("status") for alarm in alarms], ["resolved", "active"])
+        self.assertTrue(any("WHERE coccurutctime >= %s" in query for query in queries))
+        self.assertTrue(any("WHERE cclearutctime IS NULL" in query for query in queries))
+
+    def test_unm_alarm_history_service_returns_empty_when_fallback_succeeds_without_matches(self):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu = self._create_topology_onu(onu_id=111, snmp_index="11.111", name="cliente-unm-empty-fallback")
+        service = UNMService()
+        now = timezone.now()
+
+        def fake_query(_olt, query, params):
+            if "FROM integratecfgdb.t_ontdevice" in query:
+                return [
+                    {
+                        "cobjectid": 196700111,
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 111,
+                        "cobjectname": "cliente-unm-empty-fallback",
+                        "caliasname": "",
+                        "clogicalsn": "",
+                    }
+                ]
+            if "TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())" in query:
+                return [{"utc_offset_seconds": -10800}]
+            if str(query).strip() == "SHOW TABLES FROM alarmdb":
+                return [{"Tables_in_alarmdb": "t_alarmlogcur"}]
+            if "FROM alarmdb.t_alarmlogcur" in query and "WHERE cneid = %s" in query:
+                raise UNMServiceError("UNM query failed.")
+            if "FROM alarmdb.t_alarmlogcur" in query and "WHERE coccurutctime >= %s" in query:
+                return [
+                    {
+                        "clogid": 31,
+                        "cobjectid": 196799999,
+                        "cneid": 13172740,
+                        "calarmcode": 2400,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(days=1)),
+                        "cclearutctime": timezone.make_naive(now - timedelta(days=1, minutes=-1)),
+                        "clocationinfo": "OTHER",
+                        "clineport": "",
+                        "calarminfo": "OTHER",
+                        "calarmexinfo": "",
+                    }
+                ]
+            if "FROM alarmdb.t_alarmlogcur" in query and "WHERE cclearutctime IS NULL" in query:
+                return []
+            self.fail(f"Unexpected UNM query: {query}")
+
+        with patch.object(service, "_query", side_effect=fake_query):
+            alarms = service.fetch_onu_alarm_history(
+                olt=self.olt,
+                onu=onu,
+                alarm_cutoff=now - timedelta(days=7),
+                alarm_end=now,
+                alarm_limit=10,
+            )
+
+        self.assertEqual(alarms, [])
+
+    def test_unm_current_alarm_state_map_uses_latest_current_alarm_per_onu(self):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu_a = self._create_topology_onu(onu_id=113, snmp_index="11.113", name="cliente-unm-current-a")
+        _, _, onu_b = self._create_topology_onu(
+            slot_id=2,
+            pon_id=1,
+            onu_id=114,
+            snmp_index="21.114",
+            name="cliente-unm-current-b",
+        )
+        service = UNMService()
+
+        def fake_query(_olt, query, params):
+            if "TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())" in query:
+                return [{"utc_offset_seconds": -10800}]
+            if "FROM alarmdb.t_alarmlogcur cur" in query:
+                return [
+                    {
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 113,
+                        "clogid": 41,
+                        "cobjectid": 196700113,
+                        "cneid": 13172740,
+                        "calarmcode": 2400,
+                        "calarmlevel": 2,
+                        "coccurutctime": datetime(2026, 3, 9, 10, 0, 0),
+                        "cclearutctime": None,
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "LINK LOSS",
+                        "calarmexinfo": "",
+                    },
+                    {
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 113,
+                        "clogid": 42,
+                        "cobjectid": 196700113,
+                        "cneid": 13172740,
+                        "calarmcode": 2592,
+                        "calarmlevel": 1,
+                        "coccurutctime": datetime(2026, 3, 9, 10, 5, 0),
+                        "cclearutctime": None,
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "TX POWER HIGH ALARM",
+                        "calarmexinfo": "",
+                    },
+                    {
+                        "cslotno": 2,
+                        "cponno": 1,
+                        "cauthno": 114,
+                        "clogid": 43,
+                        "cobjectid": 196700114,
+                        "cneid": 13172740,
+                        "calarmcode": 2340,
+                        "calarmlevel": 2,
+                        "coccurutctime": datetime(2026, 3, 9, 9, 55, 0),
+                        "cclearutctime": None,
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "DYING_GASP",
+                        "calarmexinfo": "",
+                    },
+                ]
+            self.fail(f"Unexpected UNM query: {query}")
+
+        with patch.object(service, "_query", side_effect=fake_query):
+            alarm_state = service.fetch_current_alarm_state_map(olt=self.olt, onus=[onu_a, onu_b])
+
+        self.assertEqual(alarm_state[onu_a.id]["disconnect_reason"], ONULog.REASON_UNKNOWN)
+        self.assertEqual(alarm_state[onu_a.id]["occurred_at"].isoformat(), "2026-03-09T07:05:00-03:00")
+        self.assertEqual(alarm_state[onu_a.id]["event_code"], 2592)
+        self.assertEqual(alarm_state[onu_b.id]["disconnect_reason"], ONULog.REASON_DYING_GASP)
+        self.assertEqual(alarm_state[onu_b.id]["occurred_at"].isoformat(), "2026-03-09T06:55:00-03:00")
+        self.assertEqual(alarm_state[onu_b.id]["event_code"], 2340)
+
+    def test_unm_alarm_history_service_uses_merge_table_when_available(self):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu = self._create_topology_onu(onu_id=110, snmp_index="11.110", name="cliente-unm-merge")
+        service = UNMService()
+        now = timezone.now()
+        table_queries = []
+
+        def fake_query(_olt, query, params):
+            if "FROM integratecfgdb.t_ontdevice" in query:
+                return [
+                    {
+                        "cobjectid": 196700110,
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 110,
+                        "cobjectname": "cliente-unm-merge",
+                        "caliasname": "",
+                        "clogicalsn": "",
+                    }
+                ]
+            if "TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())" in query:
+                return [{"utc_offset_seconds": -10800}]
+            if str(query).strip() == "SHOW TABLES FROM alarmdb":
+                return [
+                    {"Tables_in_alarmdb": "t_alarmlogcur"},
+                    {"Tables_in_alarmdb": "t_alarmloghist_merge"},
+                    {"Tables_in_alarmdb": "t_alarmloghist_1_1"},
+                ]
+            if "FROM alarmdb.t_alarmlogcur" in query:
+                table_queries.append("cur")
+                return []
+            if "FROM alarmdb.t_alarmloghist_merge" in query:
+                table_queries.append("merge")
+                return [
+                    {
+                        "clogid": 8,
+                        "cobjectid": 196700110,
+                        "cneid": 13172740,
+                        "calarmcode": 2400,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(minutes=10)),
+                        "cclearutctime": None,
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "LINK LOSS",
+                        "calarmexinfo": "",
+                    }
+                ]
+            if "FROM alarmdb.t_alarmloghist_1_1" in query:
+                self.fail("Partition history table should not be queried when merge table exists.")
+            self.fail(f"Unexpected UNM query: {query}")
+
+        with patch.object(service, "_query", side_effect=fake_query):
+            alarms = service.fetch_onu_alarm_history(
+                olt=self.olt,
+                onu=onu,
+                alarm_cutoff=now - timedelta(days=7),
+                alarm_end=now,
+                alarm_limit=10,
+            )
+
+        self.assertEqual(len(alarms), 1)
+        self.assertEqual(alarms[0].get("event_code"), 2400)
+        self.assertEqual(table_queries, ["cur", "merge"])
+
+    def test_unm_alarm_history_service_returns_current_rows_when_history_table_discovery_fails(self):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu = self._create_topology_onu(onu_id=111, snmp_index="11.111", name="cliente-unm-current-only")
+        service = UNMService()
+        now = timezone.now()
+
+        def fake_query(_olt, query, params):
+            if "FROM integratecfgdb.t_ontdevice" in query:
+                return [
+                    {
+                        "cobjectid": 196700111,
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 111,
+                        "cobjectname": "cliente-unm-current-only",
+                        "caliasname": "",
+                        "clogicalsn": "",
+                    }
+                ]
+            if "TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())" in query:
+                return [{"utc_offset_seconds": -10800}]
+            if "FROM alarmdb.t_alarmlogcur" in query:
+                return [
+                    {
+                        "clogid": 7,
+                        "cobjectid": 196700111,
+                        "cneid": 13172740,
+                        "calarmcode": 2340,
+                        "calarmlevel": 2,
+                        "coccurutctime": timezone.make_naive(now - timedelta(minutes=2)),
+                        "cclearutctime": None,
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "DYING_GASP",
+                        "calarmexinfo": "",
+                    }
+                ]
+            if str(query).strip() == "SHOW TABLES FROM alarmdb":
+                raise UNMServiceError("UNM query failed.")
+            self.fail(f"Unexpected UNM query: {query}")
+
+        with patch.object(service, "_query", side_effect=fake_query):
+            alarms = service.fetch_onu_alarm_history(
+                olt=self.olt,
+                onu=onu,
+                alarm_cutoff=now - timedelta(days=7),
+                alarm_end=now,
+                alarm_limit=10,
+            )
+
+        self.assertEqual(len(alarms), 1)
+        self.assertEqual(alarms[0].get("event_code"), 2340)
+
+    def test_unm_alarm_history_service_uses_unm_offset_for_naive_datetimes(self):
+        self.olt.unm_enabled = True
+        self.olt.unm_host = "192.168.30.101"
+        self.olt.unm_port = 3306
+        self.olt.unm_username = "unm2000"
+        self.olt.unm_password = "secret"
+        self.olt.unm_mneid = 13172740
+        self.olt.save(
+            update_fields=[
+                "unm_enabled",
+                "unm_host",
+                "unm_port",
+                "unm_username",
+                "unm_password",
+                "unm_mneid",
+            ]
+        )
+        _, _, onu = self._create_topology_onu(onu_id=112, snmp_index="11.112", name="cliente-unm-timezone")
+        service = UNMService()
+        now = timezone.now()
+
+        def fake_query(_olt, query, params):
+            if "TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())" in query:
+                return [{"utc_offset_seconds": 7200}]
+            if "FROM integratecfgdb.t_ontdevice" in query:
+                return [
+                    {
+                        "cobjectid": 196700112,
+                        "cslotno": 1,
+                        "cponno": 1,
+                        "cauthno": 112,
+                        "cobjectname": "cliente-unm-timezone",
+                        "caliasname": "",
+                        "clogicalsn": "",
+                    }
+                ]
+            if str(query).strip() == "SHOW TABLES FROM alarmdb":
+                return [{"Tables_in_alarmdb": "t_alarmlogcur"}]
+            if "FROM alarmdb.t_alarmlogcur" in query:
+                return [
+                    {
+                        "clogid": 6,
+                        "cobjectid": 196700112,
+                        "cneid": 13172740,
+                        "calarmcode": 2400,
+                        "calarmlevel": 2,
+                        "coccurutctime": datetime(2026, 3, 9, 10, 15, 0),
+                        "cclearutctime": datetime(2026, 3, 9, 10, 45, 0),
+                        "clocationinfo": "OLT/PON/ONU",
+                        "clineport": "",
+                        "calarminfo": "LINK LOSS",
+                        "calarmexinfo": "",
+                    }
+                ]
+            self.fail(f"Unexpected UNM query: {query}")
+
+        with patch.object(service, "_query", side_effect=fake_query):
+            alarms = service.fetch_onu_alarm_history(
+                olt=self.olt,
+                onu=onu,
+                alarm_cutoff=now - timedelta(days=7),
+                alarm_end=now + timedelta(days=1),
+                alarm_limit=10,
+            )
+
+        self.assertEqual(len(alarms), 1)
+        self.assertEqual(alarms[0].get("start_at"), "2026-03-09T12:15:00+02:00")
+        self.assertEqual(alarms[0].get("end_at"), "2026-03-09T12:45:00+02:00")
+
+    @patch("topology.api.views.power_service.refresh_for_onus")
+    def test_power_report_discards_sentinel_power_values(self, refresh_for_onus_mock):
         onu = ONU.objects.create(
             olt=self.olt,
             slot_id=1,
@@ -4186,19 +5718,10 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
             name="cliente-power-sentinel",
             status=ONU.STATUS_ONLINE,
             is_active=True,
+            latest_onu_rx_power=0.0,
+            latest_olt_rx_power=-40.0,
+            latest_power_read_at=timezone.now(),
         )
-        ONUPowerSample.objects.create(
-            olt=onu.olt,
-            onu=onu,
-            slot_id=onu.slot_id,
-            pon_id=onu.pon_id,
-            onu_number=onu.onu_id,
-            onu_rx_power=0.0,
-            olt_rx_power=-40.0,
-            read_at=timezone.now(),
-            source=ONUPowerSample.SOURCE_MANUAL,
-        )
-        cache_service.delete(cache_service.get_onu_power_key(onu.olt_id, onu.id))
 
         request = self.api_factory.get("/api/onu/power-report/")
         force_authenticate(request, user=self.user)
@@ -4211,8 +5734,10 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertIsNone(row.get("onu_rx_power"))
         self.assertIsNone(row.get("olt_rx_power"))
         self.assertIsNone(row.get("power_read_at"))
+        refresh_for_onus_mock.assert_not_called()
 
-    def test_power_report_ignores_runtime_cache_without_persisted_sample(self):
+    @patch("topology.api.views.power_service.refresh_for_onus")
+    def test_power_report_uses_latest_synced_snapshot_without_live_read(self, refresh_for_onus_mock):
         onu = ONU.objects.create(
             olt=self.olt,
             slot_id=1,
@@ -4223,6 +5748,9 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
             name="cliente-power-cache-ignore",
             status=ONU.STATUS_ONLINE,
             is_active=True,
+            latest_onu_rx_power=-18.5,
+            latest_olt_rx_power=-22.8,
+            latest_power_read_at=timezone.now(),
         )
         cache_service.set_many_onu_power(
             self.olt.id,
@@ -4239,6 +5767,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
             },
             ttl=3600,
         )
+        live_read_at = onu.latest_power_read_at
 
         request = self.api_factory.get("/api/onu/power-report/")
         force_authenticate(request, user=self.user)
@@ -4248,11 +5777,113 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         rows = response.data.get("results") or []
         row = next((item for item in rows if item.get("id") == onu.id), None)
         self.assertIsNotNone(row)
-        self.assertIsNone(row.get("onu_rx_power"))
-        self.assertIsNone(row.get("olt_rx_power"))
-        self.assertIsNone(row.get("power_read_at"))
+        self.assertEqual(row.get("onu_rx_power"), -18.5)
+        self.assertEqual(row.get("power_read_at"), live_read_at.isoformat())
+        refresh_for_onus_mock.assert_not_called()
 
-    def test_power_report_discards_out_of_range_power_values(self):
+    @override_settings(POWER_LATEST_READS_USE_ZABBIX=True)
+    @patch("topology.api.views.zabbix_service.fetch_power_by_index")
+    def test_power_report_reads_live_zabbix_power_when_enabled(self, fetch_power_mock):
+        templates = dict(self.vendor.oid_templates or {})
+        templates["power"] = {"supports_olt_rx_power": True}
+        self.vendor.oid_templates = templates
+        self.vendor.save(update_fields=["oid_templates"])
+        onu = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=304,
+            snmp_index="11.304",
+            serial="ABCD01020304",
+            name="cliente-power-live-report",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+            latest_onu_rx_power=-18.5,
+            latest_olt_rx_power=-22.8,
+            latest_power_read_at=timezone.now() - timedelta(days=1),
+        )
+        fetch_power_mock.return_value = (
+            {
+                "11.304": {
+                    "onu_rx_power": -17.2,
+                    "olt_rx_power": -21.4,
+                    "power_read_at": "2026-03-10T00:10:00+00:00",
+                }
+            },
+            "2026-03-10T00:10:00+00:00",
+        )
+
+        request = self.api_factory.get("/api/onu/power-report/")
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "power_report"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") or []
+        row = next((item for item in rows if item.get("id") == onu.id), None)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.get("onu_rx_power"), -17.2)
+        self.assertEqual(row.get("olt_rx_power"), -21.4)
+        self.assertEqual(row.get("power_read_at"), "2026-03-10T00:10:00+00:00")
+        fetch_power_mock.assert_called_once()
+        self.assertTrue(fetch_power_mock.call_args.kwargs.get("history_fallback"))
+
+    @override_settings(
+        POWER_LATEST_READS_USE_ZABBIX=True,
+        POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS=1,
+    )
+    @patch("topology.api.views.zabbix_service.fetch_power_by_index")
+    def test_power_report_skips_history_fallback_for_large_live_reads(self, fetch_power_mock):
+        onu_a = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=305,
+            snmp_index="11.305",
+            serial="ABCD01020305",
+            name="cliente-power-live-report-a",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        onu_b = ONU.objects.create(
+            olt=self.olt,
+            slot_id=1,
+            pon_id=1,
+            onu_id=306,
+            snmp_index="11.306",
+            serial="ABCD01020306",
+            name="cliente-power-live-report-b",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        fetch_power_mock.return_value = (
+            {
+                "11.305": {
+                    "onu_rx_power": -17.2,
+                    "olt_rx_power": -21.4,
+                    "power_read_at": "2026-03-10T00:10:00+00:00",
+                },
+                "11.306": {
+                    "onu_rx_power": -17.9,
+                    "olt_rx_power": -22.0,
+                    "power_read_at": "2026-03-10T00:10:05+00:00",
+                },
+            },
+            "2026-03-10T00:10:05+00:00",
+        )
+
+        request = self.api_factory.get("/api/onu/power-report/")
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "power_report"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        row_ids = {item.get("id") for item in response.data.get("results") or []}
+        self.assertIn(onu_a.id, row_ids)
+        self.assertIn(onu_b.id, row_ids)
+        fetch_power_mock.assert_called_once()
+        self.assertFalse(fetch_power_mock.call_args.kwargs.get("history_fallback"))
+
+    @patch("topology.api.views.power_service.refresh_for_onus")
+    def test_power_report_discards_out_of_range_power_values(self, refresh_for_onus_mock):
         onu = ONU.objects.create(
             olt=self.olt,
             slot_id=1,
@@ -4263,19 +5894,10 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
             name="cliente-power-range-guard",
             status=ONU.STATUS_ONLINE,
             is_active=True,
+            latest_onu_rx_power=-80.0,
+            latest_olt_rx_power=1.0,
+            latest_power_read_at=timezone.now(),
         )
-        ONUPowerSample.objects.create(
-            olt=onu.olt,
-            onu=onu,
-            slot_id=onu.slot_id,
-            pon_id=onu.pon_id,
-            onu_number=onu.onu_id,
-            onu_rx_power=-80.0,
-            olt_rx_power=1.0,
-            read_at=timezone.now(),
-            source=ONUPowerSample.SOURCE_MANUAL,
-        )
-        cache_service.delete(cache_service.get_onu_power_key(onu.olt_id, onu.id))
 
         request = self.api_factory.get("/api/onu/power-report/")
         force_authenticate(request, user=self.user)
@@ -4288,6 +5910,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertIsNone(row.get("onu_rx_power"))
         self.assertIsNone(row.get("olt_rx_power"))
         self.assertIsNone(row.get("power_read_at"))
+        refresh_for_onus_mock.assert_not_called()
 
     @patch("topology.api.views.zabbix_service.fetch_onu_item_timelines")
     def test_alarm_history_discards_sentinel_power_from_zabbix(self, fetch_timeline_mock):

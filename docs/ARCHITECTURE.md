@@ -33,7 +33,7 @@
     - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied at container start (`shared_buffers=2GB`, `synchronous_commit=off`, `wal_buffers=64MB`, `checkpoint_timeout=15min`, `effective_io_concurrency=200`, WAL/checkpoint settings).
 
 Backend collection runtime:
-- Default path is Zabbix API item keys.
+- Default control plane is Zabbix API, but latest status/power hot reads can switch to a direct read-only PostgreSQL path against `pg-zabbix` (`items` latest-value columns) when `ZABBIX_DB_ENABLED=1`.
 - Exception: `FIT / FNCS4000` uses a direct backend Telnet collector because the device does not expose an equivalent Zabbix/SNMP runtime path for the required topology/status/power workflow.
 
 Container/runtime health:
@@ -49,7 +49,7 @@ Container/runtime health:
   - dedicated Compose project namespace (`docker compose -p ...`)
   - dedicated Varuna logical database (`POSTGRES_DB`) and credentials
   - dedicated Redis credentials/namespace (or dedicated Redis container, per operator policy)
-  - dedicated Zabbix host-group namespace (`ZABBIX_HOST_GROUP_NAME`, for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`)
+  - dedicated Zabbix host-group namespace (`ZABBIX_HOST_GROUP_NAME`, for example `Varuna/Gabisat`, `Varuna/Pontal`, `Varuna/Demo`)
 - Recommended shared infrastructure on one VM:
   - shared `pg-varuna` PostgreSQL container for all Varuna logical DBs,
   - separate shared `pg-zabbix` PostgreSQL container for Zabbix only,
@@ -72,6 +72,9 @@ Container/runtime health:
   - isolated env vars/secrets.
 - Current gabisat production hostname is `varuna.gabisat.com.br` (single canonical host, no secondary alias).
 - Current demo instance hostname is `demo.varuna.network` (ports 18100/18101, project `varuna_demo`).
+- Current flashnet instance hostname is `flashnet.varuna.network` (ports 18130/18131, project `varuna_flashnet`).
+- Current pontal instance hostname is `pontal.varuna.network` (ports 18120/18121, project `varuna_pontal`).
+- Current vianet instance hostname is `vianet.varuna.network` (ports 18090/18091, project `varuna_vianet`).
 - `docker-compose.prod.yml` is instance-parameterized via:
   - `VARUNA_ENV_FILE` (env file injected into `backend` and standalone `varuna-db`),
   - `VARUNA_FRONTEND_BIND_IP`,
@@ -93,6 +96,7 @@ Container/runtime health:
   - reverse proxy (host-level ingress),
   - shared role-based databases (`pg-varuna`, `pg-zabbix`) and Zabbix services,
   - host monitoring/log shipping.
+- The direct latest-item reader is intentionally read-only and scoped to `items` hot reads. Discovery management, `Execute now`, and history/timeline queries still use the Zabbix API.
 - In shared mode, backend joins shared `varuna-data` network for database/Zabbix access; public traffic remains only through frontend ingress.
 
 ### Dev Port Mapping
@@ -119,11 +123,14 @@ When to split into dedicated `discovery` and `poller` workers:
 
 ## Data Model Highlights
 - `VendorProfile`: vendor/model OID templates and capabilities. Seeded profiles: ZTE C300, ZTE C600, VSOL LIKE GPON 8P, Huawei UNIFICADO, Fiberhome UNIFICADO, FIT FNCS4000.
-- `OLT`: scheduler intervals and runtime reachability state fields (`collector_*` canonically, with `snmp_*` API aliases kept for compatibility). `blade_ips` JSONField supports multi-blade chassis (e.g. FIT FNCS4000 with 3 blades); `get_blade_ips()` returns the list or falls back to `[ip_address]`.
+- `OLT`: scheduler intervals and runtime reachability state fields (`collector_*` canonically, with `snmp_*` API aliases kept for compatibility). `blade_ips` JSONField supports multi-blade chassis (e.g. FIT FNCS4000 with 3 blades); FIT runtime requires explicit per-blade `{ip, port}` entries and does not fall back to a legacy global Telnet port.
 - `OLTSlot` and `OLTPON`: discovered topology map. Empty PONs (0 active ONUs) and empty slots are excluded from topology structure payloads.
-- `ONU`: per-OLT endpoint with active/inactive lifecycle and status.
+- `ONU`: per-OLT endpoint with active/inactive lifecycle, status, and fast latest-power snapshot fields (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`).
+  - Those fields remain the persisted read model for scheduler/manual syncs.
+  - Latest-power UI reads can optionally bypass them and read Zabbix latest values directly when `POWER_LATEST_READS_USE_ZABBIX=true`.
+  - Large live latest-power reads can bound history-fallback fanout with `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS` so global report reads stay current without turning into history scans.
 - `ONULog`: offline event history and disconnect reasons.
-- `ONUPowerSample`: persisted ONU power snapshots used by Power Report and Alarm History trend APIs.
+- `ONUPowerSample`: persisted ONU power history used by trend/timeline APIs and retained refresh history.
 - `MaintenanceJob`: persistent OLT-scoped maintenance queue/progress state for manual discovery/polling/power actions.
 
 ## Key Backend Flows
@@ -193,7 +200,8 @@ When to split into dedicated `discovery` and `poller` workers:
 - Scheduler supports per-tick OLT caps (`max-poll`, `max-discovery`, `max-power`) for load shaping during high-scale deployments.
 - `--force` flag bypasses due checks for manual/emergency runs.
 - Polling command enforces a runtime budget (`max_runtime_seconds`, default 180s) to prevent long-running jobs.
-- Power service persists fresh samples to PostgreSQL for topology/report/history surfaces.
+- Power service updates the fast `ONU` latest-power snapshot on every collection run and persists fresh `ONUPowerSample` rows for history/trends.
+- Latest-power scheduler sync now uses each OLT `power_interval_seconds` directly for every collector type. For Zabbix-backed OLTs, the normal scheduler path reads only current power items and updates the local latest snapshot without walking history.
 - FIT `FNCS4000` power collection is constrained by the device CLI:
   - only online ONUs are queried;
   - only ONU IDs `<= 64` support `show onu optical-ddm`;
@@ -208,6 +216,6 @@ When to split into dedicated `discovery` and `poller` workers:
 - Topology-heavy API reads use a hybrid model:
   - `GET /api/olts/` is a direct PostgreSQL read and reuses denormalized `cached_*` counters for OLT summaries.
   - `GET /api/olts/?include_topology=true` and `GET /api/olts/{id}/topology/` reuse per-OLT Redis structure cache entries for static inventory only, then overlay live `ONU` + active `ONULog` data from PostgreSQL.
-  - full-tree power is intentionally not loaded during topology reads; scoped power endpoints read persisted `ONUPowerSample` snapshots on demand.
+  - full-tree power is intentionally not loaded during topology reads; scoped power endpoints read the synced `ONU` latest-power snapshot on demand.
 - Frontend enforces stale-data gray state using per-OLT `polling_interval_seconds` and synchronizes health colors between topology and settings views.
 - Stale tolerance enforces a 10-minute minimum window so short polling intervals don't cause premature gray state.

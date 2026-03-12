@@ -7,7 +7,7 @@ from io import StringIO
 from django.conf import settings
 from django.core.management import call_command
 from django.db import transaction
-from django.db.models import OuterRef, Q, Subquery
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -27,15 +27,30 @@ from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog, ONUPowerSample, V
 from topology.services.cache_service import cache_service
 from topology.services.collector_service import check_olt_reachability, collector_name_for_olt
 from topology.services.fit_collector_service import FITCollectorError
-from topology.services.history_service import get_latest_power_snapshot_map, persist_power_samples
+from topology.services.history_service import (
+    get_latest_power_snapshot_map,
+    persist_power_samples,
+    sync_latest_power_snapshots,
+)
 from topology.services.maintenance_job_service import maintenance_job_service
-from topology.services.maintenance_runtime import collect_power_for_olt, ensure_status_snapshot_for_power, has_usable_status_snapshot
+from topology.services.maintenance_runtime import (
+    collect_power_for_olt,
+    ensure_status_snapshot_for_power,
+    get_power_history_max_age_minutes,
+    has_usable_status_snapshot,
+)
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.power_values import normalize_power_value
 from topology.services.power_service import power_service
 from topology.services.topology_service import TopologyService
 from topology.services.unm_service import UNMServiceError, unm_service
-from topology.services.vendor_profile import get_collector_type, map_disconnect_reason, map_status_code
+from topology.services.vendor_profile import (
+    COLLECTOR_TYPE_FIT_TELNET,
+    get_collector_type,
+    map_disconnect_reason,
+    map_status_code,
+    supports_olt_rx_power,
+)
 from topology.services.zabbix_service import zabbix_service
 
 logger = logging.getLogger(__name__)
@@ -59,6 +74,20 @@ def _settings_forbidden_response():
         {'detail': 'Insufficient permissions for this action.'},
         status=status.HTTP_403_FORBIDDEN,
     )
+
+
+def _serialize_disconnect_timestamp_for_olt(olt, value):
+    if not value:
+        return None
+    if not getattr(olt, 'unm_enabled', False):
+        return value.isoformat() if hasattr(value, 'isoformat') else str(value)
+    try:
+        if not unm_service.is_enabled_for_olt(olt):
+            return value.isoformat() if hasattr(value, 'isoformat') else str(value)
+        localized = unm_service.localize_alarm_datetime(olt=olt, value=value)
+    except UNMServiceError:
+        return value.isoformat() if hasattr(value, 'isoformat') else str(value)
+    return localized.isoformat() if localized else None
 
 
 class VendorProfileViewSet(viewsets.ReadOnlyModelViewSet):
@@ -160,7 +189,6 @@ class OLTViewSet(viewsets.ModelViewSet):
             'snmp_port',
             'snmp_community',
             'snmp_version',
-            'telnet_port',
             'telnet_username',
             'unm_enabled',
             'unm_host',
@@ -774,18 +802,18 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             active_log = active_logs.get(int(onu.id))
             if active_log:
                 disconnect_reason = active_log.disconnect_reason
-                offline_since = active_log.offline_since.isoformat() if active_log.offline_since else None
+                offline_since = _serialize_disconnect_timestamp_for_olt(onu.olt, active_log.offline_since)
                 window_anchor = (
                     active_log.disconnect_window_end
                     or active_log.disconnect_window_start
                     or active_log.offline_since
                 )
                 disconnect_window_start = (
-                    (active_log.disconnect_window_start or window_anchor).isoformat()
+                    _serialize_disconnect_timestamp_for_olt(onu.olt, active_log.disconnect_window_start or window_anchor)
                     if (active_log.disconnect_window_start or window_anchor) else None
                 )
                 disconnect_window_end = (
-                    (active_log.disconnect_window_end or window_anchor).isoformat()
+                    _serialize_disconnect_timestamp_for_olt(onu.olt, active_log.disconnect_window_end or window_anchor)
                     if (active_log.disconnect_window_end or window_anchor) else None
                 )
             else:
@@ -809,6 +837,124 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 }
             )
         return rows
+
+    def _serialize_power_row(self, onu, payload=None):
+        row = payload or {}
+        onu_rx_power = normalize_power_value(row.get('onu_rx_power'))
+        olt_rx_power = (
+            normalize_power_value(row.get('olt_rx_power'))
+            if supports_olt_rx_power(onu.olt) else None
+        )
+        power_read_at = row.get('power_read_at') if (onu_rx_power is not None or olt_rx_power is not None) else None
+        return {
+            'onu_id': onu.id,
+            'slot_id': onu.slot_id,
+            'pon_id': onu.pon_id,
+            'onu_number': onu.onu_id,
+            'onu_rx_power': onu_rx_power,
+            'olt_rx_power': olt_rx_power,
+            'power_read_at': power_read_at,
+        }
+
+    @staticmethod
+    def _latest_power_reads_use_zabbix() -> bool:
+        return bool(getattr(settings, 'POWER_LATEST_READS_USE_ZABBIX', False))
+
+    def _read_latest_power_rows(self, onus):
+        normalized_onus = []
+        seen = set()
+        for onu in onus or []:
+            if not onu:
+                continue
+            onu_id = int(onu.id)
+            if onu_id in seen:
+                continue
+            seen.add(onu_id)
+            normalized_onus.append(onu)
+
+        if not normalized_onus:
+            return {}
+
+        snapshot_map = get_latest_power_snapshot_map([onu.id for onu in normalized_onus])
+        if not self._latest_power_reads_use_zabbix():
+            return snapshot_map
+
+        results = {}
+        grouped = defaultdict(list)
+        for onu in normalized_onus:
+            grouped[int(onu.olt_id)].append(onu)
+
+        for olt_onus in grouped.values():
+            olt = olt_onus[0].olt
+            if get_collector_type(olt) == COLLECTOR_TYPE_FIT_TELNET:
+                for onu in olt_onus:
+                    payload = snapshot_map.get(int(onu.id))
+                    if payload:
+                        results[int(onu.id)] = payload
+                continue
+
+            onu_pattern, olt_pattern = power_service._resolve_zabbix_power_patterns(olt)
+            if not onu_pattern:
+                for onu in olt_onus:
+                    payload = snapshot_map.get(int(onu.id))
+                    if payload:
+                        results[int(onu.id)] = payload
+                continue
+
+            indexes = []
+            index_to_onu_ids = defaultdict(list)
+            for onu in olt_onus:
+                index = str(getattr(onu, 'snmp_index', '') or '').strip('.')
+                if not index:
+                    continue
+                if index not in index_to_onu_ids:
+                    indexes.append(index)
+                index_to_onu_ids[index].append(int(onu.id))
+
+            if not indexes:
+                for onu in olt_onus:
+                    payload = snapshot_map.get(int(onu.id))
+                    if payload:
+                        results[int(onu.id)] = payload
+                continue
+
+            history_fallback_max_items = max(
+                int(getattr(settings, 'POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS', 256) or 0),
+                0,
+            )
+            use_history_fallback = history_fallback_max_items > 0 and len(indexes) <= history_fallback_max_items
+            if not use_history_fallback:
+                logger.info(
+                    "Latest power live read OLT %s: skipping history fallback for %s ONU indexes (max=%s).",
+                    olt.id,
+                    len(indexes),
+                    history_fallback_max_items,
+                )
+
+            try:
+                live_map, _ = zabbix_service.fetch_power_by_index(
+                    olt,
+                    indexes,
+                    onu_rx_item_key_pattern=onu_pattern,
+                    olt_rx_item_key_pattern=olt_pattern,
+                    history_fallback=use_history_fallback,
+                )
+            except Exception:
+                logger.exception("Failed to read latest Zabbix power for olt_id=%s; falling back to snapshot.", olt.id)
+                for onu in olt_onus:
+                    payload = snapshot_map.get(int(onu.id))
+                    if payload:
+                        results[int(onu.id)] = payload
+                continue
+
+            for index, onu_ids in index_to_onu_ids.items():
+                payload = live_map.get(index)
+                if not payload:
+                    continue
+                for onu_id in onu_ids:
+                    results[onu_id] = payload
+
+        return results
 
     def get_queryset(self):
         include_inactive = _is_true(self.request.query_params.get('include_inactive', 'false'))
@@ -871,25 +1017,11 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(olt__name__icontains=search)
             )
 
-        latest_sample_qs = ONUPowerSample.objects.filter(onu_id=OuterRef('pk')).order_by('-read_at')
-        queryset = queryset.annotate(
-            latest_onu_rx_power=Subquery(latest_sample_qs.values('onu_rx_power')[:1]),
-            latest_olt_rx_power=Subquery(latest_sample_qs.values('olt_rx_power')[:1]),
-            latest_power_read_at=Subquery(latest_sample_qs.values('read_at')[:1]),
-        ).order_by('olt__name', 'slot_id', 'pon_id', 'onu_id')
-
-        rows_source = list(queryset)
+        rows_source = list(queryset.order_by('olt__name', 'slot_id', 'pon_id', 'onu_id'))
+        power_map = self._read_latest_power_rows(rows_source)
         rows = []
         for onu in rows_source:
-            onu_rx_power = normalize_power_value(onu.latest_onu_rx_power)
-            olt_rx_power = normalize_power_value(onu.latest_olt_rx_power)
-            power_read_at = (
-                onu.latest_power_read_at.isoformat()
-                if getattr(onu, 'latest_power_read_at', None) else None
-            )
-
-            if onu_rx_power is None and olt_rx_power is None:
-                power_read_at = None
+            power_row = self._serialize_power_row(onu, power_map.get(int(onu.id)))
 
             rows.append({
                 'id': onu.id,
@@ -904,9 +1036,9 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 'client_name': onu.name or '',
                 'serial': onu.serial or '',
                 'status': onu.status,
-                'onu_rx_power': onu_rx_power,
-                'olt_rx_power': olt_rx_power,
-                'power_read_at': power_read_at,
+                'onu_rx_power': power_row.get('onu_rx_power'),
+                'olt_rx_power': power_row.get('olt_rx_power'),
+                'power_read_at': power_row.get('power_read_at'),
             })
         return Response({'count': len(rows), 'results': rows})
 
@@ -1440,13 +1572,17 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             (zabbix_payload.get('onu_rx_samples') or [])
             or (zabbix_payload.get('olt_rx_samples') or [])
         ):
-            merge_window_seconds = max(
-                5,
-                min(
-                    60,
-                    int((onu.olt.power_interval_seconds or 300) * 0.2),
-                ),
-            )
+            configured_merge_window = int(getattr(settings, 'ALARM_HISTORY_POWER_MERGE_WINDOW_SECONDS', 0) or 0)
+            if configured_merge_window > 0:
+                merge_window_seconds = max(1, configured_merge_window)
+            else:
+                merge_window_seconds = max(
+                    5,
+                    min(
+                        60,
+                        int((onu.olt.power_interval_seconds or 300) * 0.2),
+                    ),
+                )
             power_history = self._build_zabbix_power_history(
                 onu_rx_samples=zabbix_payload.get('onu_rx_samples') or [],
                 olt_rx_samples=zabbix_payload.get('olt_rx_samples') or [],
@@ -1505,7 +1641,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
     def power(self, request, pk=None):
         """
         Returns power information for one ONU.
-        Query param refresh=true/false controls upstream Zabbix refresh vs cache read.
+        Query param refresh=true/false controls upstream collection vs latest snapshot read.
         """
         onu = self.get_object()
         refresh = _is_true(request.query_params.get('refresh', 'false'))
@@ -1536,8 +1672,9 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                     {'detail': f"{onu.olt.name}: {exc}"},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
+            sync_latest_power_snapshots([onu], result_map)
             history_min_read_at = None
-            history_max_age_minutes = 180
+            history_max_age_minutes = get_power_history_max_age_minutes(onu.olt)
             persist_power_samples(
                 [onu],
                 result_map,
@@ -1547,17 +1684,9 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             )
             data = result_map.get(onu.id) or {}
         else:
-            data = get_latest_power_snapshot_map([onu.id]).get(onu.id) or {}
+            data = self._read_latest_power_rows([onu]).get(int(onu.id)) or {}
 
-        data = {
-            'onu_id': onu.id,
-            'slot_id': onu.slot_id,
-            'pon_id': onu.pon_id,
-            'onu_number': onu.onu_id,
-            'onu_rx_power': data.get('onu_rx_power'),
-            'olt_rx_power': data.get('olt_rx_power'),
-            'power_read_at': data.get('power_read_at'),
-        }
+        data = self._serialize_power_row(onu, data)
         return Response(data)
 
     @action(detail=True, methods=['post'], url_path='refresh-status')
@@ -1640,21 +1769,8 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'count': 0, 'results': []})
 
         if not refresh:
-            power_map = get_latest_power_snapshot_map([onu.id for onu in onus])
-            results = []
-            for onu in onus:
-                row = power_map.get(int(onu.id)) or {}
-                results.append(
-                    {
-                        'onu_id': onu.id,
-                        'slot_id': onu.slot_id,
-                        'pon_id': onu.pon_id,
-                        'onu_number': onu.onu_id,
-                        'onu_rx_power': row.get('onu_rx_power'),
-                        'olt_rx_power': row.get('olt_rx_power'),
-                        'power_read_at': row.get('power_read_at'),
-                    }
-                )
+            power_map = self._read_latest_power_rows(onus)
+            results = [self._serialize_power_row(onu, power_map.get(int(onu.id))) for onu in onus]
             return Response({'count': len(results), 'results': results})
 
         if refresh:
@@ -1709,8 +1825,9 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         if refresh:
+            sync_latest_power_snapshots(onus, result_map)
             history_min_read_at = None
-            history_max_age_minutes = 180
+            history_max_age_minutes = max(get_power_history_max_age_minutes(onu.olt) for onu in onus)
             persist_power_samples(
                 onus,
                 result_map,
@@ -1718,7 +1835,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 min_read_at=history_min_read_at,
                 max_age_minutes=history_max_age_minutes,
             )
-        results = [result_map.get(onu.id, {'onu_id': onu.id}) for onu in onus]
+        results = [self._serialize_power_row(onu, result_map.get(int(onu.id))) for onu in onus]
         return Response({'count': len(results), 'results': results})
 
 

@@ -57,7 +57,6 @@ class OLT(models.Model):
     snmp_port = models.IntegerField(default=161, verbose_name='Porta SNMP')
     snmp_community = models.CharField(max_length=100, verbose_name='Comunidade SNMP')
     snmp_version = models.CharField(max_length=10, default='v2c', choices=[('v2c', 'v2c'), ('v3', 'v3')], verbose_name='Versão SNMP')
-    telnet_port = models.IntegerField(default=23, verbose_name='Porta Telnet')
     telnet_username = models.CharField(max_length=100, blank=True, default='', verbose_name='Usuário Telnet')
     telnet_password = models.CharField(max_length=255, blank=True, default='', verbose_name='Senha Telnet')
     blade_ips = models.JSONField(null=True, blank=True, default=None, verbose_name='IPs das Blades')
@@ -115,12 +114,30 @@ class OLT(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Criado em')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Atualizado em')
     
-    def get_blade_ips(self):
-        if self.blade_ips and isinstance(self.blade_ips, list):
-            filtered = [ip for ip in self.blade_ips if ip and str(ip).strip()]
-            if filtered:
-                return filtered
-        return [str(self.ip_address)]
+    def get_blades(self):
+        """Return list of {"ip": ..., "port": ...} dicts for each blade."""
+        if not self.blade_ips or not isinstance(self.blade_ips, list):
+            return []
+
+        blades = []
+        for entry in self.blade_ips:
+            if not isinstance(entry, dict):
+                continue
+            ip_value = str(entry.get("ip", "") or "").strip()
+            port_value = entry.get("port")
+            if not ip_value or port_value in (None, ""):
+                continue
+            try:
+                port = int(port_value)
+            except (TypeError, ValueError):
+                continue
+            if port < 1 or port > 65535:
+                continue
+            blades.append({
+                "ip": ip_value,
+                "port": port,
+            })
+        return blades
 
     def __str__(self):
         vendor = (self.vendor_profile.vendor or '').upper()
@@ -249,6 +266,9 @@ class ONU(models.Model):
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_UNKNOWN, verbose_name='Status')
     is_active = models.BooleanField(default=True, verbose_name='Ativa')
+    latest_onu_rx_power = models.FloatField(null=True, blank=True, verbose_name='Última ONU RX (dBm)')
+    latest_olt_rx_power = models.FloatField(null=True, blank=True, verbose_name='Última OLT RX (dBm)')
+    latest_power_read_at = models.DateTimeField(null=True, blank=True, verbose_name='Última Leitura de Potência')
     
     last_discovered_at = models.DateTimeField(auto_now=True, verbose_name='Última Descoberta')
     

@@ -72,7 +72,28 @@ zabbix_export:
                       if (isSerialLike(serial)) {
                           return serial.replace(/-/g, '');
                       }
-                      return serial;
+                      return '';
+                  }
+
+                  function normalizeOnuName(raw, normalizedSerial) {
+                      var name = String(raw || '').trim().replace(/^[\[\(\{]+|[\]\)\},;:]+$/g, '');
+                      if (!name) {
+                          return '';
+                      }
+                      var upper = name.toUpperCase();
+                      if (['N/A', 'NA', 'NONE', 'NULL', '--', '-'].indexOf(upper) >= 0) {
+                          return '';
+                      }
+                      if (normalizeSerial(name)) {
+                          return '';
+                      }
+                      if (!normalizedSerial) {
+                          var match = name.match(/^([A-Za-z0-9._:-]+)\s+(\d{1,3})$/);
+                          if (match) {
+                              return String(match[1] || '').trim();
+                          }
+                      }
+                      return name;
                   }
 
                   rows.forEach(function(row) {
@@ -102,8 +123,8 @@ zabbix_export:
                           return;
                       }
 
-                      var onuName = String(row['{#ONU_NAME}'] || '').trim();
                       var serial = normalizeSerial(row['{#SERIAL}']);
+                      var onuName = normalizeOnuName(row['{#ONU_NAME}'], serial);
 
                       output.push({
                           '{#SNMPINDEX}': indexStr,
@@ -337,7 +358,28 @@ zabbix_export:
                       if (isSerialLike(serial)) {
                           return serial.replace(/-/g, '');
                       }
-                      return serial;
+                      return '';
+                  }
+
+                  function normalizeOnuName(raw, normalizedSerial) {
+                      var name = String(raw || '').trim().replace(/^[\[\(\{]+|[\]\)\},;:]+$/g, '');
+                      if (!name) {
+                          return '';
+                      }
+                      var upper = name.toUpperCase();
+                      if (['N/A', 'NA', 'NONE', 'NULL', '--', '-'].indexOf(upper) >= 0) {
+                          return '';
+                      }
+                      if (normalizeSerial(name)) {
+                          return '';
+                      }
+                      if (!normalizedSerial) {
+                          var match = name.match(/^([A-Za-z0-9._:-]+)\s+(\d{1,3})$/);
+                          if (match) {
+                              return String(match[1] || '').trim();
+                          }
+                      }
+                      return name;
                   }
 
                   rows.forEach(function(row) {
@@ -367,8 +409,8 @@ zabbix_export:
                           return;
                       }
 
-                      var onuName = String(row['{#ONU_NAME}'] || '').trim();
                       var serial = normalizeSerial(row['{#SERIAL}']);
+                      var onuName = normalizeOnuName(row['{#ONU_NAME}'], serial);
 
                       output.push({
                           '{#SNMPINDEX}': indexStr,

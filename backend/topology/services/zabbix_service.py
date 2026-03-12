@@ -2,14 +2,22 @@ import json
 import logging
 import re
 import time
+from collections import defaultdict
 from datetime import datetime, timezone as dt_timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from django.conf import settings
+from django.db import connections
 
-from topology.services.power_values import normalize_power_value
+from topology.services.power_values import (
+    SENTINEL_NEG40_EPSILON,
+    SENTINEL_ZERO_EPSILON,
+    VALID_POWER_MAX_DBM,
+    VALID_POWER_MIN_DBM,
+    normalize_power_value,
+)
 from topology.services.vendor_profile import parse_onu_index
 
 
@@ -44,6 +52,11 @@ GENERIC_ONU_STATUS_ITEM_RE = re.compile(
 )
 GENERIC_SERIAL_TOKEN_RE = re.compile(r"^[A-Z]{4}[A-Z0-9-]{4,28}$")
 GENERIC_DIGIT_SERIAL_TOKEN_RE = re.compile(r"^(?=(?:.*\d){4,})[A-Z0-9-]{8,32}$")
+GENERIC_DISCOVERY_NAME_WITH_NUMERIC_SUFFIX_RE = re.compile(
+    r"^(?P<base>[A-Z0-9._:-]+)\s+(?P<suffix>\d{1,3})$",
+    re.IGNORECASE,
+)
+GENERIC_DISCOVERY_NAME_SENTINELS = frozenset({"N/A", "NA", "NONE", "NULL", "--", "-"})
 
 VARUNA_DISCOVERY_INTERVAL_MACRO = "{$VARUNA.DISCOVERY_INTERVAL}"
 VARUNA_STATUS_INTERVAL_MACRO = "{$VARUNA.STATUS_INTERVAL}"
@@ -90,6 +103,98 @@ def _looks_like_hex_serial_token(value: str) -> bool:
     if normalized.startswith("0X"):
         compact = normalized[2:].replace(" ", "")
     return bool(re.fullmatch(r"[0-9A-F]{10,64}", compact) and len(compact) % 2 == 0)
+
+
+def _normalize_status_serial_token(raw: str) -> str:
+    token = str(raw or "").strip().upper().strip("[](){}").strip(",;:")
+    if not token:
+        return ""
+    if "," in token:
+        parts = [part.strip().strip(",;:") for part in token.split(",") if part.strip()]
+        for part in parts:
+            if _is_generic_serial_token(part):
+                return part.replace("-", "")
+        token = parts[0] if parts else token
+    if _is_generic_serial_token(token):
+        return token.replace("-", "")
+    if _looks_like_hex_serial_token(token):
+        return token.replace(" ", "")
+    return ""
+
+
+def normalize_discovery_onu_name(raw: str, *, serial: str = "") -> str:
+    name = str(raw or "").strip().strip("[](){}").strip(",;:")
+    if not name:
+        return ""
+    if name.upper() in GENERIC_DISCOVERY_NAME_SENTINELS:
+        return ""
+
+    normalized_serial = _normalize_status_serial_token(serial)
+    serial_like_name = _normalize_status_serial_token(name)
+    if serial_like_name:
+        if not normalized_serial or serial_like_name == normalized_serial:
+            return ""
+
+    if not normalized_serial:
+        match = GENERIC_DISCOVERY_NAME_WITH_NUMERIC_SUFFIX_RE.match(name)
+        if match:
+            return str(match.group("base") or "").strip()
+
+    return name
+
+
+def _discovery_row_identity_key(row: Dict[str, Any]) -> str:
+    slot = str(row.get("{#SLOT}") or "").strip()
+    pon = str(row.get("{#PON}") or "").strip()
+    onu = str(row.get("{#ONU_ID}") or "").strip()
+    if slot and pon and onu:
+        return f"{slot}/{pon}/{onu}"
+    return str(row.get("{#SNMPINDEX}") or "").strip()
+
+
+def _repair_discovery_identity_rows(
+    parsed_rows: List[Dict[str, Any]],
+    fallback_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    fallback_by_key = {
+        key: row for row in fallback_rows
+        if (key := _discovery_row_identity_key(row))
+    }
+    repaired_rows: List[Dict[str, Any]] = []
+
+    for row in parsed_rows:
+        repaired = dict(row)
+        raw_name = str(repaired.get("{#ONU_NAME}") or "").strip()
+        normalized_serial = _normalize_status_serial_token(
+            repaired.get("{#SERIAL}") or repaired.get("{#ONU_SERIAL}") or ""
+        )
+        normalized_name = normalize_discovery_onu_name(raw_name, serial=normalized_serial)
+        name_needs_repair = raw_name != normalized_name
+
+        if normalized_serial:
+            repaired["{#SERIAL}"] = normalized_serial
+        if normalized_name or "{#ONU_NAME}" in repaired:
+            repaired["{#ONU_NAME}"] = normalized_name
+
+        fallback = fallback_by_key.get(_discovery_row_identity_key(repaired))
+        if fallback:
+            fallback_serial = _normalize_status_serial_token(
+                fallback.get("{#SERIAL}") or fallback.get("{#ONU_SERIAL}") or ""
+            )
+            fallback_name = normalize_discovery_onu_name(
+                fallback.get("{#ONU_NAME}") or "",
+                serial=fallback_serial,
+            )
+            if fallback_serial and not normalized_serial:
+                repaired["{#SERIAL}"] = fallback_serial
+                normalized_serial = fallback_serial
+            if fallback_name and (not normalized_name or name_needs_repair):
+                repaired["{#ONU_NAME}"] = fallback_name
+                normalized_name = fallback_name
+
+        repaired_rows.append(repaired)
+
+    return repaired_rows
 
 
 def _to_float_or_none(value) -> Optional[float]:
@@ -233,6 +338,313 @@ class ZabbixService:
                 payload["auth"] = auth
                 payload["id"] = self._next_id()
             return self._post_json(payload, include_bearer=True)
+
+    @staticmethod
+    def _db_latest_items_enabled() -> bool:
+        return bool(getattr(settings, "ZABBIX_DB_ENABLED", False))
+
+    @staticmethod
+    def _db_latest_items_chunk_size() -> int:
+        return max(int(getattr(settings, "ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE", 1000) or 1000), 100)
+
+    @staticmethod
+    def _history_table_name_for_value_type(value_type: Optional[str]) -> Optional[str]:
+        mapping = {
+            0: "history",
+            1: "history_str",
+            2: "history_log",
+            3: "history_uint",
+            4: "history_text",
+        }
+        return mapping.get(_to_int_or_none(value_type))
+
+    def _get_latest_history_rows_from_db(
+        self,
+        cursor,
+        *,
+        itemids_by_value_type: Dict[int, List[int]],
+    ) -> Optional[Dict[int, Dict[str, Any]]]:
+        history_by_itemid: Dict[int, Dict[str, Any]] = {}
+
+        for value_type, raw_itemids in (itemids_by_value_type or {}).items():
+            itemids = [int(itemid) for itemid in raw_itemids if _to_int_or_none(itemid) is not None]
+            if not itemids:
+                continue
+
+            table_name = self._history_table_name_for_value_type(str(value_type))
+            if not table_name:
+                return None
+
+            cursor.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT
+                        itemid,
+                        clock,
+                        value::text AS value,
+                        row_number() OVER (
+                            PARTITION BY itemid
+                            ORDER BY clock DESC, ns DESC
+                        ) AS rn
+                    FROM {table_name}
+                    WHERE itemid = ANY(%s)
+                )
+                SELECT
+                    itemid,
+                    MAX(clock) FILTER (WHERE rn = 1) AS lastclock,
+                    MAX(value) FILTER (WHERE rn = 1) AS lastvalue,
+                    MAX(value) FILTER (WHERE rn = 2) AS prevvalue
+                FROM ranked
+                WHERE rn <= 2
+                GROUP BY itemid
+                """,
+                [itemids],
+            )
+
+            for itemid, lastclock, lastvalue, prevvalue in cursor.fetchall():
+                normalized_itemid = int(itemid)
+                history_by_itemid[normalized_itemid] = {
+                    "lastclock": lastclock,
+                    "lastvalue": None if lastvalue is None else str(lastvalue),
+                    "prevvalue": None if prevvalue is None else str(prevvalue),
+                }
+
+        return history_by_itemid
+
+    def _get_latest_valid_power_history_samples_from_db(
+        self,
+        *,
+        item_specs: Dict[str, Optional[str]],
+        time_from: Optional[int] = None,
+        limit_per_item: int = 10,
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        if not self._db_latest_items_enabled():
+            return None
+
+        try:
+            zabbix_conn = connections["zabbix"]
+        except Exception:
+            return None
+
+        normalized_specs: Dict[str, Optional[str]] = {}
+        for raw_itemid, raw_value_type in (item_specs or {}).items():
+            itemid = str(raw_itemid or "").strip()
+            if not itemid:
+                continue
+            normalized_specs[itemid] = raw_value_type
+        if not normalized_specs:
+            return {}
+
+        normalized_time_from = _to_int_or_none(time_from)
+        candidate_tables_by_itemid: Dict[str, List[str]] = {}
+        max_candidate_count = 0
+        for itemid, value_type in normalized_specs.items():
+            table_candidates: List[str] = []
+            parsed_value_type = _to_int_or_none(value_type)
+            history_types: List[int] = []
+            if parsed_value_type in {0, 3}:
+                history_types.append(parsed_value_type)
+            for history_type in (0, 3):
+                if history_type not in history_types:
+                    history_types.append(history_type)
+            for history_type in history_types:
+                table_name = self._history_table_name_for_value_type(str(history_type))
+                if not table_name or table_name in table_candidates:
+                    continue
+                table_candidates.append(table_name)
+            if not table_candidates:
+                continue
+            candidate_tables_by_itemid[itemid] = table_candidates
+            max_candidate_count = max(max_candidate_count, len(table_candidates))
+
+        if not candidate_tables_by_itemid:
+            return {}
+
+        results: Dict[str, Dict[str, Any]] = {}
+        unresolved = set(candidate_tables_by_itemid.keys())
+
+        try:
+            with zabbix_conn.cursor() as cursor:
+                for candidate_index in range(max_candidate_count):
+                    if not unresolved:
+                        break
+
+                    itemids_by_table: Dict[str, List[int]] = defaultdict(list)
+                    for itemid in unresolved:
+                        table_candidates = candidate_tables_by_itemid.get(itemid) or []
+                        if candidate_index >= len(table_candidates):
+                            continue
+                        parsed_itemid = _to_int_or_none(itemid)
+                        if parsed_itemid is None:
+                            continue
+                        itemids_by_table[table_candidates[candidate_index]].append(parsed_itemid)
+
+                    for table_name, itemids in itemids_by_table.items():
+                        if not itemids:
+                            continue
+
+                        sql = f"""
+                            SELECT
+                                requested.itemid,
+                                history_rows.clock,
+                                history_rows.value
+                            FROM unnest(%s::bigint[]) AS requested(itemid)
+                            JOIN LATERAL (
+                                SELECT
+                                    h.clock,
+                                    h.value::text AS value
+                                FROM {table_name} h
+                                WHERE h.itemid = requested.itemid
+                                  AND h.value > %s
+                                  AND h.value < %s
+                        """
+                        params: List[Any] = [itemids]
+                        params.extend(
+                            [
+                                VALID_POWER_MIN_DBM + SENTINEL_NEG40_EPSILON,
+                                VALID_POWER_MAX_DBM - SENTINEL_ZERO_EPSILON,
+                            ]
+                        )
+                        if normalized_time_from is not None and normalized_time_from >= 0:
+                            sql += " AND clock >= %s"
+                            params.append(normalized_time_from)
+                        sql += """
+                                ORDER BY h.clock DESC, h.ns DESC
+                                LIMIT 1
+                            ) AS history_rows ON TRUE
+                            ORDER BY requested.itemid ASC
+                        """
+
+                        cursor.execute(sql, params)
+                        rows = cursor.fetchall()
+                        if not rows:
+                            continue
+
+                        seen_itemids = set()
+                        for raw_itemid, raw_clock, raw_value in rows:
+                            itemid = str(raw_itemid or "").strip()
+                            if not itemid or itemid in seen_itemids or itemid not in unresolved:
+                                continue
+                            value = normalize_power_value(_to_float_or_none(raw_value))
+                            clock_epoch = _to_int_or_none(raw_clock)
+                            if value is None or clock_epoch is None or clock_epoch <= 0:
+                                continue
+                            seen_itemids.add(itemid)
+                            results[itemid] = {
+                                "value": value,
+                                "clock": _from_epoch_to_iso(clock_epoch),
+                                "clock_epoch": clock_epoch,
+                            }
+                        unresolved.difference_update(seen_itemids)
+        except Exception:
+            logger.exception("Zabbix DB power-history fallback read failed; falling back to API.")
+            try:
+                zabbix_conn.close_if_unusable_or_obsolete()
+            except Exception:
+                pass
+            return None
+
+        return results
+
+    def _get_items_by_keys_from_db(self, hostid: str, keys: Iterable[str]) -> Optional[Dict[str, Dict]]:
+        if not self._db_latest_items_enabled():
+            return None
+
+        normalized_hostid = _to_int_or_none(hostid)
+        if normalized_hostid is None:
+            return None
+
+        deduped_keys: List[str] = []
+        seen = set()
+        for raw_key in keys:
+            key = str(raw_key or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped_keys.append(key)
+        if not deduped_keys:
+            return {}
+
+        try:
+            zabbix_conn = connections["zabbix"]
+        except Exception:
+            return None
+
+        item_map: Dict[str, Dict] = {}
+        chunk_size = self._db_latest_items_chunk_size()
+        metadata_sql = """
+            SELECT
+                i.itemid,
+                i.key_,
+                i.status,
+                i.value_type,
+                COALESCE(r.state, 0) AS rt_state,
+                COALESCE(r.error, '') AS rt_error
+            FROM items
+            i
+            LEFT JOIN item_rtdata r ON r.itemid = i.itemid
+            WHERE i.hostid = %s
+              AND i.key_ = ANY(%s)
+            ORDER BY i.itemid
+        """
+
+        try:
+            with zabbix_conn.cursor() as cursor:
+                for start in range(0, len(deduped_keys), chunk_size):
+                    chunk = deduped_keys[start:start + chunk_size]
+                    cursor.execute(metadata_sql, [normalized_hostid, chunk])
+                    metadata_rows = cursor.fetchall()
+                    itemids_by_value_type: Dict[int, List[int]] = defaultdict(list)
+                    for row in metadata_rows:
+                        value_type = _to_int_or_none(row[3])
+                        itemid = _to_int_or_none(row[0])
+                        if value_type is None or itemid is None:
+                            continue
+                        itemids_by_value_type[value_type].append(itemid)
+
+                    history_by_itemid = self._get_latest_history_rows_from_db(
+                        cursor,
+                        itemids_by_value_type=itemids_by_value_type,
+                    )
+                    if history_by_itemid is None:
+                        return None
+
+                    for row in metadata_rows:
+                        itemid = _to_int_or_none(row[0])
+                        if itemid is None:
+                            continue
+                        history_row = history_by_itemid.get(itemid, {})
+                        payload = {
+                            "itemid": str(itemid),
+                            "key_": str(row[1] or "").strip(),
+                            "lastvalue": history_row.get("lastvalue"),
+                            "prevvalue": history_row.get("prevvalue"),
+                            "lastclock": history_row.get("lastclock"),
+                            "state": str(row[4]) if row[4] is not None else "0",
+                            "status": str(row[2]) if row[2] is not None else "0",
+                            "error": row[5] or "",
+                            "value_type": str(row[3]) if row[3] is not None else "",
+                        }
+                        key = payload["key_"]
+                        if not key:
+                            continue
+                        current = item_map.get(key)
+                        current_clock = _to_int_or_none((current or {}).get("lastclock"))
+                        next_clock = _to_int_or_none(payload.get("lastclock"))
+                        if current is None or (next_clock or 0) >= (current_clock or 0):
+                            item_map[key] = payload
+        except Exception:
+            logger.exception(
+                "Zabbix DB latest-item read failed for hostid=%s; falling back to API.",
+                normalized_hostid,
+            )
+            try:
+                zabbix_conn.close_if_unusable_or_obsolete()
+            except Exception:
+                pass
+            return None
+
+        return item_map
 
     def _resolve_host_candidate_names(self, olt) -> List[str]:
         candidates: List[str] = []
@@ -1018,6 +1430,10 @@ class ZabbixService:
         if not deduped_keys:
             return {}
 
+        db_item_map = self._get_items_by_keys_from_db(hostid, deduped_keys)
+        if db_item_map is not None:
+            return db_item_map
+
         item_map: Dict[str, Dict] = {}
         chunk_size = 200
         for start in range(0, len(deduped_keys), chunk_size):
@@ -1202,6 +1618,135 @@ class ZabbixService:
             if read_at:
                 return None, read_at
         return None, None
+
+    def get_latest_valid_power_history_sample(
+        self,
+        *,
+        itemid: str,
+        value_type: Optional[str] = None,
+        time_from: Optional[int] = None,
+        limit: int = 10,
+    ) -> Tuple[Optional[float], Optional[str], Optional[int]]:
+        rows = self.get_history_series(
+            itemid=itemid,
+            value_type=value_type,
+            time_from=time_from,
+            sortorder="DESC",
+            limit=max(int(limit or 0), 1),
+        )
+        for row in rows:
+            value = normalize_power_value(_to_float_or_none((row or {}).get("value")))
+            clock_epoch = _to_int_or_none((row or {}).get("clock_epoch"))
+            if value is None or clock_epoch is None or clock_epoch <= 0:
+                continue
+            return value, _from_epoch_to_iso(clock_epoch), clock_epoch
+        return None, None, None
+
+    def get_latest_valid_power_history_samples(
+        self,
+        *,
+        item_specs: Dict[str, Optional[str]],
+        time_from: Optional[int] = None,
+        limit_per_item: int = 10,
+    ) -> Dict[str, Dict[str, Any]]:
+        normalized_specs: Dict[str, Optional[str]] = {}
+        for raw_itemid, raw_value_type in (item_specs or {}).items():
+            itemid = str(raw_itemid or "").strip()
+            if not itemid:
+                continue
+            normalized_specs[itemid] = raw_value_type
+
+        if not normalized_specs:
+            return {}
+
+        results: Dict[str, Dict[str, Any]] = {}
+        db_results = self._get_latest_valid_power_history_samples_from_db(
+            item_specs=normalized_specs,
+            time_from=time_from,
+            limit_per_item=limit_per_item,
+        )
+        if db_results is not None:
+            results.update(db_results)
+            normalized_specs = {
+                itemid: value_type
+                for itemid, value_type in normalized_specs.items()
+                if itemid not in results
+            }
+            if not normalized_specs:
+                return results
+
+        normalized_time_from = _to_int_or_none(time_from)
+        normalized_limit_per_item = max(int(limit_per_item or 0), 1)
+        unresolved = set(normalized_specs.keys())
+        grouped_itemids: Dict[int, List[str]] = defaultdict(list)
+
+        for itemid, value_type in normalized_specs.items():
+            history_types = self._history_type_candidates(value_type=value_type)
+            primary_history_type = history_types[0] if history_types else 0
+            grouped_itemids[primary_history_type].append(itemid)
+
+        for history_type, group_itemids in grouped_itemids.items():
+            pending_itemids = [itemid for itemid in group_itemids if itemid in unresolved]
+            if not pending_itemids:
+                continue
+
+            limit = min(
+                max(len(pending_itemids) * normalized_limit_per_item * 4, len(pending_itemids)),
+                20000,
+            )
+            params: Dict[str, Any] = {
+                "output": ["itemid", "clock", "value"],
+                "history": history_type,
+                "itemids": pending_itemids,
+                "sortfield": "clock",
+                "sortorder": "DESC",
+                "limit": limit,
+            }
+            if normalized_time_from is not None and normalized_time_from >= 0:
+                params["time_from"] = normalized_time_from
+
+            rows = self._call("history.get", params)
+            if not isinstance(rows, list) or not rows:
+                continue
+
+            seen_rows_by_itemid: Dict[str, int] = defaultdict(int)
+            pending_set = set(pending_itemids)
+            for row in rows:
+                itemid = str((row or {}).get("itemid") or "").strip()
+                if not itemid or itemid not in pending_set or itemid not in unresolved:
+                    continue
+                if seen_rows_by_itemid[itemid] >= normalized_limit_per_item:
+                    continue
+                seen_rows_by_itemid[itemid] += 1
+
+                value = normalize_power_value(_to_float_or_none((row or {}).get("value")))
+                clock_epoch = _to_int_or_none((row or {}).get("clock"))
+                if value is None or clock_epoch is None or clock_epoch <= 0:
+                    continue
+
+                results[itemid] = {
+                    "value": value,
+                    "clock": _from_epoch_to_iso(clock_epoch),
+                    "clock_epoch": clock_epoch,
+                }
+                unresolved.discard(itemid)
+
+        for itemid in list(unresolved):
+            value, read_at, clock_epoch = self.get_latest_valid_power_history_sample(
+                itemid=itemid,
+                value_type=normalized_specs.get(itemid),
+                time_from=normalized_time_from,
+                limit=normalized_limit_per_item,
+            )
+            if value is None or clock_epoch is None or clock_epoch <= 0:
+                continue
+            results[itemid] = {
+                "value": value,
+                "clock": read_at or _from_epoch_to_iso(clock_epoch),
+                "clock_epoch": clock_epoch,
+            }
+
+        return results
 
     @staticmethod
     def _history_type_candidates(value_type: Optional[str] = None) -> List[int]:
@@ -1523,20 +2068,7 @@ class ZabbixService:
 
     @staticmethod
     def _normalize_status_serial_token(raw: str) -> str:
-        token = str(raw or "").strip().upper().strip("[](){}").strip(",;:")
-        if not token:
-            return ""
-        if "," in token:
-            parts = [part.strip().strip(",;:") for part in token.split(",") if part.strip()]
-            for part in parts:
-                if _is_generic_serial_token(part):
-                    return part.replace("-", "")
-            token = parts[0] if parts else token
-        if _is_generic_serial_token(token):
-            return token.replace("-", "")
-        if _looks_like_hex_serial_token(token):
-            return token
-        return ""
+        return _normalize_status_serial_token(raw)
 
     @staticmethod
     def _split_status_item_body_name_serial(body: str) -> Tuple[str, str]:
@@ -1557,8 +2089,8 @@ class ZabbixService:
 
         trailing = ZabbixService._normalize_status_serial_token(parts[-1])
         if re.fullmatch(r"[A-Z0-9]{8,32}", trailing):
-            return " ".join(parts[:-1]).strip(), trailing
-        return normalized_body, ""
+            return normalize_discovery_onu_name(" ".join(parts[:-1]).strip(), serial=trailing), trailing
+        return normalize_discovery_onu_name(normalized_body), ""
 
     def _build_discovery_row_from_status_item(self, olt, *, index: str, item_name: str) -> Optional[Dict[str, str]]:
         if not index:
@@ -1732,7 +2264,25 @@ class ZabbixService:
             if isinstance(parsed, list):
                 parsed_rows = [row for row in parsed if isinstance(row, dict)]
         if parsed_rows:
-            return parsed_rows, read_at
+            needs_identity_repair = any(
+                (
+                    not _normalize_status_serial_token(
+                        row.get("{#SERIAL}") or row.get("{#ONU_SERIAL}") or ""
+                    )
+                )
+                or normalize_discovery_onu_name(
+                    row.get("{#ONU_NAME}") or "",
+                    serial=row.get("{#SERIAL}") or row.get("{#ONU_SERIAL}") or "",
+                ) != str(row.get("{#ONU_NAME}") or "").strip()
+                for row in parsed_rows
+            )
+            fallback_rows: List[Dict[str, Any]] = []
+            fallback_read_at: Optional[str] = None
+            if needs_identity_repair:
+                fallback_rows, fallback_read_at = self._fallback_discovery_rows_from_status_items(olt, hostid)
+                if fallback_rows:
+                    parsed_rows = _repair_discovery_identity_rows(parsed_rows, fallback_rows)
+            return parsed_rows, fallback_read_at or read_at
 
         # Robust fallback for environments where LLD payload history is unavailable:
         # reconstruct discovery rows from created per-ONU status items.
@@ -1873,6 +2423,7 @@ class ZabbixService:
         *,
         onu_rx_item_key_pattern: str,
         olt_rx_item_key_pattern: str = "",
+        history_fallback: bool = True,
     ) -> Tuple[Dict[str, Dict], Optional[str]]:
         hostid = self.get_hostid(olt)
         if not hostid:
@@ -1893,8 +2444,15 @@ class ZabbixService:
                 key_to_target[olt_key] = (index, "olt_rx_power")
 
         item_map = self.get_items_by_keys(hostid, keys)
+        history_lookback_seconds = max(
+            int(getattr(olt, "history_days", 7) or 7) * 86400,
+            86400,
+        )
+        history_time_from = max(0, int(time.time()) - history_lookback_seconds)
         results: Dict[str, Dict] = {}
         newest_clock = 0
+        history_fallback_specs: Dict[str, Optional[str]] = {}
+        history_fallback_targets: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
         for key, row in item_map.items():
             target = key_to_target.get(key)
             if not target:
@@ -1905,15 +2463,47 @@ class ZabbixService:
                 {"onu_rx_power": None, "olt_rx_power": None, "power_read_at": None, "power_clock_epoch": None},
             )
             value = normalize_power_value(_to_float_or_none(row.get("lastvalue")))
-            payload[field] = value
             clock = _to_int_or_none(row.get("lastclock")) or 0
+            read_at = _from_epoch_to_iso(clock)
+            itemid = str((row or {}).get("itemid") or "").strip()
+            if (value is None or clock <= 0) and itemid:
+                history_fallback_specs.setdefault(
+                    itemid,
+                    str((row or {}).get("value_type") or "").strip(),
+                )
+                history_fallback_targets[itemid].append((index, field))
+                continue
+
+            payload[field] = value
             newest_clock = max(newest_clock, clock)
             previous_clock = _to_int_or_none(payload.get("power_clock_epoch")) or 0
             if clock >= previous_clock:
                 payload["power_clock_epoch"] = clock
-                read_at = _from_epoch_to_iso(clock)
                 if read_at:
                     payload["power_read_at"] = read_at
+
+        if history_fallback and history_fallback_specs:
+            history_fallback_map = self.get_latest_valid_power_history_samples(
+                item_specs=history_fallback_specs,
+                time_from=history_time_from,
+            )
+            for itemid, fallback in history_fallback_map.items():
+                fallback_value = normalize_power_value(_to_float_or_none((fallback or {}).get("value")))
+                fallback_clock = _to_int_or_none((fallback or {}).get("clock_epoch"))
+                if fallback_value is None or fallback_clock is None or fallback_clock <= 0:
+                    continue
+                fallback_read_at = str((fallback or {}).get("clock") or "").strip() or _from_epoch_to_iso(fallback_clock)
+                for index, field in history_fallback_targets.get(itemid, []):
+                    payload = results.setdefault(
+                        index,
+                        {"onu_rx_power": None, "olt_rx_power": None, "power_read_at": None, "power_clock_epoch": None},
+                    )
+                    payload[field] = fallback_value
+                    previous_clock = _to_int_or_none(payload.get("power_clock_epoch")) or 0
+                    if fallback_clock >= previous_clock:
+                        payload["power_clock_epoch"] = fallback_clock
+                        payload["power_read_at"] = fallback_read_at
+                    newest_clock = max(newest_clock, fallback_clock)
         return results, _from_epoch_to_iso(newest_clock)
 
 

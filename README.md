@@ -82,7 +82,12 @@ docker compose -p varuna_client_a --env-file /etc/varuna/prod.client-a.env \
   -f docker-compose.prod.shared-pg.yml up -d --build
 ```
 
-For `gabisat`, a ready instance template is included at `docker/prod.gabisat.env`.
+Ready instance templates are included at:
+- `docker/prod.gabisat.env`
+- `docker/prod.demo.env`
+- `docker/prod.pontal.env`
+- `docker/prod.vianet.env`
+- `docker/prod.flashnet.env`
 Production recommendation: keep real client secrets in root-owned files outside repo, for example `/etc/varuna/prod.<client>.env`.
 
 Use one host-level reverse proxy/load balancer to route subdomains to each instance's localhost frontend host port, exposing only `443` publicly.

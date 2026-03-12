@@ -9,6 +9,8 @@ import { MISSING_VALUE_PLACEHOLDER, PLACEHOLDER_CLASS } from '../utils/placehold
 
 const INITIAL_VISIBLE_ROWS = 300
 const LOAD_MORE_ROWS = 300
+const POWER_REPORT_REFRESH_INTERVAL_MS = 30000
+const POWER_REPORT_CACHE_TTL_MS = 25000
 const DEFAULT_SIGNAL_FILTER = ['good', 'critical', 'warning']
 const DEFAULT_SORT_MODE = 'worst_onu_rx'
 
@@ -69,6 +71,48 @@ const normalizeRow = (row) => {
   }
 }
 
+const powerReportCache = {
+  rows: [],
+  fetchedAt: 0,
+  ready: false,
+  inflight: null,
+}
+
+const getPowerReportCacheSnapshot = () => ({
+  rows: powerReportCache.ready ? powerReportCache.rows : [],
+  ready: powerReportCache.ready,
+})
+
+const isPowerReportCacheFresh = () => (
+  powerReportCache.ready && (Date.now() - powerReportCache.fetchedAt) < POWER_REPORT_CACHE_TTL_MS
+)
+
+const cachePowerReportRows = (rows) => {
+  powerReportCache.rows = rows
+  powerReportCache.fetchedAt = Date.now()
+  powerReportCache.ready = true
+  return rows
+}
+
+const requestPowerReportRows = async () => {
+  const response = await api.get('/onu/power-report/')
+  const payload = response?.data
+  return cachePowerReportRows(asList(payload?.results ?? payload).map(normalizeRow))
+}
+
+export const warmPowerReportData = async ({ force = false } = {}) => {
+  if (!force && isPowerReportCacheFresh()) {
+    return powerReportCache.rows
+  }
+  if (powerReportCache.inflight) {
+    return powerReportCache.inflight
+  }
+  powerReportCache.inflight = requestPowerReportRows().finally(() => {
+    powerReportCache.inflight = null
+  })
+  return powerReportCache.inflight
+}
+
 export const PowerReport = () => {
   const { t, i18n } = useTranslation()
   const [signalFilter, setSignalFilter] = useState(() => {
@@ -90,9 +134,9 @@ export const PowerReport = () => {
     try { localStorage.setItem('varuna.powerReport.sortMode', sortMode) } catch {}
   }, [sortMode])
 
-  const [rows, setRows] = useState([])
+  const [rows, setRows] = useState(() => getPowerReportCacheSnapshot().rows)
   const [visibleRowsLimit, setVisibleRowsLimit] = useState(INITIAL_VISIBLE_ROWS)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => !getPowerReportCacheSnapshot().ready)
   const [error, setError] = useState('')
 
   // Cascading OLT → Slot → PON filter state (restored from localStorage)
@@ -107,14 +151,19 @@ export const PowerReport = () => {
   })
 
   const fetchRows = useCallback(async ({ background = false } = {}) => {
-    if (!background) {
+    const snapshot = getPowerReportCacheSnapshot()
+    if (snapshot.ready) {
+      setRows(snapshot.rows)
+      if (!background) {
+        setLoading(false)
+        setError('')
+      }
+    } else if (!background) {
       setLoading(true)
       setError('')
     }
     try {
-      const response = await api.get('/onu/power-report/')
-      const payload = response?.data
-      const nextRows = asList(payload?.results ?? payload).map(normalizeRow)
+      const nextRows = await warmPowerReportData({ force: background })
       setRows(nextRows)
       setError('')
     } catch {
@@ -127,13 +176,20 @@ export const PowerReport = () => {
   }, [t])
 
   useEffect(() => {
+    const snapshot = getPowerReportCacheSnapshot()
+    if (snapshot.ready) {
+      setRows(snapshot.rows)
+      setLoading(false)
+      void fetchRows({ background: true })
+      return
+    }
     void fetchRows()
   }, [fetchRows])
 
   useEffect(() => {
     const timer = setInterval(() => {
       void fetchRows({ background: true })
-    }, 30000)
+    }, POWER_REPORT_REFRESH_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [fetchRows])
 

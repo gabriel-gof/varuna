@@ -7,6 +7,7 @@
 - Collector backend:
   - `zabbix`: Zabbix API (`api_jsonrpc.php`) for standard SNMP/Zabbix-backed vendors.
   - `fit_telnet`: direct backend Telnet CLI collector for `FIT / FNCS4000`.
+- Zabbix-backed latest status/power reads can optionally use a read-only PostgreSQL path (`DATABASES['zabbix']`) for `items` latest-value fields when `ZABBIX_DB_ENABLED=1`; JSON-RPC fallback remains automatic.
 
 ## Naming and Boundaries
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
@@ -31,7 +32,7 @@
 - `backend/topology/api/serializers.py`: API serialization.
 - `backend/topology/api/auth_views.py`: auth endpoints (login, logout, me, change-password).
 - `backend/topology/api/auth_utils.py`: role resolution and permission helpers.
-- `backend/topology/services/zabbix_service.py`: Zabbix API integration (host lookup, item fetch, discovery/status/power reads).
+- `backend/topology/services/zabbix_service.py`: Zabbix integration (API host/discovery/manual actions plus optional direct PostgreSQL latest-item reads for status/power hot paths).
 - `backend/topology/services/fit_collector_service.py`: FIT `FNCS4000` Telnet CLI collection (reachability, discovery/status rows, per-ONU power).
 - `backend/topology/services/collector_service.py`: collector-mode dispatcher (Zabbix vs FIT Telnet).
 - `backend/topology/services/vendor_profile.py`: vendor index/status parsing helpers.
@@ -92,7 +93,7 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
   - Backend applies a second guard (`normalize_power_value`) on Zabbix fetch, cache fallback, history persistence, and API serialization with the same strict range (`-40 < dBm < 0`) so legacy/template-fallback sentinels never surface in UI responses.
   - History retention policy for template items is macroized (`{$VARUNA.HISTORY_DAYS}`), default `7d`.
   - ONU item prototypes in vendor templates include `slot={#SLOT}` and `pon={#PON}` tags (plus existing `collector`/`metric`) to support Zabbix-side filtering/debug by slot and PON.
-  - Varuna persists power snapshots (`ONUPowerSample`) for report/history APIs.
+  - Varuna persists power snapshots (`ONUPowerSample`) for history/trend APIs and retained refresh history.
   - discovery source supports both:
     - normal item key with `lastvalue`,
     - LLD/discovery-rule key (read via `discoveryrule.get` + latest `history.get` value by itemid).
@@ -104,6 +105,7 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
     For serial-only names, slot/pon/onu are decoded from the flat SNMP index bytes (`[slot*2, pon*8, onu_id, 0]`) before falling back to generic index parsing.
   - Huawei fallback accepts both `ONU <chassi>/<slot>/<pon>/<onu> ...` and `ONU <slot>/<pon>/<onu> ...` status name formats; when serial is embedded as `[SERIAL]`, it is extracted to `{#SERIAL}` (including hex-byte bracket format normalized to `0X...` for serial decoding in discovery).
   - Generic fallback (used by VSOL/ZTE-like templates) accepts status item names in the form `ONU <slot>/<pon>/<onu> <name> <serial>: Status` and extracts both `{#ONU_NAME}` and `{#SERIAL}` when LLD JSON history is unavailable.
+  - Discovery identity normalization is defensive on both LLD JSON and status-item fallback rows: serial-like names are cleared, placeholder sentinels (`N/A`, `NULL`, `--`) are discarded, and malformed ZTE-style suffixes such as `alexandre.silva 1` are trimmed back to the base ONU name when no valid serial is present.
   - ZTE C300/C600 power conversion is template-specific (not generic float scaling):
     - `ONU Rx`: raw 16-bit register converted with vendor formula (`<=32767: raw*0.002-30`, `>32767: (raw-65535)*0.002-30`).
     - `OLT Rx`: raw thousandths-of-dBm converted by `/1000` with compatibility fallback when already in dBm.
@@ -112,7 +114,9 @@ Vendor behavior is controlled by `VendorProfile.oid_templates`:
     - live validation against `192.168.7.151` (`sysName=ZTE-PONTAL`) plus CLI `show gpon onu state` output showed `3/4 -> online`, `2 -> link_loss (LOS)`, `5 -> dying_gasp`, and `7 -> generic offline`;
     - Varuna's `OLT ZTE C600` template therefore maps `1/2 -> link_loss`, `5 -> dying_gasp`, `6/7 -> offline`, and leaves unknown/unseen codes unmapped.
   - ZTE C600/C620 ONU name OID remains `1.3.6.1.4.1.3902.1082.500.10.2.3.3.1.2`. On nameless ONUs that branch legitimately returns an empty string; Varuna should keep the blank name instead of inventing a placeholder.
+  - ZTE discovery preprocessing must treat ONU names as names unless they positively match a serial-like token. A previous template bug returned arbitrary non-empty strings from `normalizeSerial()`, which caused real dotted names like `ct25473.thiago` to be erased from `{#ONU_NAME}` during LLD preprocessing.
   - C600 serials can arrive comma-prefixed (for example `1,DD72E68F39E5`). Template preprocessing and backend discovery fallback normalize those rows to the real serial token and discard the numeric prefix.
+  - When Zabbix LLD history returns malformed identity rows (for example blank serial plus a suffixed name like `cliente 1`), Varuna now reconciles those rows against current per-ONU status items before persisting inventory. This prevents stale bad names/blank serials from surviving until the next manual rediscovery.
   - Fiberhome can omit `reason_item_key_pattern` (empty string) because status values can directly encode offline reason (`link_loss` / `dying_gasp`) and Zabbix status parsing maps those to `status=offline` with canonical reason.
   - FIT `FNCS4000` uses `collector.type=fit_telnet` plus a fixed EPON interface list (`0/1..0/4`); it does not require Zabbix key metadata.
 
@@ -197,11 +201,13 @@ The OLT configuration API now enforces strict runtime-safe validation:
   - Zabbix-backed profiles require `snmp`.
   - FIT `FNCS4000` requires `telnet`.
 - `snmp_version` must be `v2c` for SNMP/Zabbix-backed vendors (v3 credentials are not represented yet in the data model).
-- `snmp_port` and `telnet_port` must be in `[1, 65535]`.
+- `snmp_port` must be in `[1, 65535]`.
+- Telnet port is per-blade inside `blade_ips` entries (each `{"ip": ..., "port": ...}`); there is no global `telnet_port`.
 - `name` is normalized and cannot be empty.
 - SNMP vendors require non-empty `snmp_community`.
 - FIT `FNCS4000` requires non-empty `telnet_username` and `telnet_password`.
-- `blade_ips` (optional JSONField, list of IP strings): for multi-blade chassis OLTs, each blade IP maps to a separate telnet session/slot. Validated as a list of valid IPs; `null` or empty falls back to `[ip_address]`. Changing `blade_ips` resets runtime connectivity state.
+- FIT `FNCS4000` also requires at least one explicit `blade_ips` entry, and each blade entry must include both `ip` and `port`. Varuna no longer invents a legacy fallback like `ip_address:23` when blade configuration is missing.
+- `blade_ips` is a JSON list of per-blade objects (`{"ip": "...", "port": 55523}`). For FIT, `ip_address` is derived from the first blade only for compatibility/display; runtime Telnet collection uses `blade_ips` exclusively. Changing `blade_ips` resets runtime connectivity state.
 - Blank password updates preserve the currently stored Telnet/UNM secret instead of clearing it.
 - Intervals must be positive and bounded:
   - `discovery_interval_minutes` <= `10080` (7 days)
@@ -215,7 +221,8 @@ Create semantics were also hardened:
 ## Collector Runtime
 - Direct backend SNMP polling/walk code was removed from runtime services and commands.
 - Runtime is collector-aware:
-  - Zabbix vendors use Zabbix API reads for discovery, status, and power.
+  - Zabbix vendors use Zabbix API for discovery, history lookups, and manual upstream actions.
+  - Zabbix vendors can use direct PostgreSQL latest-item reads for normal status/power collection when `ZABBIX_DB_ENABLED=1`; JSON-RPC fallback remains automatic if the DB reader is unavailable or fails.
   - FIT `FNCS4000` uses direct Telnet CLI reads for discovery/status and per-ONU power.
 - Manual and scoped refresh paths request immediate upstream execution only on Zabbix-backed vendors.
 - First-ever discovery (no ONUs exist yet) automatically triggers upstream Zabbix LLD execution (`refresh_upstream`) on Zabbix-backed vendors so newly created OLTs don't wait for the Zabbix LLD schedule.
@@ -255,6 +262,7 @@ Create semantics were also hardened:
 - Zabbix-side ONU LLD item prototypes are deleted immediately when no longer discovered (template `lifetime_type: DELETE_IMMEDIATELY`), preventing stale per-ONU item carry-over in collector reads.
 - Serial normalization: `_normalize_serial` forces all serials to uppercase and strips sentinel values (`N/A`, `NA`, `NONE`, `NULL`, `--`, `-`) to empty string. This ensures consistent display (no mixed-case hex) and prevents firmware-specific placeholder strings from being stored as real serials. Combined with serial preservation, an ONU returning `"N/A"` keeps its previously discovered real serial.
 - Serial normalization now handles comma-suffixed/multi-fragment payloads (common on some ZTE/VSOL returns). Discovery selects the fragment that matches a serial pattern (for example `TPLG-D22D7400,` -> `TPLGD22D7400`; `client.name,TPLG-D22D7400` -> `TPLGD22D7400`) instead of blindly keeping the right side of the comma.
+- ONU discovery name normalization also strips malformed trailing numeric suffixes from ZTE-style rows when no valid serial exists, so a broken payload like `alexandre.silva 1` does not become persisted ONU identity.
 - Mangled serial recovery: some OLTs return 8-byte raw serials (4 ASCII vendor + 4 binary) that get UTF-8 decoded into garbage text (e.g. `MONU&BY` instead of `MONU26425900`). `_normalize_serial` detects 5-8 char strings with a 4-letter vendor prefix and non-ASCII/non-alphanumeric suffix artifacts, re-encodes them to bytes (with null-byte padding to 8), and delegates to `_decode_hex_serial` for proper conversion. All-ASCII-alphanumeric and length >8 serials are never touched.
 - Mangled serial recovery is resilient to non-latin-1 Unicode suffix characters (from UTF-8 decoded raw bytes): fallback UTF-8 re-encoding prevents normalization crashes and still recovers the serial when the byte payload maps to the Huawei vendor+hex format.
 - SNMP byte parsing preserves exact byte payload on binary fallback (`0x...`), including trailing `00` bytes; this prevents Huawei serial truncation like `TPLGD22D74` (missing `00`) when OCTET STRING values are not UTF-8 text.
@@ -439,12 +447,39 @@ Operational read paths now use a hybrid model: structure cache for slow-changing
   - Cache misses/corrupt entries/Redis outages fail open to live DB rebuilds; topology reads never hard-fail on cache availability.
   - Only populated branches are materialized: PONs with `0` active ONUs and slots with `0` populated PONs are omitted from the payload for every collector type.
 - Topology power fields (`onu_rx_power`, `olt_rx_power`, `power_read_at`) stay present for payload compatibility but default to `null` in topology responses. The topology read path no longer loads full-tree power snapshots.
-- `GET /api/onu/{id}/power/` and `POST /api/onu/batch-power/` interpret `refresh=false` as "read the latest persisted `ONUPowerSample` from PostgreSQL". `refresh=true` still performs live Zabbix collection and persists the new samples.
-- `GET /api/onu/power-report/` remains uncached and reads from persisted `ONUPowerSample` data.
+- `GET /api/onu/{id}/power/`, `POST /api/onu/batch-power/`, and `GET /api/onu/power-report/` are split by mode:
+  - `refresh=true`: manual live collection path (same as before) with upstream execution + persistence.
+  - `refresh=false`: latest-value read path.
+- Latest-value power read path is flag-driven:
+  - default path: fast local `ONU.latest_*` snapshot read,
+  - when `POWER_LATEST_READS_USE_ZABBIX=true`: read the latest power already stored in Zabbix for the requested ONUs and serialize that directly.
+- The Zabbix latest-value path is DB-first:
+  - current item values come through `ZabbixService.get_items_by_keys()` (`items` + `item_rtdata` + `history_*` on the read-only Zabbix DB alias),
+  - if the current power value is invalid/sentinel, Varuna can look for the latest valid history sample through the same read-only Zabbix DB path first and falls back to JSON-RPC history only if the DB read fails.
+- Large live latest-power reads can cap history fallback fanout:
+  - `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS` (default `256`) keeps history fallback enabled for small selections like single ONU / typical PON reads,
+  - larger reads skip history fallback and use only current latest values from Zabbix to keep report latency bounded.
+  - This means a large `power-report` read can legitimately differ from the latest valid history-backed sample when the current item is invalid but a recent valid history sample exists.
+- FIT/Telnet OLTs do not use the Zabbix latest-value path; `refresh=false` continues to read the local snapshot for those OLTs.
 - `GET /api/onu/{id}/alarm-history/` remains uncached and Zabbix-first for timelines, with local DB fallback (`ONULog` + `ONUPowerSample`) when Zabbix history is unavailable.
+  - Zabbix-backed `power_history` merges nearby ONU Rx and OLT Rx samples into one reading row. Default merge window is derived from `OLT.power_interval_seconds` and capped at `60s`.
+  - `ALARM_HISTORY_POWER_MERGE_WINDOW_SECONDS` overrides that pairing window per instance when a wider history-row merge is needed.
+  - when `OLT.unm_enabled=true`, alarm history resolves the ONU in UNM inventory by `slot_id + pon_id + onu_id` to obtain `cobjectid`; ONU `name` and `serial` are not used as UNM alarm query keys.
+  - UNM alarm `coccurutctime` / `cclearutctime` are treated as UTC columns and then serialized in the UNM source timezone offset, not coerced into the Varuna application timezone.
+  - UNM history table layout is schema-dependent: Varuna prefers `alarmdb.t_alarmloghist_merge` when available, otherwise it discovers `alarmdb.t_alarmloghist` / `alarmdb.t_alarmloghist_*` tables at runtime and merges them by `clogid`.
+  - UNM alarm table reads intentionally avoid SQL `ORDER BY coccurutctime` and sort in Python after fetch, because some deployed UNM schemas index by `cneid`/time but not `cobjectid`, causing ordered per-ONU queries to time out.
+  - if the direct per-ONU UNM query still times out on a given schema, Varuna falls back to bounded recent-window reads (`coccurutctime` range) plus a bounded active-current slice (`cclearutctime IS NULL` on `t_alarmlogcur`) and filters the target `cobjectid` in Python before returning alarm history.
+- UNM-backed topology current state is a separate path from UNM history:
+  - polling still takes online/offline state from Zabbix status items;
+  - for offline ONUs on `OLT.unm_enabled=true`, polling bulk-reads `alarmdb.t_alarmlogcur` (current alarms only) and materializes the newest active ONU alarm into the open `ONULog`;
+  - current UNM alarm code `2400` maps to `link_loss`, `2340` maps to `dying_gasp`, and any other current UNM alarm maps to topology `unknown`;
+  - when the current UNM alarm has a usable occurrence timestamp, `offline_since`, `disconnect_window_start`, and `disconnect_window_end` are all anchored to that UNM UTC timestamp converted into the UNM source timezone so topology shows the same clock the operator expects from UNM;
+  - topology list/detail payloads and `POST /api/onu/batch-status/` serialize those UNM-backed disconnect timestamps in the UNM source offset (not plain UTC) so the frontend can preserve the UNM clock across refreshes;
+  - when no usable current UNM alarm is available, topology falls back to Varuna-local offline detection timestamps and `disconnect_reason='unknown'`;
+  - `GET /api/onu/{id}/alarm-history/` remains the historical timeline path and does not drive topology current-state timestamps.
 
 `GET /api/olts/?include_topology=true` now also returns:
-- protocol/telnet settings needed by the settings panel (`protocol`, `blade_ips`, `telnet_port`, `telnet_username`, password-configured flags),
+- protocol/telnet settings needed by the settings panel (`protocol`, `blade_ips`, `telnet_username`, password-configured flags),
 - `discovery_interval_minutes`
 - `polling_interval_seconds`
 - `power_interval_seconds`
@@ -467,7 +502,11 @@ These fields are used by the frontend for stale-data validation and interval-dri
 `GET /api/olts/{id}/topology/` includes the same collector health metadata under `olt`, so fallback detail fetches and list fetches remain behaviorally consistent.
 
 Power refresh contract:
-- Power readings displayed in topology and report surfaces come from the latest persisted `ONUPowerSample`.
+- Power readings displayed in topology sidebar/latest-report surfaces come from the latest synced `ONU` snapshot (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`), not from historical `ONUPowerSample`.
+- Scheduler latest-power sync now respects each OLT `power_interval_seconds` directly for every collector type, including Zabbix-backed OLTs. Varuna no longer overrides a slower configured power cadence with a separate fast-sync cap.
+- Scheduled Zabbix power sync is intentionally a light current-item read only. It uses `item.get` latest values to update the local `ONU` snapshot and does not walk Zabbix history in the normal scheduler path.
+- Manual/scoped power refresh may still use history fallback for invalid current Zabbix power items (`0`, `-80`, unsupported, or missing clock) after an explicit upstream refresh request, because that is an operator-driven live-read path rather than routine background sync.
+- Scheduler snapshot sync preserves an existing online ONU power snapshot when the current Zabbix power item is empty/invalid, so a bad current item does not wipe a previously good snapshot during routine sync. Offline/unknown ONUs still clear their latest snapshot.
 - Manual PON power refresh remains a live `refresh=true` read path; it should improve freshness by collecting and persisting a newer sample, not by repopulating cache.
 - `POST /api/olts/{id}/refresh_power/` refreshes one OLT collection cycle and updates `last_power_at`/`next_power_at`.
 - `POST /api/olts/refresh_power/` executes a full batch refresh across active OLTs and updates schedule fields per OLT.
@@ -477,8 +516,9 @@ Power refresh contract:
   - only ONUs with `status=online` are queried for power through Zabbix item keys;
   - ONUs `offline`/`unknown` are intentionally skipped and returned with empty power values plus `skipped_reason`.
 - Power refresh responses expose collection accounting:
-  - single OLT: `count`, `attempted_count`, `skipped_not_online_count`, `skipped_offline_count`, `skipped_unknown_count`, `collected_count`, `stored_count`;
+  - single OLT: `count`, `attempted_count`, `skipped_not_online_count`, `skipped_offline_count`, `skipped_unknown_count`, `collected_count`, `synced_count`, `stored_count`;
   - bulk all OLTs: `total_onu_count`, `total_attempted_count`, `total_skipped_not_online_count`, `total_skipped_offline_count`, `total_skipped_unknown_count`, `total_collected_count`.
+- `synced_count` counts ONU rows whose fast latest-power snapshot changed during the run.
 - `stored_count` reflects rows that are actually new for `ONUPowerSample` after `(onu, read_at)` dedupe, not just the number of candidate payload rows.
 - Power collection reads key-patterned item values from Zabbix (`oid_templates.zabbix.onu_rx_item_key_pattern` / `olt_rx_item_key_pattern`).
 - Stale power safety: samples older than `power_interval_seconds * 3 + ZABBIX_POWER_STALE_MARGIN_SECONDS` (default margin `90s`) are discarded for refresh responses.
@@ -486,11 +526,11 @@ Power refresh contract:
 - Scoped/manual topology power refreshes (`GET /api/onu/{id}/power/?refresh=true`, `POST /api/onu/batch-power/` with `refresh=true`) also force upstream execution, so operator-triggered live reads do not silently fall back to stale snapshots on large selections.
 - For `refresh_upstream=true`, power refresh now uses the same short upstream wait window as status refresh (`ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS`, `ZABBIX_REFRESH_UPSTREAM_WAIT_STEP_SECONDS`, `ZABBIX_REFRESH_CLOCK_GRACE_SECONDS`) and retries Zabbix reads before returning.
   This reduces false “online without power” gaps caused by immediate read-after-execute timing races.
-- Power history persistence accepts older item clocks (up to 180 minutes) to account for template-driven cadence and avoid dropping valid readings.
+- Power history persistence max age is derived from the OLT's `power_interval_seconds` (`max(180, power_interval_seconds * 3 + ZABBIX_POWER_STALE_MARGIN_SECONDS) // 60 + 1` minutes), aligning with the staleness threshold in `power_service.py` so that readings accepted by the staleness check are never silently dropped by the persistence layer. For short intervals (<=30 min) this remains 180 minutes; for daily collection (86400s) it extends to ~4322 minutes.
 - Alarm-history Zabbix power timeline merges ONU RX and OLT RX samples inside a short clock window (`5..60s`, derived from OLT power interval) instead of exact-second equality.
   This prevents split/alternating rows when Zabbix stores both metrics a few seconds apart in the same collection cycle.
 - Fiberhome Zabbix template payloads are intentionally compacted (`by_onu` short codes and flat `power_data` values) to keep master JSON under Zabbix text item limits (65,535 bytes) on high-density OLTs.
-- Fresh power rows are persisted to PostgreSQL (`ONUPowerSample`) during scheduler/manual/scoped power refresh flows for report queries and trend charts.
+- Fresh power rows are persisted to PostgreSQL (`ONUPowerSample`) during scheduler/manual/scoped power refresh flows for trend/history queries and retained refresh history.
 - OLT RX is optional by vendor:
 - when `power.olt_rx_oid` is absent, backend collects only ONU RX;
 - `olt_rx_power` is returned as `null` and no OLT RX SNMP requests are executed;
@@ -498,7 +538,7 @@ Power refresh contract:
 
 ONU batch refresh default behavior:
 - `POST /api/onu/batch-status/` now defaults to persisted DB/log snapshot reads (`refresh=false` unless explicitly set).
-- `POST /api/onu/batch-power/` now defaults to persisted/latest-read snapshot reads (`refresh=false` unless explicitly set).
+- `POST /api/onu/batch-power/` now defaults to fast local latest-snapshot reads without forced upstream execution or persistence (`refresh=false` unless explicitly set).
 - `GET /api/onu/{id}/power/` and `POST /api/onu/{id}/refresh-status/` also default to snapshot reads unless `refresh=true` is explicitly requested.
 - This avoids accidental UI-coupled SNMP collection from panel refresh flows; explicit live collection remains available when `refresh=true` is sent by authenticated users.
 - For `refresh=true` scoped reads, if collector connectivity is unavailable the API returns `503` with explicit `detail` instead of silently returning stale-as-fresh results.
@@ -523,7 +563,10 @@ The `run_scheduler` management command (`backend/topology/management/commands/ru
   - scheduler emits per-cycle summary (`checked`, `skipped_not_due`, `reachable`, `unreachable`, elapsed time).
 - **Discovery**: `call_command('discover_onus')` — respects per-OLT `_is_due()` logic; skips OLTs with `collector_reachable=False` and `collector_failure_count >= 2`; supports scheduler cap `--max-discovery-olts-per-tick`.
 - **Polling**: `call_command('poll_onu_status')` — runs after discovery in the same tick, respects per-OLT `_is_due()` logic, skips OLTs with `collector_reachable=False` and `collector_failure_count >= 2`; supports scheduler cap `--max-poll-olts-per-tick`.
-- **Power collection**: checks `next_power_at` per OLT and collects via `power_service` for due OLTs; skips unreachable OLTs; supports scheduler cap `--max-power-olts-per-tick`.
+- **Power collection**: checks `next_power_at` or the effective latest-power sync cadence per OLT and collects via `power_service` for due OLTs; skips unreachable OLTs; supports scheduler cap `--max-power-olts-per-tick`.
+  - all collector types use the configured `power_interval_seconds` as the scheduler cadence;
+  - Zabbix-backed scheduler sync reads only current power items and updates the local latest snapshot without a normal-path history walk;
+  - manual/scoped power refresh remains the only path that asks Zabbix for immediate execution and can fall back to recent history when current items are invalid.
 - **History prune**: `call_command('prune_history')` on scheduler interval (`--history-prune-seconds`, default from `HISTORY_PRUNE_INTERVAL_SECONDS`) to enforce retention windows.
 
 Arguments:
@@ -574,8 +617,11 @@ Power collection (`backend/topology/services/power_service.py`) includes:
 - Reads power directly from Zabbix item keys for the requested ONU set.
 - Discards stale samples beyond the configured freshness window instead of masking them with cached values.
 - Keeps empty/stale reads empty, including upstream-forced refreshes, so operators can distinguish “no fresh sample” from a successful live collection.
+- Shared hot-path primitive: `ZabbixService.get_items_by_keys()` is used by both `fetch_status_by_index()` and `fetch_power_by_index()`. When the read-only Zabbix DB alias is enabled, it bulk-reads latest rows from `items` in configurable chunks (`ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE`, default `1000`) and falls back to JSON-RPC `item.get` only on DB disable/failure.
 
 ## History Retention and Reporting APIs
+- Fast latest-power snapshot model still lives on `ONU` (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`), but it is no longer the only latest-value source.
+- With `POWER_LATEST_READS_USE_ZABBIX=true`, latest-power UI surfaces read current Zabbix latest values directly and use the `ONU.latest_*` snapshot only as a fail-safe fallback on live-read errors or for non-Zabbix collectors.
 - Persisted power history model: `ONUPowerSample` (per-ONU `read_at`, RX values, and collection source).
 - Retention settings:
   - `POWER_HISTORY_RETENTION_DAYS` (default `30`)
@@ -587,8 +633,9 @@ Power collection (`backend/topology/services/power_service.py`) includes:
   - removes resolved `ONULog` rows (`offline_until` set) older than alarm retention.
   - keeps active alarms (`offline_until` null).
 - Report endpoints:
-  - `GET /api/onu/power-report/?search=<term>`: flattened power rows (latest persisted sample per active ONU), with optional backend search on ONU name/serial/OLT name.
+  - `GET /api/onu/power-report/?search=<term>`: flattened power rows per active ONU, with optional backend search on ONU name/serial/OLT name.
     - row contract includes `status` (ONU runtime status), `power_interval_seconds` (OLT power cadence), and topology references (`slot_ref_id`, `pon_ref_id`) so frontend can derive stale/fresh power classes and drill into the exact topology path.
+    - source contract for `refresh=false` follows the latest-power mode above: snapshot by default, live Zabbix latest values when `POWER_LATEST_READS_USE_ZABBIX=true`.
   - `GET /api/onu/alarm-clients/?search=<term>&limit=<n>`: lightweight searchable ONU suggestions. Each result includes `history_days` (from the ONU's OLT) so the frontend renders the correct rolling window without an extra OLT fetch.
   - `GET /api/onu/{id}/alarm-history/`: ONU event history + downsampled power trend points.
     - Optional `start_date` and `end_date` query params (ISO `YYYY-MM-DD`) restrict both alarm logs and power samples to the given date range. Start is clamped to max 365 days ago, end to today. Falls back to days-based `alarm_days`/`power_days` offsets on invalid or missing dates.
@@ -619,7 +666,7 @@ Current tests validate:
 - discovery default `min_safe_ratio` (0.3),
 - discovery `walk_timeout_seconds` vendor config integration,
 - serial normalization (uppercase, sentinel stripping, vendor prefix handling, empty preservation),
-- topology and power read paths ignore Redis/runtime cache artifacts and use persisted state only,
+- topology latest-power read paths use the synced `ONU` latest-power snapshot and ignore Redis/runtime cache artifacts,
 - power refresh leaves stale/empty reads empty instead of reviving old cached values,
 - reader/viewer role permission enforcement (read allowed, write/actions denied),
 - authentication API contract (login payload, invalid creds, me, logout, change-password, token rotation),
@@ -634,6 +681,8 @@ Current tests validate:
 - Huawei power collection end-to-end (mock Zabbix values, correct dBm conversion),
 - polling disconnect reason second-pass (fetched for offline only, skipped for online, absent for ZTE),
 - scheduler power due logic (`_is_power_due`),
+- scheduled power sync respects configured `power_interval_seconds`,
+- scheduled power sync preserves existing online snapshots when current items are empty/invalid,
 - scheduler collector check reachable/unreachable paths,
 - scheduler collector check backoff due logic (`_is_collector_check_due`),
 - scheduler dispatches polling and discovery commands,

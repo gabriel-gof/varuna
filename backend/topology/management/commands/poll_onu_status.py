@@ -13,6 +13,7 @@ from topology.services.fit_collector_service import FITCollectorError, fit_colle
 from topology.services.maintenance_runtime import get_status_snapshot_max_age_seconds
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.topology_counter_service import topology_counter_service
+from topology.services.unm_service import UNMServiceError, unm_service
 from topology.services.vendor_profile import COLLECTOR_TYPE_FIT_TELNET, get_collector_type
 from topology.services.zabbix_service import zabbix_service
 
@@ -636,6 +637,36 @@ class Command(BaseCommand):
                         olt.id,
                     )
 
+        unm_current_alarm_by_onu: Dict[int, Dict[str, object]] = {}
+        if (
+            not dry_run
+            and getattr(olt, "unm_enabled", False)
+            and unm_service.is_enabled_for_olt(olt)
+        ):
+            offline_onus = []
+            for onu in onus:
+                normalized_index = onu_index_map.get(onu.id)
+                mapped = status_by_index.get(normalized_index) if normalized_index else None
+                if not mapped:
+                    continue
+                if normalized_index and normalized_index in stale_indexes:
+                    continue
+                if mapped.get("status") != ONU.STATUS_OFFLINE:
+                    continue
+                offline_onus.append(onu)
+            if offline_onus:
+                try:
+                    unm_current_alarm_by_onu = unm_service.fetch_current_alarm_state_map(
+                        olt=olt,
+                        onus=offline_onus,
+                    )
+                except UNMServiceError as exc:
+                    logger.warning(
+                        "Status polling OLT %s: UNM current alarm lookup failed; falling back to local offline semantics (%s).",
+                        olt.id,
+                        exc,
+                    )
+
         open_logs_by_onu: Dict[int, ONULog] = {}
         open_logs_qs = ONULog.objects.filter(
             onu__olt=olt,
@@ -683,6 +714,16 @@ class Command(BaseCommand):
                 if status_clock_epoch is not None and status_clock_epoch > 0
                 else None
             )
+            use_unm_current_alarm = False
+            unm_occurred_at = None
+            if new_status == ONU.STATUS_OFFLINE and getattr(olt, "unm_enabled", False):
+                current_unm_alarm = unm_current_alarm_by_onu.get(onu.id) or {}
+                unm_occurred_at = current_unm_alarm.get("occurred_at")
+                if isinstance(unm_occurred_at, datetime):
+                    use_unm_current_alarm = True
+                    reason = str(current_unm_alarm.get("disconnect_reason") or ONULog.REASON_UNKNOWN)
+                else:
+                    reason = ONULog.REASON_UNKNOWN
 
             if new_status == ONU.STATUS_ONLINE:
                 online += 1
@@ -708,7 +749,11 @@ class Command(BaseCommand):
                     detected_at = status_clock_at or now
                     window_start = detected_at
                     window_end = detected_at
-                    if onu.status == ONU.STATUS_ONLINE and status_clock_epoch:
+                    if use_unm_current_alarm and unm_occurred_at is not None:
+                        detected_at = unm_occurred_at
+                        window_start = unm_occurred_at
+                        window_end = unm_occurred_at
+                    elif onu.status == ONU.STATUS_ONLINE and status_clock_epoch:
                         itemid = str(mapped.get("status_itemid") or "").strip()
                         previous_sample = previous_sample_by_itemid.get(itemid) or {}
                         previous_status = str(previous_sample.get("status") or "").strip().lower()
@@ -738,12 +783,23 @@ class Command(BaseCommand):
                     if reason and open_log.disconnect_reason != reason:
                         open_log.disconnect_reason = reason
                         needs_log_update = True
-                    if open_log.offline_since and not open_log.disconnect_window_end:
-                        open_log.disconnect_window_end = open_log.offline_since
-                        needs_log_update = True
-                    if open_log.offline_since and not open_log.disconnect_window_start:
-                        open_log.disconnect_window_start = open_log.disconnect_window_end or open_log.offline_since
-                        needs_log_update = True
+                    if use_unm_current_alarm and unm_occurred_at is not None:
+                        if open_log.offline_since != unm_occurred_at:
+                            open_log.offline_since = unm_occurred_at
+                            needs_log_update = True
+                        if open_log.disconnect_window_start != unm_occurred_at:
+                            open_log.disconnect_window_start = unm_occurred_at
+                            needs_log_update = True
+                        if open_log.disconnect_window_end != unm_occurred_at:
+                            open_log.disconnect_window_end = unm_occurred_at
+                            needs_log_update = True
+                    else:
+                        if open_log.offline_since and not open_log.disconnect_window_end:
+                            open_log.disconnect_window_end = open_log.offline_since
+                            needs_log_update = True
+                        if open_log.offline_since and not open_log.disconnect_window_start:
+                            open_log.disconnect_window_start = open_log.disconnect_window_end or open_log.offline_since
+                            needs_log_update = True
                     if needs_log_update:
                         logs_to_log_update.append(open_log)
 
@@ -762,7 +818,7 @@ class Command(BaseCommand):
                 if logs_to_log_update:
                     ONULog.objects.bulk_update(
                         logs_to_log_update,
-                        ["disconnect_reason", "disconnect_window_start", "disconnect_window_end"],
+                        ["offline_since", "disconnect_reason", "disconnect_window_start", "disconnect_window_end"],
                     )
                 if onus_to_update:
                     ONU.objects.bulk_update(onus_to_update, ["status"])

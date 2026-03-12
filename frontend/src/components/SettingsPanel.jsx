@@ -24,7 +24,6 @@ const buildInitialForm = (vendorProfiles = []) => {
     vendor_profile: firstModel?.id ? String(firstModel.id) : '',
     snmp_community: 'public',
     snmp_port: '161',
-    telnet_port: '23',
     telnet_username: '',
     telnet_password: '',
     discovery_interval: '5h',
@@ -50,7 +49,6 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     vendor_profile: olt.vendor_profile ? String(olt.vendor_profile) : '',
     snmp_community: olt.snmp_community || 'public',
     snmp_port: String(olt.snmp_port || 161),
-    telnet_port: String(olt.telnet_port || 23),
     telnet_username: olt.telnet_username || '',
     telnet_password: '',
     discovery_interval: formatDuration((olt.discovery_interval_minutes || 240) * 60),
@@ -63,7 +61,13 @@ const buildEditForm = (olt, vendorProfiles = []) => {
     unm_username: olt.unm_username || '',
     unm_password: '',
     unm_mneid: olt.unm_mneid ? String(olt.unm_mneid) : '',
-    blade_ips: Array.isArray(olt.blade_ips) ? olt.blade_ips.map(String) : [],
+    blade_ips: Array.isArray(olt.blade_ips)
+      ? olt.blade_ips.map((b) => (
+        typeof b === 'object' && b
+          ? { ip: String(b.ip || ''), port: hasDisplayValue(b.port) ? String(b.port) : '' }
+          : { ip: String(b || ''), port: '' }
+      ))
+      : [],
   }
 }
 
@@ -753,7 +757,6 @@ export const SettingsPanel = ({
       snmp_community: String(form.snmp_community || '').trim(),
       snmp_port: Number(form.snmp_port || 161),
       snmp_version: 'v2c',
-      telnet_port: Number(form.telnet_port || 23),
       telnet_username: String(form.telnet_username || '').trim(),
       telnet_password: String(form.telnet_password || ''),
       discovery_enabled: true,
@@ -768,18 +771,24 @@ export const SettingsPanel = ({
       unm_username: String(form.unm_username || '').trim(),
       unm_password: String(form.unm_password || ''),
       unm_mneid: String(form.unm_mneid || '').trim() ? Number(form.unm_mneid) : null,
-      blade_ips: (form.blade_ips || []).filter((ip) => String(ip || '').trim()).length
-        ? (form.blade_ips || []).filter((ip) => String(ip || '').trim())
-        : null,
+      blade_ips: (() => {
+        const blades = (form.blade_ips || [])
+          .filter((b) => String(b?.ip || '').trim())
+          .map((b) => ({
+            ip: String(b.ip).trim(),
+            port: String(b?.port ?? '').trim() ? Number(String(b.port).trim()) : null,
+          }))
+        return blades.length ? blades : null
+      })(),
     }
 
     // When blades are configured, derive ip_address from the first blade
     if (payload.blade_ips && payload.blade_ips.length > 0) {
-      payload.ip_address = payload.blade_ips[0]
+      payload.ip_address = payload.blade_ips[0].ip
     }
 
     const hasProtocolFields = protocol === 'telnet'
-      ? Boolean(payload.telnet_username && payload.telnet_password)
+      ? Boolean(payload.telnet_username && payload.telnet_password && payload.blade_ips?.length)
       : Boolean(payload.snmp_community)
 
     if (!payload.name || !payload.ip_address || !Number.isFinite(payload.vendor_profile) || !hasProtocolFields) {
@@ -814,7 +823,6 @@ export const SettingsPanel = ({
       protocol,
       snmp_community: String(cardEditForm.snmp_community || '').trim(),
       snmp_port: Number(cardEditForm.snmp_port || 161),
-      telnet_port: Number(cardEditForm.telnet_port || 23),
       telnet_username: String(cardEditForm.telnet_username || '').trim(),
       telnet_password: String(cardEditForm.telnet_password || ''),
       discovery_interval_minutes: Math.round((parseDuration(cardEditForm.discovery_interval) || 18000) / 60),
@@ -827,18 +835,24 @@ export const SettingsPanel = ({
       unm_username: String(cardEditForm.unm_username || '').trim(),
       unm_password: String(cardEditForm.unm_password || ''),
       unm_mneid: String(cardEditForm.unm_mneid || '').trim() ? Number(cardEditForm.unm_mneid) : null,
-      blade_ips: (cardEditForm.blade_ips || []).filter((ip) => String(ip || '').trim()).length
-        ? (cardEditForm.blade_ips || []).filter((ip) => String(ip || '').trim())
-        : null,
+      blade_ips: (() => {
+        const blades = (cardEditForm.blade_ips || [])
+          .filter((b) => String(b?.ip || '').trim())
+          .map((b) => ({
+            ip: String(b.ip).trim(),
+            port: String(b?.port ?? '').trim() ? Number(String(b.port).trim()) : null,
+          }))
+        return blades.length ? blades : null
+      })(),
     }
 
     // When blades are configured, derive ip_address from the first blade
     if (payload.blade_ips && payload.blade_ips.length > 0) {
-      payload.ip_address = payload.blade_ips[0]
+      payload.ip_address = payload.blade_ips[0].ip
     }
 
     const hasProtocolFields = protocol === 'telnet'
-      ? Boolean(payload.telnet_username)
+      ? Boolean(payload.telnet_username && payload.blade_ips?.length)
       : Boolean(payload.snmp_community)
 
     if (!payload.name || !payload.ip_address || !Number.isFinite(payload.vendor_profile) || !hasProtocolFields) {
@@ -1055,18 +1069,6 @@ export const SettingsPanel = ({
                                         placeholder="••••••••"
                                       />
                                    </div>
-                                   <div className="flex flex-col gap-1.5">
-                                      <FieldLabel>{t('Telnet port')}</FieldLabel>
-                                      <FieldInput
-                                        className="text-center"
-                                        type="number"
-                                        min={1}
-                                        max={65535}
-                                        value={form.telnet_port}
-                                        onChange={(e) => setField('telnet_port', e.target.value)}
-                                        placeholder="23"
-                                      />
-                                   </div>
                                  </>
                                ) : (
                                  <>
@@ -1095,26 +1097,39 @@ export const SettingsPanel = ({
                                )}
                             </div>
 
-                        {/* Blade IPs — Telnet only */}
+                        {/* Blades — Telnet only */}
                         {createSelectedProtocol === 'telnet' && (
                           <div className="w-full max-w-xl mt-4">
                             <div className="rounded-xl border border-slate-200/60 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-800/30 px-3 pt-2.5 pb-3">
-                              <FieldLabel>{t('Blade IPs')}</FieldLabel>
+                              <FieldLabel>{t('Blades')}</FieldLabel>
                               <div className="flex flex-col gap-2 mt-2">
-                                {((form.blade_ips || []).length === 0 ? [''] : form.blade_ips).map((ip, idx, arr) => (
+                                {((form.blade_ips || []).length === 0 ? [{ ip: '', port: '' }] : form.blade_ips).map((blade, idx, arr) => (
                                   <div key={idx} className="flex items-center gap-1.5">
                                     <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
                                       Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
                                     </span>
                                     <FieldInput
-                                      className="text-center w-[200px]"
-                                      value={ip}
+                                      className="text-center w-[160px]"
+                                      value={blade?.ip || ''}
                                       onChange={(e) => {
                                         const updated = [...arr]
-                                        updated[idx] = e.target.value
+                                        updated[idx] = { ...updated[idx], ip: e.target.value }
                                         setField('blade_ips', updated)
                                       }}
                                       placeholder={t('ph.blade_ip')}
+                                    />
+                                    <FieldInput
+                                      className="text-center w-[70px]"
+                                      type="number"
+                                      min={1}
+                                      max={65535}
+                                      value={blade?.port ?? ''}
+                                      onChange={(e) => {
+                                        const updated = [...arr]
+                                        updated[idx] = { ...updated[idx], port: e.target.value }
+                                        setField('blade_ips', updated)
+                                      }}
+                                      placeholder="55523"
                                     />
                                     {arr.length > 1 && (
                                     <button
@@ -1133,7 +1148,7 @@ export const SettingsPanel = ({
                                 <button
                                   type="button"
                                   className="w-full rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-[10px] font-semibold text-slate-400 hover:text-emerald-500 hover:border-emerald-400 dark:text-slate-500 dark:hover:text-emerald-400 dark:hover:border-emerald-500 py-1.5 transition-colors mt-0.5"
-                                  onClick={() => { const cur = (form.blade_ips || []).length === 0 ? [''] : form.blade_ips; setField('blade_ips', [...cur, '']) }}
+                                  onClick={() => { const cur = (form.blade_ips || []).length === 0 ? [{ ip: '', port: '' }] : form.blade_ips; setField('blade_ips', [...cur, { ip: '', port: '' }]) }}
                                 >
                                   + {t('Add Blade')}
                                 </button>
@@ -1538,18 +1553,6 @@ export const SettingsPanel = ({
                                   />
                                </div>
 
-                               <div className="flex flex-col gap-1.5">
-                                  <FieldLabel>{t('Telnet port')}</FieldLabel>
-                                  <FieldInput
-                                    className="text-center px-1"
-                                    type="number"
-                                    min={1}
-                                    max={65535}
-                                    value={cardEditForm.telnet_port}
-                                    onChange={(e) => setEditField(oltId, 'telnet_port', e.target.value)}
-                                    placeholder="23"
-                                  />
-                               </div>
                              </>
                            ) : (
                              <>
@@ -1580,26 +1583,39 @@ export const SettingsPanel = ({
 
                         </div>
 
-                        {/* Blade IPs — Telnet only (edit) */}
+                        {/* Blades — Telnet only (edit) */}
                         {getProfileProtocol(cardEditSelectedProfile, olt?.protocol || 'snmp') === 'telnet' && (
                           <div className="w-full max-w-xl mt-4">
                             <div className="rounded-xl border border-slate-200/60 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-800/30 px-3 pt-2.5 pb-3">
-                              <FieldLabel>{t('Blade IPs')}</FieldLabel>
+                              <FieldLabel>{t('Blades')}</FieldLabel>
                               <div className="flex flex-col gap-2 mt-2">
-                                {((cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips).map((ip, idx, arr) => (
+                                {((cardEditForm.blade_ips || []).length === 0 ? [{ ip: '', port: '' }] : cardEditForm.blade_ips).map((blade, idx, arr) => (
                                   <div key={idx} className="flex items-center gap-1.5">
                                     <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 w-20 shrink-0">
                                       Blade {idx + 1} <span className="text-slate-300 dark:text-slate-600">/ Slot {idx + 1}</span>
                                     </span>
                                     <FieldInput
-                                      className="text-center w-[200px]"
-                                      value={ip}
+                                      className="text-center w-[160px]"
+                                      value={blade?.ip || ''}
                                       onChange={(e) => {
                                         const updated = [...arr]
-                                        updated[idx] = e.target.value
+                                        updated[idx] = { ...updated[idx], ip: e.target.value }
                                         setEditField(oltId, 'blade_ips', updated)
                                       }}
                                       placeholder={t('ph.blade_ip')}
+                                    />
+                                    <FieldInput
+                                      className="text-center w-[70px]"
+                                      type="number"
+                                      min={1}
+                                      max={65535}
+                                      value={blade?.port ?? ''}
+                                      onChange={(e) => {
+                                        const updated = [...arr]
+                                        updated[idx] = { ...updated[idx], port: e.target.value }
+                                        setEditField(oltId, 'blade_ips', updated)
+                                      }}
+                                      placeholder="55523"
                                     />
                                     {arr.length > 1 && (
                                     <button
@@ -1618,7 +1634,7 @@ export const SettingsPanel = ({
                                 <button
                                   type="button"
                                   className="w-full rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-[10px] font-semibold text-slate-400 hover:text-emerald-500 hover:border-emerald-400 dark:text-slate-500 dark:hover:text-emerald-400 dark:hover:border-emerald-500 py-1.5 transition-colors mt-0.5"
-                                  onClick={() => { const cur = (cardEditForm.blade_ips || []).length === 0 ? [''] : cardEditForm.blade_ips; setEditField(oltId, 'blade_ips', [...cur, '']) }}
+                                  onClick={() => { const cur = (cardEditForm.blade_ips || []).length === 0 ? [{ ip: '', port: '' }] : cardEditForm.blade_ips; setEditField(oltId, 'blade_ips', [...cur, { ip: '', port: '' }]) }}
                                 >
                                   + {t('Add Blade')}
                                 </button>

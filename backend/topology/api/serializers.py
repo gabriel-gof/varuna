@@ -105,6 +105,12 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         power_map = self.context.get('power_map') if isinstance(self.context, dict) else None
         if isinstance(power_map, dict) and obj.id in power_map:
             return power_map[obj.id] or {}
+        if hasattr(obj, 'latest_power_read_at'):
+            return {
+                'onu_rx_power': getattr(obj, 'latest_onu_rx_power', None),
+                'olt_rx_power': getattr(obj, 'latest_olt_rx_power', None),
+                'power_read_at': self._as_iso(getattr(obj, 'latest_power_read_at', None)),
+            }
         return get_latest_power_snapshot_map([obj.id]).get(obj.id) or {}
 
     def _supports_olt_rx_power(self, obj):
@@ -318,7 +324,6 @@ class OLTTopologySerializer(serializers.ModelSerializer):
             'last_poll_at',
             'last_power_at',
             'protocol',
-            'telnet_port',
             'telnet_username',
             'blade_ips',
             'slots',
@@ -410,7 +415,6 @@ class OLTSerializer(serializers.ModelSerializer):
     )
     snmp_port = serializers.IntegerField(required=False)
     snmp_version = serializers.CharField(required=False, allow_blank=True)
-    telnet_port = serializers.IntegerField(required=False)
     telnet_username = serializers.CharField(
         required=False,
         allow_blank=True,
@@ -468,7 +472,6 @@ class OLTSerializer(serializers.ModelSerializer):
             'snmp_port',
             'snmp_community',
             'snmp_version',
-            'telnet_port',
             'telnet_username',
             'telnet_password',
             'telnet_password_configured',
@@ -636,15 +639,6 @@ class OLTSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Only SNMP v2c is currently supported.')
         return version
 
-    def validate_telnet_port(self, value):
-        try:
-            port = int(value)
-        except (TypeError, ValueError):
-            raise serializers.ValidationError('Telnet port must be an integer.')
-        if port < 1 or port > 65535:
-            raise serializers.ValidationError('Telnet port must be between 1 and 65535.')
-        return port
-
     def validate_telnet_username(self, value):
         return str(value or '').strip()
 
@@ -679,18 +673,29 @@ class OLTSerializer(serializers.ModelSerializer):
         if value is None:
             return None
         if not isinstance(value, list):
-            raise serializers.ValidationError('blade_ips must be a list of IP addresses.')
+            raise serializers.ValidationError('blade_ips must be a list of {ip, port} objects.')
         import ipaddress
         cleaned = []
         for entry in value:
-            ip_str = str(entry or '').strip()
+            if not isinstance(entry, dict):
+                raise serializers.ValidationError('Each blade must be an object with "ip" and "port".')
+            ip_str = str(entry.get("ip", "") or "").strip()
             if not ip_str:
                 continue
             try:
                 ipaddress.ip_address(ip_str)
             except ValueError:
                 raise serializers.ValidationError(f'Invalid IP address: {ip_str}')
-            cleaned.append(ip_str)
+            port_value = entry.get("port")
+            if port_value in (None, ''):
+                raise serializers.ValidationError(f'Port is required for blade {ip_str}.')
+            try:
+                port = int(port_value)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(f'Invalid port for blade {ip_str}.')
+            if port < 1 or port > 65535:
+                raise serializers.ValidationError(f'Port must be between 1 and 65535 for blade {ip_str}.')
+            cleaned.append({"ip": ip_str, "port": port})
         return cleaned if cleaned else None
 
     def validate(self, attrs):
@@ -731,17 +736,20 @@ class OLTSerializer(serializers.ModelSerializer):
             attrs['snmp_version'] = self.validate_snmp_version(
                 attrs.get('snmp_version', getattr(instance, 'snmp_version', 'v2c'))
             )
-            attrs.setdefault('telnet_port', getattr(instance, 'telnet_port', 23) or 23)
             attrs.setdefault('telnet_username', getattr(instance, 'telnet_username', '') or '')
         elif protocol == OLT.PROTOCOL_TELNET:
-            attrs['telnet_port'] = self.validate_telnet_port(
-                attrs.get('telnet_port', getattr(instance, 'telnet_port', 23))
-            )
             attrs['telnet_username'] = self.validate_telnet_username(effective_telnet_username)
             if not attrs['telnet_username']:
                 validation_errors['telnet_username'] = 'Telnet username cannot be empty.'
             if not str(effective_telnet_password or '').strip():
                 validation_errors['telnet_password'] = 'Telnet password is required.'
+            effective_blade_ips = attrs.get('blade_ips', getattr(instance, 'blade_ips', None))
+            if not effective_blade_ips:
+                validation_errors['blade_ips'] = (
+                    'At least one blade with explicit IP and Telnet port is required for FIT.'
+                )
+            else:
+                attrs['ip_address'] = str((effective_blade_ips[0] or {}).get('ip') or '').strip()
             attrs.setdefault('snmp_port', getattr(instance, 'snmp_port', 161) or 161)
             attrs.setdefault('snmp_version', getattr(instance, 'snmp_version', 'v2c') or 'v2c')
             attrs['snmp_community'] = str(
@@ -846,7 +854,6 @@ class OLTSerializer(serializers.ModelSerializer):
         validated_data.setdefault('snmp_port', 161)
         validated_data.setdefault('snmp_version', 'v2c')
         validated_data.setdefault('snmp_community', 'public')
-        validated_data.setdefault('telnet_port', 23)
         validated_data.setdefault('telnet_username', '')
         return validated_data
 
@@ -905,7 +912,6 @@ class OLTSerializer(serializers.ModelSerializer):
             'snmp_port',
             'snmp_community',
             'snmp_version',
-            'telnet_port',
             'telnet_username',
             'telnet_password',
             'blade_ips',

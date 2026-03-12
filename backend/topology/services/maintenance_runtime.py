@@ -8,7 +8,7 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from topology.models import OLT, ONU, ONUPowerSample
-from topology.services.history_service import persist_power_samples
+from topology.services.history_service import persist_power_samples, sync_latest_power_snapshots
 from topology.services.power_service import power_service
 
 
@@ -104,10 +104,24 @@ def ensure_status_snapshot_for_power(
 
 def mark_power_collection_schedule(olt: OLT, collected_at=None) -> None:
     now = collected_at or timezone.now()
-    next_at = now + timedelta(seconds=olt.power_interval_seconds or 0)
+    next_at = now + timedelta(seconds=get_power_sync_interval_seconds(olt))
     OLT.objects.filter(id=olt.id).update(last_power_at=now, next_power_at=next_at)
     olt.last_power_at = now
     olt.next_power_at = next_at
+
+
+def get_power_sync_interval_seconds(olt: OLT) -> int:
+    configured_interval = max(int(getattr(olt, "power_interval_seconds", 0) or 0), 1)
+    return configured_interval
+
+
+def get_power_history_max_age_minutes(olt: OLT) -> int:
+    stale_margin = int(getattr(settings, "ZABBIX_POWER_STALE_MARGIN_SECONDS", 90) or 90)
+    stale_max_age_seconds = max(
+        int(olt.power_interval_seconds or 0) * 3 + stale_margin,
+        stale_margin + 300,
+    )
+    return max(180, stale_max_age_seconds // 60 + 1)
 
 
 def collect_power_for_olt(
@@ -119,6 +133,7 @@ def collect_power_for_olt(
     force_upstream: bool = False,
     history_source: str = ONUPowerSample.SOURCE_MANUAL,
     progress_callback: Optional[Callable[[int, str], None]] = None,
+    use_history_fallback: bool = True,
 ) -> Dict:
     _emit_progress(progress_callback, 5, "Preparing power collection.")
     ensure_status_snapshot_for_power(olt, progress_callback=progress_callback)
@@ -134,11 +149,19 @@ def collect_power_for_olt(
         force_refresh=force_refresh,
         refresh_upstream=refresh_upstream,
         force_upstream=force_upstream,
+        use_history_fallback=use_history_fallback,
+    )
+    synced_count = sync_latest_power_snapshots(
+        onus,
+        result_map,
+        preserve_existing_empty_online=(history_source == ONUPowerSample.SOURCE_SCHEDULER),
     )
     # Zabbix item clocks are driven by template intervals and can legitimately
-    # lag behind the request execution timestamp.
+    # lag behind the request execution timestamp.  Derive max_age from the
+    # OLT power_interval so that readings accepted by the staleness check in
+    # power_service are not silently dropped here.
     history_min_read_at = None
-    history_max_age_minutes = 180
+    history_max_age_minutes = get_power_history_max_age_minutes(olt)
     stored_count = persist_power_samples(
         onus,
         result_map,
@@ -186,16 +209,18 @@ def collect_power_for_olt(
         'skipped_unknown_count': skipped_unknown_count,
         'skipped_unsupported_count': skipped_unsupported_count,
         'collected_count': collected_count,
+        'synced_count': synced_count,
         'stored_count': stored_count,
         'last_power_at': olt.last_power_at,
         'next_power_at': olt.next_power_at,
     }
     logger.warning(
-        "Power refresh OLT %s summary: total=%s attempted=%s collected=%s stored=%s skipped_offline=%s skipped_unknown=%s skipped_unsupported=%s.",
+        "Power refresh OLT %s summary: total=%s attempted=%s collected=%s synced=%s stored=%s skipped_offline=%s skipped_unknown=%s skipped_unsupported=%s.",
         olt.id,
         payload['count'],
         payload['attempted_count'],
         payload['collected_count'],
+        payload['synced_count'],
         payload['stored_count'],
         payload['skipped_offline_count'],
         payload['skipped_unknown_count'],

@@ -70,6 +70,39 @@ DATABASES = {
     }
 }
 
+ZABBIX_DB_ENABLED = config('ZABBIX_DB_ENABLED', default=False, cast=bool)
+ZABBIX_DB_NAME = config('ZABBIX_DB_NAME', default='')
+ZABBIX_DB_USER = config('ZABBIX_DB_USER', default='')
+ZABBIX_DB_PASSWORD = config('ZABBIX_DB_PASSWORD', default='')
+ZABBIX_DB_HOST = config('ZABBIX_DB_HOST', default='')
+ZABBIX_DB_PORT = config('ZABBIX_DB_PORT', default='5432', cast=str)
+ZABBIX_DB_CONN_MAX_AGE = config('ZABBIX_DB_CONN_MAX_AGE', default=60, cast=int)
+ZABBIX_DB_STATEMENT_TIMEOUT_MS = config('ZABBIX_DB_STATEMENT_TIMEOUT_MS', default=5000, cast=int)
+ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE = config('ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE', default=1000, cast=int)
+POWER_LATEST_READS_USE_ZABBIX = config('POWER_LATEST_READS_USE_ZABBIX', default=False, cast=bool)
+POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS = config(
+    'POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS',
+    default=256,
+    cast=int,
+)
+
+if ZABBIX_DB_ENABLED:
+    DATABASES['zabbix'] = {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': ZABBIX_DB_NAME,
+        'USER': ZABBIX_DB_USER,
+        'PASSWORD': ZABBIX_DB_PASSWORD,
+        'HOST': ZABBIX_DB_HOST,
+        'PORT': ZABBIX_DB_PORT,
+        'CONN_MAX_AGE': ZABBIX_DB_CONN_MAX_AGE,
+        'OPTIONS': {
+            'options': (
+                f"-c default_transaction_read_only=on "
+                f"-c statement_timeout={max(int(ZABBIX_DB_STATEMENT_TIMEOUT_MS or 0), 1000)}"
+            ),
+        },
+    }
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -150,6 +183,11 @@ COLLECTOR_CHECK_SECONDS = config('COLLECTOR_CHECK_SECONDS', default=30, cast=int
 COLLECTOR_CHECK_MAX_BACKOFF_SECONDS = config('COLLECTOR_CHECK_MAX_BACKOFF_SECONDS', default=1800, cast=int)
 TOPOLOGY_STRUCTURE_CACHE_TTL = config('TOPOLOGY_STRUCTURE_CACHE_TTL', default=43200, cast=int)
 UNM_DB_TIMEOUT_SECONDS = config('UNM_DB_TIMEOUT_SECONDS', default=10, cast=int)
+ALARM_HISTORY_POWER_MERGE_WINDOW_SECONDS = config(
+    'ALARM_HISTORY_POWER_MERGE_WINDOW_SECONDS',
+    default=0,
+    cast=int,
+)
 
 POWER_HISTORY_RETENTION_DAYS = config('POWER_HISTORY_RETENTION_DAYS', default=30, cast=int)
 

@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog
 from topology.services.cache_service import cache_service
+from topology.services.unm_service import UNMServiceError, unm_service
 from topology.services.vendor_profile import supports_olt_rx_power
 
 
@@ -210,6 +211,26 @@ class TopologyService:
             log_map[onu_id] = row
         return log_map
 
+    def _get_disconnect_timestamp_formatter(self, olt: OLT):
+        if not getattr(olt, 'unm_enabled', False):
+            return self._as_iso
+        try:
+            if not unm_service.is_enabled_for_olt(olt):
+                return self._as_iso
+        except Exception:
+            return self._as_iso
+
+        def formatter(value):
+            if not value:
+                return None
+            try:
+                localized = unm_service.localize_alarm_datetime(olt=olt, value=value)
+            except UNMServiceError:
+                return self._as_iso(value)
+            return localized.isoformat() if localized else None
+
+        return formatter
+
     def _collect_onu_ids(self, structure: Dict[str, Any]) -> List[int]:
         onu_ids: List[int] = []
         for slot in (structure.get('slots') or {}).values():
@@ -225,23 +246,25 @@ class TopologyService:
         active_log: Dict[str, Any] | None,
         *,
         detail: bool,
+        disconnect_timestamp_formatter=None,
     ) -> Dict[str, Any]:
         status = str(status_value or ONU.STATUS_UNKNOWN)
         disconnect_reason = None
         offline_since = None
         disconnect_window_start = None
         disconnect_window_end = None
+        formatter = disconnect_timestamp_formatter or self._as_iso
 
         if active_log:
             disconnect_reason = active_log.get('disconnect_reason')
-            offline_since = self._as_iso(active_log.get('offline_since'))
+            offline_since = formatter(active_log.get('offline_since'))
             window_anchor = (
                 active_log.get('disconnect_window_end')
                 or active_log.get('disconnect_window_start')
                 or active_log.get('offline_since')
             )
-            disconnect_window_start = self._as_iso(active_log.get('disconnect_window_start') or window_anchor)
-            disconnect_window_end = self._as_iso(active_log.get('disconnect_window_end') or window_anchor)
+            disconnect_window_start = formatter(active_log.get('disconnect_window_start') or window_anchor)
+            disconnect_window_end = formatter(active_log.get('disconnect_window_end') or window_anchor)
         elif status == ONU.STATUS_OFFLINE:
             disconnect_reason = ONULog.REASON_UNKNOWN
 
@@ -287,6 +310,7 @@ class TopologyService:
         *,
         status_by_onu_id: Dict[int, str],
         active_log_by_onu_id: Dict[int, Dict[str, Any]],
+        disconnect_timestamp_formatter=None,
     ) -> Dict[str, Any]:
         detail_slots: Dict[str, Dict[str, Any]] = {}
         list_slots: List[Dict[str, Any]] = []
@@ -319,12 +343,14 @@ class TopologyService:
                         status_value,
                         active_log,
                         detail=True,
+                        disconnect_timestamp_formatter=disconnect_timestamp_formatter,
                     )
                     list_row = self._build_runtime_onu_row(
                         onu_payload,
                         status_value,
                         active_log,
                         detail=False,
+                        disconnect_timestamp_formatter=disconnect_timestamp_formatter,
                     )
                     detail_onus.append(detail_row)
                     list_onus.append(list_row)
@@ -433,10 +459,12 @@ class TopologyService:
         rows: List[Dict[str, Any]] = []
         for olt in olt_list:
             structure = structures.get(int(olt.id)) or {'slots': {}}
+            disconnect_timestamp_formatter = self._get_disconnect_timestamp_formatter(olt)
             overlaid = self._overlay_structure(
                 structure,
                 status_by_onu_id=status_by_onu_id,
                 active_log_by_onu_id=active_log_by_onu_id,
+                disconnect_timestamp_formatter=disconnect_timestamp_formatter,
             )
             rows.append(
                 {
@@ -450,7 +478,6 @@ class TopologyService:
                     'snmp_port': olt.snmp_port,
                     'snmp_community': olt.snmp_community,
                     'snmp_version': olt.snmp_version,
-                    'telnet_port': olt.telnet_port,
                     'telnet_username': olt.telnet_username,
                     'telnet_password_configured': bool(str(olt.telnet_password or '').strip()),
                     'blade_ips': olt.blade_ips,
@@ -497,10 +524,12 @@ class TopologyService:
     def build_topology(self, olt: OLT) -> Dict[str, Any]:
         structure = self.get_structure_map([olt]).get(int(olt.id)) or {'slots': {}}
         onu_ids = self._collect_onu_ids(structure)
+        disconnect_timestamp_formatter = self._get_disconnect_timestamp_formatter(olt)
         overlaid = self._overlay_structure(
             structure,
             status_by_onu_id=self._get_runtime_status_map(onu_ids),
             active_log_by_onu_id=self._get_active_log_map(onu_ids),
+            disconnect_timestamp_formatter=disconnect_timestamp_formatter,
         )
         return {
             'olt': {
