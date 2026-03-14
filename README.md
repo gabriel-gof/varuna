@@ -32,8 +32,8 @@ Topology-heavy API reads use per-OLT Redis structure cache only; live status and
   - shared infrastructure stack: `pg-varuna` (PostgreSQL for all Varuna logical DBs), `pg-zabbix` (PostgreSQL dedicated to Zabbix), `zabbix-server`, `zabbix-web`.
   - per-client Varuna app stack: `frontend + backend + redis`.
   - each client uses its own logical database inside shared `pg-varuna` (`varuna_client_a`, `varuna_client_b`, ...).
-  - each client instance sets its own Zabbix host group namespace via `ZABBIX_HOST_GROUP_NAME` (for example `Varuna/GabSAT`, `Varuna/VNET`, `Varuna/Local`).
-  - each client instance should set its own `ZABBIX_HOST_NAME_PREFIX` (for example `GabSAT-`, `VNET-`) so OLT host names are unique in shared Zabbix.
+  - each client instance sets its own Zabbix host group namespace via `ZABBIX_HOST_GROUP_NAME` using title case client names (for example `Varuna/Gabisat`, `Varuna/Vianet`, `Varuna/Pontal`).
+  - each client instance should set its own `ZABBIX_HOST_NAME_PREFIX` using ALL CAPS plus a trailing hyphen (for example `GABISAT-`, `VIANET-`) so OLT host names are unique in shared Zabbix.
 - Default standalone mode is still available in `docker-compose.prod.yml` (includes per-stack `varuna-db` service).
 - Shared-infra files:
   - `docker-compose.infra.shared.yml` (shared `pg-varuna` + `pg-zabbix` + Zabbix services)
