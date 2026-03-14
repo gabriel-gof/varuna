@@ -191,7 +191,7 @@ Agent ownership note:
 - Frontend/UI/UX work: Opus.
 - Opus should not touch backend/infrastructure/runtime files.
 
-Zabbix template files in repo root:
+Zabbix template files in `zabbix-templates/`:
 - `snmp-avail-template.yaml`
 - `huawei-template.yaml`
 - `fiberhome-template.yaml`

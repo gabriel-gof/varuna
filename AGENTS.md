@@ -88,7 +88,7 @@ Notes:
 - Backend rule: fallback normalization is allowed only as defensive guard for legacy/missing Zabbix payloads; source of truth remains template output.
 
 ### Zabbix Change Workflow (Mandatory)
-1. Edit the template YAML in repo root (`fiberhome-template.yaml`, `huawei-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`, `snmp-avail-template.yaml`).
+1. Edit the template YAML in `zabbix-templates/` (`fiberhome-template.yaml`, `huawei-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`, `snmp-avail-template.yaml`).
 2. Import/update the template in Zabbix (same version used by runtime).
 3. Run `Execute now` on discovery for the target host and confirm latest LLD rows/macros are correct (`{#SERIAL}`, `{#ONU_NAME}`, `{#ONU_PATH}`).
 4. Run status/power item checks and confirm preprocessing outputs expected canonical values.

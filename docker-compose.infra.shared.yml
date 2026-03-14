@@ -161,6 +161,23 @@ services:
     networks:
       - varuna-data
 
+  zabbix-template-sync:
+    image: python:3.12-alpine
+    depends_on:
+      zabbix-hardening:
+        condition: service_completed_successfully
+    env_file:
+      - docker/infra.shared.env
+    environment:
+      ZABBIX_API_URL: http://zabbix-web:8080/api_jsonrpc.php
+    volumes:
+      - ./scripts/zabbix_sync_templates.py:/opt/varuna/zabbix_sync_templates.py:ro
+      - ./zabbix-templates:/opt/varuna/zabbix-templates:ro
+    command: ["python", "/opt/varuna/zabbix_sync_templates.py"]
+    restart: "no"
+    networks:
+      - varuna-data
+
 volumes:
   pg_varuna_data:
   pg_zabbix_data:
