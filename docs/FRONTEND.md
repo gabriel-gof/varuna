@@ -22,9 +22,10 @@ The UI remains topology-first. No dashboard page is required for current product
 - `frontend/src/hooks/useUniversalSearch.jsx`: shared search hook (`normalizeSearch`, `scoreSearchMatch`, `shouldReplaceSearchSuggestion`, `renderHighlightedText`, `useUniversalSearch`) used by NetworkTopology's inline search.
 - `frontend/src/components/SettingsPanel.jsx`: OLT CRUD/configuration UX.
 - `frontend/src/components/PowerReport.jsx`: network-wide power levels report with sortable/filterable table. Has inline text filter (`searchText`) in toolbar that filters rows by client name or serial.
-- `frontend/src/components/AlarmHistory.jsx`: client alarm/power history with disconnection bar chart, optical power line chart, and alerts table. Has self-contained search via debounced `alarm-clients` API; manages its own `selectedClient` state.
+- `frontend/src/components/AlarmHistory.jsx`: client alarm/power history with disconnection bar chart, optical power line chart, and alerts table. Has self-contained search via debounced `alarm-clients` API, cancels superseded in-flight lookups, and manages its own `selectedClient` state.
 - Settings, Power Report, and Alarm History are lazy-loaded from `App.jsx`; Topology stays eager because it is the primary operational surface. `Power Report` is also background-warmed after the first successful OLT bootstrap so the first tab entry usually avoids both chunk-load and cold-fetch latency.
 - `frontend/src/services/api.js`: Axios API client with auth token interceptor.
+- `frontend/src/services/authState.js`: shared auth-token storage helpers and the auth-clear browser event used to keep React auth state aligned with interceptor-driven 401 handling.
 - `frontend/src/utils/stats.js`: ONU status classification helpers.
 - `frontend/src/utils/placeholders.js`: shared `MISSING_VALUE_PLACEHOLDER` (`'—'`) and `PLACEHOLDER_CLASS` (`'text-[11px] text-slate-300 dark:text-slate-600'`). All missing-data placeholders across views must use these constants for visual consistency.
 
@@ -33,7 +34,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Login page sends `POST /api/auth/login/` with username/password, receives a token and user info (including `role`, `can_modify_settings`, and `can_operate_topology`), stores token in `localStorage` as `auth_token`.
 - Logout calls `POST /api/auth/logout/`, clears the token from `localStorage`, and returns to the login page.
 - Axios request interceptor attaches `Authorization: Token <key>` header on every request.
-- Axios response interceptor clears the stored token on 401 responses (no page reload — React state handles the transition).
+- Axios response interceptor clears the stored token on 401 responses and emits the shared auth-clear browser event so the mounted app drops to the login screen immediately.
 - Data-fetching effects (`fetchOlts`, `fetchVendorProfiles`) are guarded with `if (!authToken) return` to prevent 401 loops on unauthenticated state.
 - Login page uses the same design language as the main app: emerald accent, VarunaIcon with "VARUNA" text matching the nav header proportions.
 
@@ -69,7 +70,8 @@ The UI remains topology-first. No dashboard page is required for current product
 - The UI renders a visual gradient bar showing the three zones relative to the current input.
 
 ## Live Data Flow
-- Topology view fetches OLTs with topology (`/api/olts/?include_topology=true`).
+- Topology view bootstraps from the lightweight OLT list (`/api/olts/`) and then hydrates slot/PON/ONU trees via parallel `GET /api/olts/{id}/topology/` requests. This avoids blocking the initial topology surface on the heavier aggregate `include_topology=true` payload when inventories are large.
+- During that staged bootstrap, OLT cards must keep using the cached aggregate counts already returned by `/api/olts/`. An unhydrated tree is a loading state, not an empty topology, so counters/alarm filtering must not collapse those OLTs to `0` or hide them before their detail payload arrives.
 - Power Report, Alarm History, and Settings views use lightweight OLT fetches (`/api/olts/`) and avoid topology-tree payloads unless topology tab is active.
 - Secondary tabs (`settings`, `power-report`, `alarm-history`) are code-split and loaded on first navigation, reducing the initial JS payload for the topology-first entry flow.
 - Frontend enriches topology rows with per-PON cached stats (`total/online/offline/linkLoss/dyingGasp/unknown`) once per topology refresh to reduce mount-time recomputation.
@@ -78,7 +80,7 @@ The UI remains topology-first. No dashboard page is required for current product
 - Production frontend Nginx preserves incoming `X-Forwarded-Proto` when proxying `/api` and `/admin` to backend so Django security middleware can correctly detect HTTPS behind host-level TLS termination.
 - In production compose, frontend also serves `/static` directly from shared volume mount `/var/www/static` (populated by backend `collectstatic`).
 - OLT reachability is derived from backend `collector_reachable` / `collector_failure_count` (with legacy `snmp_*` aliases still accepted by the frontend helper). An OLT is shown as unreachable immediately when collector reachability is `false`.
-- Both topology list (`/api/olts/?include_topology=true`) and topology detail (`/api/olts/{id}/topology/`) payloads expose the same collector health fields so gray-state logic remains consistent on fallback loads.
+- Both aggregate topology payloads (`/api/olts/?include_topology=true`) and per-OLT topology detail payloads (`/api/olts/{id}/topology/`) expose the same collector health fields, so gray-state logic remains consistent across the frontend's primary and fallback load paths.
 - Render unreachable or stale OLT nodes in gray.
 - Topology health colors follow the hierarchy contract from the live ONU rows, not only the reason buckets shown in the pills:
   - PON: any non-online ONU counts as offline for color, so a PON is red when all ONUs are non-online, yellow when online/offline are mixed, and green only when every ONU is online.
@@ -92,7 +94,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - normal cadence: 30s;
   - when any OLT is in gray state (unreachable/stale), cadence temporarily increases to 5s for faster visual recovery after connectivity returns.
 - Settings mutations (`updateOlt`, `deleteOlt`) trigger `fetchOlts` without `await`, so the success toast shows immediately and the topology refreshes silently in the background (same pattern as `createOlt`).
-- `include_topology=true` rows therefore carry the same FIT/Telnet settings shape used by the settings panel (`protocol`, `blade_ips`, `telnet_username`, password-configured flags, and collector health fields).
+- Per-OLT topology detail payloads therefore carry the same FIT/Telnet settings shape used by the settings panel (`protocol`, `blade_ips`, `telnet_username`, password-configured flags, and collector health fields).
 - Topology OLT filter (`selectedOltIds`) is lifted to `App.jsx` and persisted in `localStorage` (`varuna.selectedOltIds`). On first load with no saved selection, all OLTs are selected. Invalid IDs are pruned when the OLT list changes. The filter survives tab switches between Topology and Settings.
 - Selected topology context (active PON) and selected settings context (active OLT card) are persisted in `localStorage`.
 - Theme selection is persisted in `localStorage` (`varuna.theme`). On reload, the app restores the saved `light`/`dark` mode and reapplies the corresponding root `dark` class.
@@ -155,12 +157,12 @@ The UI remains topology-first. No dashboard page is required for current product
 - Topology payloads no longer assume current power for every ONU in the tree. When the operator opens the `Potência` tab for a selected PON, frontend requests `POST /api/onu/batch-power/` with `refresh=false` and patches only that PON's ONU rows in local state.
 - Latest power snapshot prefetch starts as soon as a PON is selected, not only when the `Potência` tab opens. This makes the first tab switch usually land on already-hydrated power rows.
 - The initial `Potência` tab load is non-blocking and silent: if the snapshot is still in flight, the table renders immediately with current row state/placeholders while the latest-snapshot request finishes in the background. Manual refresh still uses `refresh=true` and keeps the blocking overlay.
-- Background topology refresh now preserves any already-loaded PON power snapshot in local state, so the open sidebar does not blink or re-request snapshot data on every topology poll.
+- Background topology refresh preserves previously loaded ONU power data in `mapTopologyToSlots`. When the topology API response returns `null` power fields (default), existing client-side power values are carried forward so the power tab does not blink between topology refresh cycles. Fresh power snapshots still override stale values when explicitly fetched via `batch-power`.
 - Backend source contract for power tabs:
   - topology list/detail may return `null` power fields by default,
   - `batch-power refresh=false` returns the current latest-value backend power source for the selected PON without forcing upstream execution or persistence,
-  - default latest-value source is the synced `ONU.latest_*` snapshot,
-  - when the backend instance enables `POWER_LATEST_READS_USE_ZABBIX`, the same `refresh=false` read uses the latest power already present in Zabbix instead of the local snapshot,
+  - when the backend instance enables the read-only Zabbix DB alias (`ZABBIX_DB_ENABLED=1`), Zabbix-backed OLTs use the latest power already present in Zabbix instead of the local snapshot,
+  - otherwise the latest-value source is the synced `ONU.latest_*` snapshot,
   - large live latest-power reads may skip history fallback based on `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS`, so global report latency stays bounded while small selections still keep the richer fallback behavior,
   - backend scheduler still refreshes the persisted `ONU.latest_*` snapshot on each OLT configured `power_interval_seconds`,
   - `batch-power refresh=true` triggers live Zabbix collection and persists the new samples.
@@ -169,7 +171,7 @@ The UI remains topology-first. No dashboard page is required for current product
   - `Potência`: triggers `POST /api/onu/batch-power/` with `refresh=true` for the selected PON (`olt_id + slot_id + pon_id`) to run scoped power collection and return fresh rows.
   - `refresh=true` uses the active collector:
     - Zabbix-backed vendors request immediate Zabbix item execution before reading values.
-    - FIT `FNCS4000` performs a direct Telnet read.
+    - FIT `FNCS4000` performs a direct HTTP read from the device web UI by default (`onuOverview.asp` / `onuConfig.asp`). Telnet is used only if the backend vendor profile transport is explicitly overridden.
   - when collector connectivity is unavailable for targeted OLTs, scoped refresh endpoints return `503` with `detail`; frontend surfaces this as a contextual sidebar error instead of silently treating stale data as a successful refresh.
   - Both paths patch only the selected PON ONU rows in-memory (no forced full-topology reload on success).
   - OLT-wide maintenance actions (`run_polling` / `refresh_power`) remain available from settings for larger batch operations.
@@ -189,6 +191,10 @@ The UI remains topology-first. No dashboard page is required for current product
 - All columns (ONU, Name, Serial, ONU RX, OLT RX, Reading) are always shown regardless of OLT vendor capabilities. Missing values display `—`. No conditional column hiding per vendor — consistency over compactness.
 - In Power tab, all placeholder hyphens (`—`) use neutral gray (`text-slate-300 dark:text-slate-600`) regardless of ONU status. Hyphens simply mean "no value" — they do not carry status semantics in the Power tab.
 - During topology reload, the UI replaces ONU power values with the latest API payload without carrying forward old in-memory power snapshots.
+- Power consistency rule across topology sidebar and Power Report:
+  - power values use normal threshold colors whenever a value exists;
+  - `Leitura` always shows the absolute reading timestamp when present;
+  - `missing` reads render `—`.
 - In mobile Power cards, RX lines are left-aligned as compact label/value pairs (`ONU -22.22 dBm`, `OLT -24.71 dBm`) with timestamp rendered on the next line for consistent readability.
 - Mobile Power cards vertically center both left identity block and right power/timestamp block for consistent alignment regardless of value presence.
 - Mobile Status and Power cards always render three left-side lines (ONU number, name, serial). When no name exists for an ONU, a dash placeholder is shown. This ensures identical left-column structure between tabs, preventing layout shift when switching between Status and Power.
@@ -208,8 +214,8 @@ The UI remains topology-first. No dashboard page is required for current product
   1. **Device row**: Name, Vendor, Model.
   2. **Connection row**:
      - SNMP vendors: IP, SNMP Community, Port.
-     - Telnet vendors (FIT `FNCS4000`): Username and Password only. There is no standalone Telnet IP or global Telnet port field in the connection row.
-  3. **Blade IPs section** (Telnet vendors only, below connection row): wrapped in a subtle `rounded-xl` container with tinted background (`bg-slate-50/50 dark:bg-slate-800/30`) and thin border, always visible with at least one blade entry. Dynamic list of labeled IP+port inputs (`Blade N / Slot N`) with muted delete buttons (slate → red on hover with bg tint) and a full-width dashed-border "Add Blade" button (slate → emerald on hover). Each blade port must be entered explicitly; the UI no longer pre-fills legacy `23`. Blade IPs are sent as a JSON array of `{ip, port}` objects; `ip_address` is auto-derived from the first blade on save only for compatibility.
+     - Telnet vendors (FIT `FNCS4000` direct collector): Username and Password only. There is no standalone Telnet IP or global Telnet port field in the connection row. Those credentials back the FIT direct collector, which is HTTP by default.
+  3. **Blade IPs section** (Telnet vendors only, below connection row): wrapped in a subtle `rounded-xl` container with tinted background (`bg-slate-50/50 dark:bg-slate-800/30`) and thin border, always visible with at least one blade entry. Dynamic list of labeled IP+port inputs (`Blade N / Slot N`) with muted delete buttons (slate → red on hover with bg tint) and a full-width dashed-border "Add Blade" button (slate → emerald on hover). Each blade port must be entered explicitly; the UI no longer pre-fills legacy `23`. Blade IPs are sent as a JSON array of `{ip, port}` objects; `ip_address` is auto-derived from the first blade on save only for compatibility, and the stored port is retained for explicit Telnet fallback even though FIT collection now defaults to HTTP.
   4. Topology renders only populated branches: PONs with no active ONUs and slots with no populated PONs are omitted, including FIT multi-blade OLTs.
 - UNM integration section (bottom of Device tab) has a collapsible chevron header (`ChevronDown`/`ChevronRight`) with `SectionLabel` and an `UnmToggle` switch. Clicking the chevron expands/collapses the fields via CSS `grid-rows` animation; the toggle controls `unm_enabled` independently. Field labels use short keys (`IP`, `MySQL port`, `MNEID`, `Username`, `Password`). Create form uses `unmCreateExpanded` state; edit form uses per-card `unmExpandedCards[oltId]` state.
 - Vendor and Model selects use a custom Radix `DropdownMenu` (`FieldSelect` component) matching the sort dropdown pattern from the topology view — portaled content, check indicator for selected item, emerald accent, keyboard navigation. Native `<select>` elements are not used.
@@ -231,7 +237,13 @@ The UI remains topology-first. No dashboard page is required for current product
 - Interval inputs accept **Zabbix-style durations**: bare numbers (seconds), or suffixed values (`30s`, `5m`, `1h`, `4h`, `1d`).
   - `parseDuration()` converts input string → seconds; `formatDuration()` converts seconds → human-readable string.
   - Form state stores human-readable strings; save handlers convert back to `discovery_interval_minutes` / `polling_interval_seconds` / `power_interval_seconds` for the API.
-- `history_days` is sent as an integer in OLT create/update payloads and is clamped client-side to `7..30` before API submission.
+- `history_days` is sent as an integer in OLT create/update payloads and is clamped client-side to `7..30` before API submission. Backend enforces the same range at both serializer and model layers.
+- SNMP settings are `v2c`-only in the current backend contract. The UI must not assume hidden `v3` acceptance.
+- FIT `blade_ips` rows must be unique by `ip:port`; duplicate blade entries are rejected by the backend.
+- Empty Serial cells in the topology sidebar use the same centered placeholder alignment as other missing fields. Real serial strings keep the tighter asymmetric padding used for monospace content.
+- Topology bootstrap is staged: the app loads `GET /api/olts/` first, hydrates the remembered/currently relevant OLT tree next, and pushes remaining OLT topology trees in the background with low concurrency. This keeps refresh responsive while preserving eventual full-tree search coverage.
+- During that staged topology hydration, OLT cards must use the cached count fields already returned by `GET /api/olts/` (`online_count`, `offline_count`, `onu_count`) instead of flashing temporary `0` totals while `slots` are still absent.
+- If a remembered PON is restored from local storage before its OLT tree is hydrated, the right sidebar shows a loading state instead of an empty `OLT / PLACA — / PON —` shell.
 - Dirty detection is per-card: each card compares its own `editForm` values against current OLT data with special duration-aware comparison, and also compares its `thresholdForm` against its original snapshot to detect threshold changes. The Save button activates for any change — device fields, intervals, or thresholds. Saving or discarding one card does not affect other expanded cards.
 - Cancel/Discard resets a single card's device/interval form and threshold form to their original values without affecting other expanded cards.
 - Vendor dropdown re-selection (same vendor) is guarded to prevent Radix `onSelect` from resetting `vendor_profile` and falsely marking the form dirty.
@@ -344,8 +356,9 @@ The UI remains topology-first. No dashboard page is required for current product
 - Settings action messages are OLT-scoped: `settingsActionMessage` is `{ oltId, message }` (or `null`). Each OLT card only shows the message when `oltId` matches; the create card only shows messages with `oltId == null`.
 
 ## Missing Serial Highlighting
-- ONUs with missing or empty serial values render a normalized placeholder glyph `—` (em dash) in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
-- Missing-serial placeholder typography is kept coherent with disconnection placeholders (`text-[11px]`, `font-semibold`, tabular digits) so both hyphens have the same visual weight/size.
+- ONUs with missing or empty serial values render the shared missing-value placeholder `—` in all four table/card contexts: status desktop, status mobile, power desktop, power mobile.
+- FIT `FNCS4000` uses this same serial placeholder intentionally: backend may keep the ONU MAC internally as a discovery surrogate, but the UI must never present that MAC as if it were a real serial.
+- Missing-serial placeholder typography is kept coherent with other placeholder states (`text-[11px]`, `font-semibold`, tabular digits) so the shared placeholder reads as "not available", not as a truncated serial.
 - In the Status tab, missing-serial placeholder color follows the ONU/disconnection status palette (green for online, rose for offline/link loss, blue for dying gasp, purple for unknown, neutral gray for gray-tree/stale context).
 - In the Power tab, missing-serial placeholders use neutral gray (`text-slate-300 dark:text-slate-600`) — no status coloring.
 
@@ -375,20 +388,20 @@ The UI remains topology-first. No dashboard page is required for current product
 ## Power Report Tab
 - Accessible via "Power Report" nav tab (`activeNav === 'power-report'`); available to all roles.
 - Component: `frontend/src/components/PowerReport.jsx`.
-- Loads flattened ONU rows from `GET /api/onu/power-report/` (latest power per active ONU from the backend-selected latest-value source: local snapshot by default, live Zabbix latest values when the canary flag is enabled).
+- Loads flattened ONU rows from `GET /api/onu/power-report/` (latest power per active ONU from the backend-selected latest-value source: live Zabbix latest values for Zabbix-backed OLTs when `ZABBIX_DB_ENABLED=1`, otherwise the synced local snapshot).
 - Mount behavior uses a warm read-through cache inside `PowerReport.jsx`: the app preloads the lazy chunk plus the latest flattened rows in the background after OLT bootstrap, and later mounts reuse the last normalized row set immediately while a background refresh revalidates it.
 - Signal classification uses `getPowerColor` from `powerThresholds.js` — an ONU is "critical" if any reading is red, "warning" if any is yellow, "good" if all are green.
-- Default report mode is "problems first": signal filter starts with `Critical + Warning + No reading` and sort starts at `Worst ONU RX`.
+- Power Report signal pills cover `Good`, `Warning`, `Critical`, and `No reading`. There is no stale category in the toolbar; operators interpret reading age directly from the `Leitura` timestamp.
 - Toolbar is flat on the page surface (no wrapping card), organized in two rows:
   - Row 1: OLT dropdown (160px desktop) + Slot dropdown (80px / 72px desktop) + PON dropdown (80px / 72px desktop) grouped left, Sort dropdown pushed far right via `ml-auto`. All three location dropdowns show "Tudo" (PT) / "All" (EN) when nothing is selected. When a value is selected, the OLT shows its name; Slot/PON show their number.
-  - Row 2: signal toggle pills (Good/Warning/Critical/No reading) centered, with inline count badges and a total ONU count (number only, no label) after a divider.
-- Signal pills act as both filter toggles and summary indicators. Format: `● SHORT_LABEL COUNT` (e.g. `● GOOD 2963`) using a short all-caps label (`GOOD`/`WARN`/`CRIT`/`N/A` in EN; `NORMAL`/`ALERTA`/`CRITICO`/`N/A` in PT). Desktop and mobile use same `text-[10px]` size and `w-2 h-2` dots; mobile row is `justify-between` with `px-2` inset for even distribution at any count size. Each pill is colored when active, faded when inactive.
+  - Row 2: signal toggle pills (Good/Warning/Critical/Stale/No reading) centered, with inline count badges and a total ONU count (number only, no label) after a divider.
+- Signal pills act as both filter toggles and summary indicators. Format: `● SHORT_LABEL COUNT` (e.g. `● GOOD 2963`) using a short all-caps label (`GOOD`/`WARN`/`CRIT`/`N/A` in EN; `NORMAL`/`ALERTA`/`CRÍTICO`/`N/A` in PT). Desktop and mobile use same `text-[10px]` size and `w-2 h-2` dots; mobile row is `justify-between` with `px-2` inset for even distribution at any count size. Each pill is colored when active, faded when inactive. Stale rows stay visible in the unfiltered "all active" state but do not consume toolbar space with their own pill.
 - Sort options: `ONU RX ↓`, `OLT RX ↓`, `ONU RX ↑`, `OLT RX ↑`.
 - Desktop: split header/body table with 9 `colgroup` columns (OLT, Slot, PON, ONU, Name, Serial, ONU RX, OLT RX, Reading). Compact row height (h-11) with hover highlight. Infinite scroll via `IntersectionObserver` on a sentinel row with explicit `root` set to the scroll container ref — more rows load automatically as the user scrolls near the bottom. Desktop and mobile use separate sentinel/scroll refs since both DOM trees coexist (toggled by CSS).
 - Mobile (<1024px): card layout with OLT/Slot/PON path, client info, power values (ONU RX + OLT RX). Same infinite scroll behavior with its own `mobileScrollRef`/`mobileSentinelRef`.
 - Row rendering is windowed (initial 300 rows + incremental "Load more") to avoid mounting/unmounting extremely large DOM tables during tab switches.
 - Frontend no longer strips sentinel power values (`0`, `-40`) client-side. Sentinel discard is enforced upstream (Zabbix template preprocessing + backend normalization guard), so UI only consumes collector/backend-validated readings.
-- All power values are color-coded using existing `powerColorClass` utility.
+- Power values are color-coded using existing `powerColorClass` utility whenever a value exists. The frontend does not apply a separate stale visual state for power rows; age is conveyed only by the `Leitura` timestamp.
 - Dropdowns use Radix DropdownMenu matching the PON panel sort pattern.
 - Background refresh interval remains 30s while the tab is mounted; hidden/off-tab visits rely on the warmed snapshot and revalidate on the next open.
 

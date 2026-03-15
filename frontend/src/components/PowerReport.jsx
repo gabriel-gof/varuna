@@ -11,8 +11,9 @@ const INITIAL_VISIBLE_ROWS = 300
 const LOAD_MORE_ROWS = 300
 const POWER_REPORT_REFRESH_INTERVAL_MS = 30000
 const POWER_REPORT_CACHE_TTL_MS = 25000
-const DEFAULT_SIGNAL_FILTER = ['good', 'critical', 'warning']
+const DEFAULT_SIGNAL_FILTER = []
 const DEFAULT_SORT_MODE = 'worst_onu_rx'
+const VISIBLE_SIGNAL_FILTERS = ['good', 'warning', 'critical', 'unknown']
 
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
 const formatPowerValue = (value) => {
@@ -52,6 +53,7 @@ const formatReadingAt = (value, language) => {
 const normalizeRow = (row) => {
   const onuRx = row?.onu_rx_power ?? row?.onu_rx ?? row?.rx_power ?? null
   const oltRx = row?.olt_rx_power ?? row?.olt_rx ?? null
+  const readingAt = row?.power_read_at || row?.reading_at || null
   return {
     id: row?.id ?? null,
     oltName: row?.olt_name || row?.olt || 'OLT',
@@ -66,7 +68,7 @@ const normalizeRow = (row) => {
     status: String(row?.status || '').toLowerCase(),
     onuRx,
     oltRx,
-    readingAt: row?.power_read_at || row?.reading_at || null,
+    readingAt,
     signal: classifySignal(onuRx, oltRx, row?.olt_id ?? row?.oltId),
   }
 }
@@ -118,7 +120,9 @@ export const PowerReport = () => {
   const [signalFilter, setSignalFilter] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('varuna.powerReport.signalFilter'))
-      return Array.isArray(saved) ? saved : DEFAULT_SIGNAL_FILTER
+      if (!Array.isArray(saved)) return DEFAULT_SIGNAL_FILTER
+      const next = saved.filter((id) => VISIBLE_SIGNAL_FILTERS.includes(id))
+      return next.length >= VISIBLE_SIGNAL_FILTERS.length ? DEFAULT_SIGNAL_FILTER : next
     } catch { return DEFAULT_SIGNAL_FILTER }
   })
   const [sortMode, setSortMode] = useState(() => {
@@ -397,6 +401,13 @@ export const PowerReport = () => {
     { id: 'unknown', label: t('No reading'), shortLabel: t('No reading short'), dot: 'bg-violet-500', count: 'text-violet-600 dark:text-violet-400' },
   ]
 
+  const getSignalCount = useCallback((signalId) => {
+    if (signalId === 'good') return stats.good
+    if (signalId === 'warning') return stats.warning
+    if (signalId === 'critical') return stats.critical
+    return stats.noReading
+  }, [stats])
+
   const toggleSignal = useCallback((id) => {
     setSignalFilter((prev) => {
       const allSelected = prev.length === 0
@@ -453,7 +464,7 @@ export const PowerReport = () => {
             <div className="hidden lg:flex items-center gap-0.5 absolute left-1/2 -translate-x-1/2 pointer-events-auto">
               {signalPills.map((pill) => {
                 const isOn = signalFilter.length === 0 || signalFilter.includes(pill.id)
-                const count = pill.id === 'good' ? stats.good : pill.id === 'warning' ? stats.warning : pill.id === 'critical' ? stats.critical : stats.noReading
+                const count = getSignalCount(pill.id)
                 return (
                   <button
                     key={pill.id}
@@ -511,7 +522,7 @@ export const PowerReport = () => {
           <div className="flex lg:hidden items-center justify-between w-full px-2">
             {signalPills.map((pill) => {
               const isOn = signalFilter.length === 0 || signalFilter.includes(pill.id)
-              const count = pill.id === 'good' ? stats.good : pill.id === 'warning' ? stats.warning : pill.id === 'critical' ? stats.critical : stats.noReading
+              const count = getSignalCount(pill.id)
               return (
                 <button
                   key={pill.id}
@@ -634,6 +645,10 @@ export const PowerReport = () => {
                   const oltRxFormatted = formatPowerValue(row.oltRx)
                   const onuRxColor = onuRxFormatted ? powerColorClass(getPowerColor(row.onuRx, 'onu_rx', row.oltId)) : ''
                   const oltRxColor = oltRxFormatted ? powerColorClass(getPowerColor(row.oltRx, 'olt_rx', row.oltId)) : ''
+                  const readingLabel = formatReadingAt(row.readingAt, i18n.language)
+                  const readingColor = row.readingAt
+                    ? 'text-slate-500 dark:text-slate-400'
+                    : 'text-slate-300 dark:text-slate-600'
                   return (
                     <tr
                       key={`d-${row.id ?? idx}`}
@@ -645,16 +660,16 @@ export const PowerReport = () => {
                       <td className="px-2 py-0 align-middle text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums text-center">{row.onuId}</td>
                       <td className="px-3 py-0 align-middle text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate">{row.clientName || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
                       <td className="px-3 py-0 align-middle text-[11px] font-semibold font-mono tracking-tight text-slate-500 dark:text-slate-400 truncate">{row.serial || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
-                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || MISSING_VALUE_PLACEHOLDER}</td>
-                      <td className={`px-3 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || MISSING_VALUE_PLACEHOLDER}</td>
-                      <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${row.readingAt ? 'text-slate-500 dark:text-slate-400' : 'text-slate-300 dark:text-slate-600'}`}>{formatReadingAt(row.readingAt, i18n.language)}</td>
+                      <td className={`px-3 py-0 align-middle text-[11px] tabular-nums text-right ${onuRxFormatted ? `font-bold ${onuRxColor}` : ''}`}>{onuRxFormatted || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
+                      <td className={`px-3 py-0 align-middle text-[11px] tabular-nums text-right ${oltRxFormatted ? `font-bold ${oltRxColor}` : ''}`}>{oltRxFormatted || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</td>
+                      <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${readingColor}`}>{readingLabel}</td>
                     </tr>
                   )
                 })}
                 {hasMore && (
                   <tr ref={sentinelRef}>
                     <td colSpan={9} className="py-4 text-center">
-                      <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{t('Loading live data')}</p>
+                      <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{t('Load more')}</p>
                     </td>
                   </tr>
                 )}
@@ -682,7 +697,11 @@ export const PowerReport = () => {
               const onuRxColor = onuRxFormatted ? powerColorClass(getPowerColor(row.onuRx, 'onu_rx', row.oltId)) : ''
               const oltRxColor = oltRxFormatted ? powerColorClass(getPowerColor(row.oltRx, 'olt_rx', row.oltId)) : ''
               const hasPower = onuRxFormatted || oltRxFormatted
-              const hasSerial = row.serial && row.serial !== '—' && row.serial !== '-'
+              const hasSerial = row.serial && row.serial !== MISSING_VALUE_PLACEHOLDER && row.serial !== '-'
+              const readingLabel = formatReadingAt(row.readingAt, i18n.language)
+              const readingColor = row.readingAt
+                ? 'text-slate-400 dark:text-slate-500'
+                : 'text-slate-300 dark:text-slate-600'
               return (
                 <div
                   key={`m-${row.id ?? idx}`}
@@ -713,16 +732,16 @@ export const PowerReport = () => {
                   <div className="shrink-0 flex flex-col gap-1">
                     {hasPower ? (
                       <>
-                        <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
-                          <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                          <span className={`w-[76px] text-right font-semibold ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{onuRxFormatted || MISSING_VALUE_PLACEHOLDER}</span>
+                        <span className="inline-flex items-center gap-1 text-[11px] tabular-nums whitespace-nowrap">
+                          <span className="font-mono font-bold text-slate-400 dark:text-slate-500">{t('ONU')}</span>
+                          <span className={`w-[76px] text-right ${onuRxFormatted ? `font-semibold ${onuRxColor}` : ''}`}>{onuRxFormatted || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</span>
                         </span>
-                        <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
-                          <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                          <span className={`w-[76px] text-right font-semibold ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{oltRxFormatted || MISSING_VALUE_PLACEHOLDER}</span>
+                        <span className="inline-flex items-center gap-1 text-[11px] tabular-nums whitespace-nowrap">
+                          <span className="font-mono font-bold text-slate-400 dark:text-slate-500">{t('OLT')}</span>
+                          <span className={`w-[76px] text-right ${oltRxFormatted ? `font-semibold ${oltRxColor}` : ''}`}>{oltRxFormatted || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</span>
                         </span>
-                        <span className="self-stretch text-left text-[10px] font-semibold tabular-nums text-slate-400 dark:text-slate-500">
-                          {formatReadingAt(row.readingAt, i18n.language)}
+                        <span className={`self-stretch text-left text-[10px] font-semibold tabular-nums ${readingColor}`}>
+                          {readingLabel}
                         </span>
                       </>
                     ) : (
@@ -734,7 +753,7 @@ export const PowerReport = () => {
             })}
             {hasMore && (
               <div ref={mobileSentinelRef} className="py-3 text-center">
-                <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{t('Loading live data')}</p>
+                <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 tabular-nums">{t('Load more')}</p>
               </div>
             )}
           </div>

@@ -143,11 +143,15 @@ export const AlarmHistory = () => {
     }
 
     setSearchLoading(true)
+    const controller = new AbortController()
+    let cancelled = false
     const timer = setTimeout(() => {
-      let cancelled = false
       const doSearch = async () => {
         try {
-          const response = await api.get('/onu/alarm-clients/', { params: { search: trimmed, limit: 7 } })
+          const response = await api.get('/onu/alarm-clients/', {
+            params: { search: trimmed, limit: 7 },
+            signal: controller.signal,
+          })
           if (cancelled) return
           const results = Array.isArray(response?.data?.results) ? response.data.results : []
           setSearchResults(results)
@@ -159,9 +163,12 @@ export const AlarmHistory = () => {
         }
       }
       doSearch()
-      return () => { cancelled = true }
     }, 300)
-    return () => clearTimeout(timer)
+    return () => {
+      cancelled = true
+      controller.abort()
+      clearTimeout(timer)
+    }
   }, [searchTerm])
 
   // Click-outside to close suggestions

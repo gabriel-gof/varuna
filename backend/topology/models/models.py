@@ -1,5 +1,6 @@
-from django.db import models
 from django.contrib.auth.models import User
+from django.core.validators import MaxValueValidator, MinValueValidator
+from django.db import models
 
 
 class VendorProfile(models.Model):
@@ -56,7 +57,7 @@ class OLT(models.Model):
     ip_address = models.GenericIPAddressField(verbose_name='Endereço IP')
     snmp_port = models.IntegerField(default=161, verbose_name='Porta SNMP')
     snmp_community = models.CharField(max_length=100, verbose_name='Comunidade SNMP')
-    snmp_version = models.CharField(max_length=10, default='v2c', choices=[('v2c', 'v2c'), ('v3', 'v3')], verbose_name='Versão SNMP')
+    snmp_version = models.CharField(max_length=10, default='v2c', choices=[('v2c', 'v2c')], verbose_name='Versão SNMP')
     telnet_username = models.CharField(max_length=100, blank=True, default='', verbose_name='Usuário Telnet')
     telnet_password = models.CharField(max_length=255, blank=True, default='', verbose_name='Senha Telnet')
     blade_ips = models.JSONField(null=True, blank=True, default=None, verbose_name='IPs das Blades')
@@ -90,6 +91,7 @@ class OLT(models.Model):
     )
     history_days = models.PositiveIntegerField(
         default=7,
+        validators=[MinValueValidator(7), MaxValueValidator(30)],
         help_text='Janela de histórico de alarmes exibida para ONUs desta OLT (em dias)',
         verbose_name='Janela de Histórico (dias)'
     )

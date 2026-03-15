@@ -12,6 +12,8 @@ VALID_REASONS = {ONULog.REASON_LINK_LOSS, ONULog.REASON_DYING_GASP, ONULog.REASO
 
 COLLECTOR_TYPE_ZABBIX = 'zabbix'
 COLLECTOR_TYPE_FIT_TELNET = 'fit_telnet'
+COLLECTOR_TRANSPORT_HTTP = 'http'
+COLLECTOR_TRANSPORT_TELNET = 'telnet'
 DEFAULT_PROTOCOL_SNMP = 'snmp'
 DEFAULT_PROTOCOL_TELNET = 'telnet'
 
@@ -63,6 +65,28 @@ def get_default_protocol(source: Any) -> str:
     if collector_type == COLLECTOR_TYPE_FIT_TELNET:
         return DEFAULT_PROTOCOL_TELNET
     return DEFAULT_PROTOCOL_SNMP
+
+
+def get_collector_transport(source: Any) -> str:
+    templates = _extract_templates(source)
+    collector_cfg = templates.get('collector', {}) if isinstance(templates.get('collector', {}), dict) else {}
+    transport = str(collector_cfg.get('transport') or '').strip().lower()
+    if transport:
+        return transport
+    collector_type = get_collector_type(source)
+    if collector_type == COLLECTOR_TYPE_FIT_TELNET:
+        return COLLECTOR_TRANSPORT_TELNET
+    return COLLECTOR_TRANSPORT_HTTP
+
+
+def should_hide_onu_serial(source: Any) -> bool:
+    return get_collector_type(source) == COLLECTOR_TYPE_FIT_TELNET
+
+
+def display_onu_serial(source: Any, serial: Any) -> str:
+    if should_hide_onu_serial(source):
+        return ''
+    return str(serial or '').strip()
 
 
 def supports_olt_rx_power(source: Any) -> bool:

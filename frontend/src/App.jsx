@@ -22,6 +22,13 @@ import { VarunaIcon } from './components/VarunaIcon'
 import { NetworkTopology } from './components/NetworkTopology'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import api, { updatePonDescription } from './services/api'
+import {
+  AUTH_TOKEN_CLEARED_EVENT,
+  AUTH_TOKEN_STORAGE_KEY,
+  clearStoredAuthToken,
+  getStoredAuthToken,
+  setStoredAuthToken,
+} from './services/authState'
 import { InlineEditableText } from './components/InlineEditableText'
 import { classifyOnu, getOnuStats } from './utils/stats'
 import { deriveOltHealthState } from './utils/oltHealth'
@@ -66,8 +73,10 @@ const ALARM_REASON_TO_STATUS_KEY = {
   unknown: 'unknown'
 }
 const SELECTED_PON_STORAGE_KEY = 'varuna.selectedPonId'
+const SELECTED_PON_CONTEXT_STORAGE_KEY = 'varuna.selectedPonContext'
 const SELECTED_OLT_IDS_STORAGE_KEY = 'varuna.selectedOltIds'
 const THEME_STORAGE_KEY = 'varuna.theme'
+const TOPOLOGY_BACKGROUND_BATCH_SIZE = 2
 
 const parseSourceTimestamp = (value) => {
   const match = String(value || '').trim().match(SOURCE_TIMESTAMP_RE)
@@ -82,7 +91,6 @@ const formatPowerValue = (value) => {
   if (!Number.isFinite(numeric)) return MISSING_VALUE_PLACEHOLDER
   return `${numeric.toFixed(2)} dBm`
 }
-
 
 const getDisplaySerial = (onu) => {
   const raw = String(onu?.serial_number ?? onu?.serial ?? '').trim()
@@ -163,6 +171,7 @@ const LONG_RUNNING_ACTION_TIMEOUT_MS = 180_000
 const RESUME_REFRESH_THROTTLE_MS = 4000
 const TOPOLOGY_REFRESH_DEFAULT_INTERVAL_MS = 30_000
 const TOPOLOGY_REFRESH_RECOVERY_INTERVAL_MS = 5_000
+const TOPOLOGY_DETAIL_REQUEST_TIMEOUT_MS = 8_000
 const POWER_REPORT_WARM_DELAY_MS = 1200
 const POWER_REPORT_WARM_IDLE_TIMEOUT_MS = 2500
 const SEARCH_HIGHLIGHT_STYLE = {
@@ -289,93 +298,6 @@ const patchPonStatusRows = (olts, target, rows) => {
   return changed ? nextOlts : olts
 }
 
-const mergeTopologyPowerSnapshots = (previousOlts, nextOlts) => {
-  const previousPowerByOnuId = new Map()
-
-  asList(previousOlts).forEach((olt) => {
-    asList(olt?.slots).forEach((slot) => {
-      asList(slot?.pons).forEach((pon) => {
-        asList(pon?.onus).forEach((onu) => {
-          const onuId = onu?.id
-          if (onuId == null) return
-
-          const snapshot = {
-            onu_rx_power: onu?.onu_rx_power ?? null,
-            olt_rx_power: onu?.olt_rx_power ?? null,
-            power_read_at: onu?.power_read_at ?? null
-          }
-          const hasSnapshot =
-            snapshot.onu_rx_power !== null ||
-            snapshot.olt_rx_power !== null ||
-            Boolean(snapshot.power_read_at)
-
-          if (hasSnapshot) {
-            previousPowerByOnuId.set(String(onuId), snapshot)
-          }
-        })
-      })
-    })
-  })
-
-  if (!previousPowerByOnuId.size) return nextOlts
-
-  let changed = false
-
-  const mergedOlts = asList(nextOlts).map((olt) => {
-    let oltChanged = false
-
-    const nextSlots = asList(olt?.slots).map((slot) => {
-      let slotChanged = false
-
-      const nextPons = asList(slot?.pons).map((pon) => {
-        let ponChanged = false
-
-        const nextOnus = asList(pon?.onus).map((onu) => {
-          const previousSnapshot = previousPowerByOnuId.get(String(onu?.id))
-          if (!previousSnapshot) return onu
-
-          const hasCurrentSnapshot =
-            onu?.onu_rx_power !== null && onu?.onu_rx_power !== undefined ||
-            onu?.olt_rx_power !== null && onu?.olt_rx_power !== undefined ||
-            Boolean(onu?.power_read_at)
-
-          if (hasCurrentSnapshot) return onu
-
-          changed = true
-          oltChanged = true
-          slotChanged = true
-          ponChanged = true
-
-          return {
-            ...onu,
-            ...previousSnapshot
-          }
-        })
-
-        if (!ponChanged) return pon
-        return {
-          ...pon,
-          onus: nextOnus
-        }
-      })
-
-      if (!slotChanged) return slot
-      return {
-        ...slot,
-        pons: nextPons
-      }
-    })
-
-    if (!oltChanged) return olt
-    return {
-      ...olt,
-      slots: nextSlots
-    }
-  })
-
-  return changed ? mergedOlts : nextOlts
-}
-
 const formatDisconnectionWindow = (startValue, endValue, language, options = {}) => {
   const { preserveSourceClock = false } = options
   const anchorValue = endValue || startValue
@@ -417,27 +339,49 @@ const formatReadingAt = (value, language) => {
 }
 
 const mapTopologyToSlots = (olt, topology) => {
+  // Build lookup of existing ONU power data so topology refreshes don't wipe it
+  const priorPowerByOnuId = new Map()
+  for (const slot of asList(olt?.slots)) {
+    for (const pon of asList(slot?.pons)) {
+      for (const onu of asList(pon?.onus)) {
+        if (onu?.id != null && (onu?.onu_rx_power != null || onu?.olt_rx_power != null || onu?.power_read_at)) {
+          priorPowerByOnuId.set(String(onu.id), {
+            onu_rx_power: onu.onu_rx_power,
+            olt_rx_power: onu.olt_rx_power,
+            power_read_at: onu.power_read_at
+          })
+        }
+      }
+    }
+  }
+
   const slots = asList(topology?.slots).map((slot) => {
     const slotId = `${olt.id}-${slot.slot_id}`
     const pons = asList(slot?.pons).map((pon) => {
       const ponId = `${olt.id}-${slot.slot_id}-${pon.pon_id}`
-      const onus = asList(pon?.onus).map((onu) => ({
-        id: onu.id,
-        onu_number: onu.onu_number ?? onu.onu_id,
-        onu_id: onu.onu_id ?? onu.onu_number,
-        client_name: onu.client_name || onu.name,
-        name: onu.name,
-        serial_number: onu.serial_number ?? onu.serial,
-        serial: onu.serial ?? onu.serial_number,
-        status: onu.status,
-        disconnect_reason: onu.disconnect_reason,
-        offline_since: onu.offline_since,
-        disconnect_window_start: onu.disconnect_window_start,
-        disconnect_window_end: onu.disconnect_window_end,
-        onu_rx_power: onu.onu_rx_power ?? onu.onu_rx ?? onu.rx_onu ?? null,
-        olt_rx_power: onu.olt_rx_power ?? onu.olt_rx ?? onu.rx_olt ?? null,
-        power_read_at: onu.power_read_at ?? onu.read_at ?? onu.power_timestamp ?? null
-      }))
+      const onus = asList(pon?.onus).map((onu) => {
+        const newOnuRx = onu.onu_rx_power ?? onu.onu_rx ?? onu.rx_onu ?? null
+        const newOltRx = onu.olt_rx_power ?? onu.olt_rx ?? onu.rx_olt ?? null
+        const newReadAt = onu.power_read_at ?? onu.read_at ?? onu.power_timestamp ?? null
+        const prior = priorPowerByOnuId.get(String(onu.id))
+        return {
+          id: onu.id,
+          onu_number: onu.onu_number ?? onu.onu_id,
+          onu_id: onu.onu_id ?? onu.onu_number,
+          client_name: onu.client_name || onu.name,
+          name: onu.name,
+          serial_number: onu.serial_number ?? onu.serial,
+          serial: onu.serial ?? onu.serial_number,
+          status: onu.status,
+          disconnect_reason: onu.disconnect_reason,
+          offline_since: onu.offline_since,
+          disconnect_window_start: onu.disconnect_window_start,
+          disconnect_window_end: onu.disconnect_window_end,
+          onu_rx_power: newOnuRx ?? prior?.onu_rx_power ?? null,
+          olt_rx_power: newOltRx ?? prior?.olt_rx_power ?? null,
+          power_read_at: newReadAt ?? prior?.power_read_at ?? null
+        }
+      })
       return {
         id: ponId,
         db_id: pon.id,
@@ -467,6 +411,35 @@ const mapTopologyToSlots = (olt, topology) => {
       : olt?.supports_olt_rx_power,
     slots,
     slot_count: slots.length
+  }
+}
+
+const mergeBaseOltRows = (previous, baseOlts) => {
+  const previousMap = new Map(asList(previous).map((olt) => [String(olt?.id), olt]))
+  return asList(baseOlts).map((olt) => {
+    const prior = previousMap.get(String(olt?.id))
+    const priorSlots = asList(prior?.slots)
+    if (!prior || !priorSlots.length) return olt
+    return {
+      ...olt,
+      slots: priorSlots,
+      supports_olt_rx_power: prior?.supports_olt_rx_power ?? olt?.supports_olt_rx_power
+    }
+  })
+}
+
+const readStoredSelectedPonContext = () => {
+  try {
+    if (typeof window === 'undefined') return null
+    const raw = window.localStorage.getItem(SELECTED_PON_CONTEXT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    const ponId = parsed?.ponId != null ? String(parsed.ponId) : null
+    const oltId = parsed?.oltId != null ? String(parsed.oltId) : null
+    if (!ponId || !oltId) return null
+    return { ponId, oltId }
+  } catch {
+    return null
   }
 }
 
@@ -512,7 +485,7 @@ const LazyPanelFallback = () => (
 
 const App = () => {
   const { t, i18n } = useTranslation()
-  const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth_token'))
+  const [authToken, setAuthToken] = useState(() => getStoredAuthToken())
   const [authUser, setAuthUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
   const authRole = String(authUser?.role || '').toLowerCase()
@@ -522,6 +495,27 @@ const App = () => {
   const canOperateTopology = Boolean(
     authUser?.can_operate_topology ?? (authRole === 'admin' || authRole === 'operator')
   )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+
+    const handleAuthTokenCleared = () => {
+      setAuthToken(null)
+      setAuthUser(null)
+      setAuthChecked(true)
+    }
+    const handleStorage = (event) => {
+      if (event.key !== AUTH_TOKEN_STORAGE_KEY || event.newValue != null) return
+      handleAuthTokenCleared()
+    }
+
+    window.addEventListener(AUTH_TOKEN_CLEARED_EVENT, handleAuthTokenCleared)
+    window.addEventListener('storage', handleStorage)
+    return () => {
+      window.removeEventListener(AUTH_TOKEN_CLEARED_EVENT, handleAuthTokenCleared)
+      window.removeEventListener('storage', handleStorage)
+    }
+  }, [])
 
   useEffect(() => {
     if (!authToken) {
@@ -534,22 +528,23 @@ const App = () => {
         setAuthChecked(true)
       })
       .catch(() => {
-        localStorage.removeItem('auth_token')
+        clearStoredAuthToken('auth-check-failed')
         setAuthToken(null)
+        setAuthUser(null)
         setAuthChecked(true)
       })
   }, [authToken])
 
   const handleLogin = useCallback(async (username, password) => {
     const res = await api.post('/auth/login/', { username, password })
-    localStorage.setItem('auth_token', res.data.token)
-    setAuthToken(res.data.token)
+    const token = setStoredAuthToken(res.data.token)
+    setAuthToken(token)
     setAuthUser(res.data.user)
   }, [])
 
   const handleLogout = useCallback(() => {
     api.post('/auth/logout/').catch(() => {})
-    localStorage.removeItem('auth_token')
+    clearStoredAuthToken('logout')
     setAuthToken(null)
     setAuthUser(null)
   }, [])
@@ -563,6 +558,7 @@ const App = () => {
       return null
     }
   })
+  const [selectedPonContext, setSelectedPonContext] = useState(() => readStoredSelectedPonContext())
   const [ponHighlightTarget, setPonHighlightTarget] = useState(null)
   const [isDarkMode, setIsDarkMode] = useState(() => {
     try {
@@ -666,6 +662,7 @@ const App = () => {
   const [healthTick, setHealthTick] = useState(() => Date.now())
   const oltsRef = useRef([])
   const selectedPonMissingCyclesRef = useRef(0)
+  const selectedPonRestoreAttemptRef = useRef('')
   const wasAlarmEnabledRef = useRef(false)
   const mainLayoutRef = useRef(null)
   const lastResumeRefreshAtRef = useRef(0)
@@ -674,6 +671,8 @@ const App = () => {
   const previousBodyUserSelectRef = useRef('')
   const previousHtmlCursorRef = useRef('')
   const fetchOltsInflightRef = useRef({})
+  const hydrateOltTopologyInflightRef = useRef({})
+  const backgroundTopologyHydrationTokenRef = useRef(0)
   const powerSnapshotLoadKeyRef = useRef('')
   const powerReportWarmStartedRef = useRef(false)
 
@@ -738,56 +737,113 @@ const App = () => {
     ponPanelErrorTimerRef.current = setTimeout(() => setPonPanelError(''), 6000)
   }, [])
 
+  const hydrateOltTopology = useCallback(async (oltId, { force = false } = {}) => {
+    const normalizedId = String(oltId || '').trim()
+    if (!normalizedId) return { ok: false }
+    if (hydrateOltTopologyInflightRef.current[normalizedId]) {
+      return hydrateOltTopologyInflightRef.current[normalizedId]
+    }
+
+    const existing = oltsRef.current.find((olt) => String(olt?.id) === normalizedId)
+    if (!force && asList(existing?.slots).length > 0) {
+      return { ok: true, cached: true }
+    }
+
+    const run = async () => {
+      try {
+        const topoRes = await api.get(`/olts/${normalizedId}/topology/`, {
+          timeout: TOPOLOGY_DETAIL_REQUEST_TIMEOUT_MS,
+          silentNoResponse: true
+        })
+        setOlts((previous) => enrichTopologyWithPonStats(
+          previous.map((olt) => (
+            String(olt?.id) === normalizedId
+              ? mapTopologyToSlots(olt, topoRes.data)
+              : olt
+          ))
+        ))
+        return { ok: true }
+      } catch {
+        return { ok: false }
+      } finally {
+        delete hydrateOltTopologyInflightRef.current[normalizedId]
+      }
+    }
+
+    hydrateOltTopologyInflightRef.current[normalizedId] = run()
+    return hydrateOltTopologyInflightRef.current[normalizedId]
+  }, [])
+
+  const hydrateOltTopologiesInBackground = useCallback((oltIds) => {
+    const uniqueIds = [...new Set(asList(oltIds).map((value) => String(value || '').trim()).filter(Boolean))]
+    if (!uniqueIds.length) return
+    const token = Date.now()
+    backgroundTopologyHydrationTokenRef.current = token
+
+    const run = async () => {
+      for (let index = 0; index < uniqueIds.length; index += TOPOLOGY_BACKGROUND_BATCH_SIZE) {
+        if (backgroundTopologyHydrationTokenRef.current !== token) return
+        const batch = uniqueIds.slice(index, index + TOPOLOGY_BACKGROUND_BATCH_SIZE)
+        await Promise.all(batch.map((id) => hydrateOltTopology(id)))
+      }
+    }
+
+    void run()
+  }, [hydrateOltTopology])
+
   const fetchOlts = useCallback(async ({ surfaceError = false, includeTopology = true } = {}) => {
-    const requestKey = includeTopology ? 'topology' : 'base'
+    const requestKey = 'base'
     if (fetchOltsInflightRef.current[requestKey]) return fetchOltsInflightRef.current[requestKey]
     const run = async () => {
       const hasCurrentTopology = oltsRef.current.some((olt) => asList(olt?.slots).length > 0)
-      const shouldBlockRender = includeTopology ? !hasCurrentTopology : !oltsRef.current.length
+      const shouldBlockRender = !oltsRef.current.length
       if (shouldBlockRender) setLoading(true)
       if (shouldBlockRender || surfaceError) setError(null)
       try {
+        const base = await api.get('/olts/')
+        const baseOlts = normalizeList(base.data)
+        setOlts((previous) => mergeBaseOltRows(previous, baseOlts))
+
         if (!includeTopology) {
-          const res = await api.get('/olts/')
-          setOlts(normalizeList(res.data))
           return { ok: true, includeTopology: false }
         }
 
-        const res = await api.get('/olts/', { params: { include_topology: 'true' } })
-        const nextOlts = enrichTopologyWithPonStats(normalizeList(res.data))
-        setOlts((previous) => mergeTopologyPowerSnapshots(previous, nextOlts))
-        return { ok: true, includeTopology: true }
-      } catch (err) {
-        if (!includeTopology) {
-          const message = getApiErrorMessage(err, t('Failed to load OLT data'), t)
-          if (shouldBlockRender || surfaceError) {
-            setError(message)
-          }
-          return { ok: false, message }
+        if (!hasCurrentTopology) {
+          setLoading(false)
         }
 
-        try {
-          const base = await api.get('/olts/')
-          const baseOlts = normalizeList(base.data)
-          const enriched = await Promise.all(
-            baseOlts.map(async (olt) => {
-              try {
-                const topoRes = await api.get(`/olts/${olt.id}/topology/`)
-                return mapTopologyToSlots(olt, topoRes.data)
-              } catch {
-                return olt
-              }
-            })
-          )
-          setOlts((previous) => mergeTopologyPowerSnapshots(previous, enrichTopologyWithPonStats(enriched)))
-          return { ok: true, usedFallback: true, includeTopology: true }
-        } catch (fallbackErr) {
-          const message = getApiErrorMessage(err, getApiErrorMessage(fallbackErr, t('Failed to load OLT data'), t), t)
-          if (shouldBlockRender || surfaceError) {
-            setError(message)
-          }
-          return { ok: false, message }
+        const preferredOltIds = []
+        const rememberedOltId = selectedPonContext?.ponId === String(selectedPonId || '') ? selectedPonContext?.oltId : null
+        const firstVisibleOltId = (selectedOltIds.length
+          ? selectedOltIds.find((id) => baseOlts.some((olt) => String(olt?.id) === String(id)))
+          : null) || baseOlts[0]?.id
+
+        if (rememberedOltId && baseOlts.some((olt) => String(olt?.id) === String(rememberedOltId))) {
+          preferredOltIds.push(String(rememberedOltId))
         }
+        if (firstVisibleOltId != null && !preferredOltIds.includes(String(firstVisibleOltId))) {
+          preferredOltIds.push(String(firstVisibleOltId))
+        }
+
+        if (preferredOltIds.length) {
+          powerSnapshotLoadKeyRef.current = ''
+          await Promise.all(preferredOltIds.map((id) => hydrateOltTopology(id, { force: true })))
+        }
+
+        const remainingOltIds = baseOlts
+          .map((olt) => String(olt?.id))
+          .filter((id) => !preferredOltIds.includes(id))
+
+        if (!hasCurrentTopology && remainingOltIds.length) {
+          hydrateOltTopologiesInBackground(remainingOltIds)
+        }
+        return { ok: true, includeTopology: true }
+      } catch (err) {
+        const message = getApiErrorMessage(err, t('Failed to load OLT data'), t)
+        if (shouldBlockRender || surfaceError) {
+          setError(message)
+        }
+        return { ok: false, message }
       } finally {
         if (shouldBlockRender) setLoading(false)
         delete fetchOltsInflightRef.current[requestKey]
@@ -795,7 +851,7 @@ const App = () => {
     }
     fetchOltsInflightRef.current[requestKey] = run()
     return fetchOltsInflightRef.current[requestKey]
-  }, [t])
+  }, [hydrateOltTopologiesInBackground, hydrateOltTopology, selectedOltIds, selectedPonContext, selectedPonId, t])
 
   const fetchVendorProfiles = useCallback(async () => {
     setVendorLoading(true)
@@ -1026,6 +1082,32 @@ const App = () => {
 
   const selectedPonData = rawSelectedPonData
 
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return
+      if (rawSelectedPonData && selectedPonId) {
+        const nextContext = {
+          ponId: String(selectedPonId),
+          oltId: String(rawSelectedPonData?.olt?.id || '')
+        }
+        setSelectedPonContext((previous) => {
+          if (previous?.ponId === nextContext.ponId && previous?.oltId === nextContext.oltId) {
+            return previous
+          }
+          return nextContext
+        })
+        window.localStorage.setItem(SELECTED_PON_CONTEXT_STORAGE_KEY, JSON.stringify(nextContext))
+        return
+      }
+      if (!selectedPonId) {
+        setSelectedPonContext(null)
+        window.localStorage.removeItem(SELECTED_PON_CONTEXT_STORAGE_KEY)
+      }
+    } catch {
+      // noop
+    }
+  }, [rawSelectedPonData, selectedPonId])
+
 
   const collectPowerForSelectedPon = useCallback(async ({ refresh = true } = {}) => {
     const oltId = toIntOrNull(selectedPonData?.olt?.id)
@@ -1121,21 +1203,34 @@ const App = () => {
     if (activeNav !== 'topology') return
     if (!selectedPonId) {
       selectedPonMissingCyclesRef.current = 0
+      selectedPonRestoreAttemptRef.current = ''
       return
     }
     if (rawSelectedPonData) {
       selectedPonMissingCyclesRef.current = 0
+      selectedPonRestoreAttemptRef.current = ''
       return
     }
     if (!olts.length || loading || error) return
 
+    const rememberedOltId = selectedPonContext?.ponId === String(selectedPonId) ? selectedPonContext?.oltId : null
+    if (rememberedOltId) {
+      const restoreKey = `${selectedPonId}:${rememberedOltId}`
+      if (selectedPonRestoreAttemptRef.current !== restoreKey) {
+        selectedPonRestoreAttemptRef.current = restoreKey
+        void hydrateOltTopology(rememberedOltId, { force: true })
+        return
+      }
+    }
+
     selectedPonMissingCyclesRef.current += 1
     if (selectedPonMissingCyclesRef.current >= 3) {
       selectedPonMissingCyclesRef.current = 0
+      selectedPonRestoreAttemptRef.current = ''
       setPonHighlightTarget(null)
       setSelectedPonId(null)
     }
-  }, [activeNav, selectedPonId, rawSelectedPonData, loading, error, olts.length])
+  }, [activeNav, selectedPonId, rawSelectedPonData, loading, error, olts.length, selectedPonContext, hydrateOltTopology])
 
   const selectedSlotNumber = selectedPonData?.slot?.slot_number ?? selectedPonData?.slot?.slot_id
   const selectedPonNumber = selectedPonData?.pon?.pon_number ?? selectedPonData?.pon?.pon_id
@@ -1762,6 +1857,9 @@ const App = () => {
               selectedOltIds={selectedOltIds}
               onSelectedOltIdsChange={setSelectedOltIds}
               selectedPonId={selectedPonId}
+              onOltExpand={(oltId) => {
+                void hydrateOltTopology(oltId)
+              }}
               onAlarmModeChange={handleAlarmModeChange}
               onPonSelect={(id, options = {}) => {
                 const nextId = id !== null && id !== undefined ? String(id) : null
@@ -1820,6 +1918,16 @@ const App = () => {
             `}
           >
             {selectedPonId && (() => {
+              if (!selectedPonData) {
+                return (
+                  <div className="h-full min-h-0 flex flex-col items-center justify-center gap-3 bg-white dark:bg-slate-900">
+                    <RotateCw className="h-4 w-4 animate-spin text-slate-400 dark:text-slate-500" strokeWidth={2.5} />
+                    <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">
+                      {t('Loading live data...')}
+                    </p>
+                  </div>
+                )
+              }
               const handleDescriptionSave = async (newValue) => {
                 if (!canOperateTopology) return
                 const pon = selectedPonData?.pon
@@ -2121,9 +2229,9 @@ const App = () => {
                                       <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
                                     )}
                                   </td>
-                                  <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : ''}`}>
                                     {hasSerial ? serialValue : (
-                                      <span className={PLACEHOLDER_CLASS}>{serialValue}</span>
+                                      <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
                                     )}
                                   </td>
                                   <td className="pl-4 pr-6 py-0 align-middle whitespace-nowrap">
@@ -2236,7 +2344,7 @@ const App = () => {
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
                                 ) : (
-                                  <span className={`block text-center ${PLACEHOLDER_CLASS}`}>{serialValue}</span>
+                                  <span className={`block ${PLACEHOLDER_CLASS}`}>{MISSING_VALUE_PLACEHOLDER}</span>
                                 )}
                               </div>
                               <div className="shrink-0 flex flex-col items-end gap-1">
@@ -2343,11 +2451,15 @@ const App = () => {
                               const onuNumber = onu.onu_number ?? onu.onu_id ?? MISSING_VALUE_PLACEHOLDER
                               const hasOnuRx = onuRx !== null
                               const hasOltRx = oltRx !== null
-                              const grayPower = 'text-slate-500 dark:text-slate-400'
-                              const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
-                              const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
-                              const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
+                              const mutedPower = 'text-slate-400 dark:text-slate-500'
+                              const onuRxColor = isSelectedOltGray ? mutedPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
+                              const oltRxColor = isSelectedOltGray ? mutedPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
                               const readingAt = formatReadingAt(readAt, i18n.language)
+                              const readingTone = !readAt
+                                ? 'text-slate-300 dark:text-slate-600'
+                                : isSelectedOltGray
+                                  ? mutedPower
+                                  : 'text-slate-500 dark:text-slate-400'
                               const onuRxFormatted = hasOnuRx ? formatPowerValue(onuRx) : null
                               const oltRxFormatted = hasOltRx ? formatPowerValue(oltRx) : null
                               const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
@@ -2377,18 +2489,18 @@ const App = () => {
                                       <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
                                     )}
                                   </td>
-                                  <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : 'text-center'}`}>
+                                  <td className={`pl-2.5 pr-4 py-0 align-middle whitespace-nowrap ${hasSerial ? 'text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-600 dark:text-slate-300' : ''}`}>
                                     {hasSerial ? serialValue : (
-                                      <span className={PLACEHOLDER_CLASS}>{serialValue}</span>
+                                      <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>
                                     )}
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${onuRxFormatted ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>
-                                    {onuRxFormatted || MISSING_VALUE_PLACEHOLDER}
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] tabular-nums text-right ${onuRxFormatted ? `font-bold ${onuRxColor}` : ''}`}>
+                                    {onuRxFormatted || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-bold tabular-nums text-right ${oltRxFormatted ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>
-                                    {oltRxFormatted || MISSING_VALUE_PLACEHOLDER}
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] tabular-nums text-right ${oltRxFormatted ? `font-bold ${oltRxColor}` : ''}`}>
+                                    {oltRxFormatted || <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}
                                   </td>
-                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${hasReading ? 'text-slate-500 dark:text-slate-400' : 'text-slate-300 dark:text-slate-600'}`}>
+                                  <td className={`px-2.5 py-0 align-middle text-[11px] font-semibold whitespace-nowrap tabular-nums text-center ${readingTone}`}>
                                     {readingAt}
                                   </td>
                                 </tr>
@@ -2446,11 +2558,15 @@ const App = () => {
                           const hasOnuRx = onuRx !== null
                           const hasOltRx = oltRx !== null
                           const hasAnyPower = hasOnuRx || hasOltRx
-                          const grayPower = 'text-slate-500 dark:text-slate-400'
-                          const onuRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
-                          const oltRxColor = isSelectedOltGray ? grayPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
-                          const hasReading = readAt !== null && readAt !== undefined && readAt !== ''
+                          const mutedPower = 'text-slate-400 dark:text-slate-500'
+                          const onuRxColor = isSelectedOltGray ? mutedPower : powerColorClass(getPowerColor(onuRx, 'onu_rx', selectedPonData?.olt?.id))
+                          const oltRxColor = isSelectedOltGray ? mutedPower : powerColorClass(getPowerColor(oltRx, 'olt_rx', selectedPonData?.olt?.id))
                           const readingAt = formatReadingAt(readAt, i18n.language)
+                          const readingTone = !readAt
+                            ? 'text-slate-300 dark:text-slate-600'
+                            : isSelectedOltGray
+                              ? mutedPower
+                              : 'text-slate-400 dark:text-slate-500'
                           const isHighlightedFromSearch = Boolean(ponHighlightTarget && (
                             (ponHighlightTarget.serial && normalizeMatchValue(serialValue) === normalizeMatchValue(ponHighlightTarget.serial)) ||
                             (ponHighlightTarget.onuId && Number(onuNumber) === Number(ponHighlightTarget.onuId)) ||
@@ -2473,21 +2589,21 @@ const App = () => {
                                 {hasSerial ? (
                                   <span className="block text-[11px] font-semibold font-mono tracking-[0.01em] text-slate-500 dark:text-slate-400 truncate">{serialValue}</span>
                                 ) : (
-                                  <span className="block text-center text-[11px] font-semibold tabular-nums text-slate-300 dark:text-slate-600">{serialValue}</span>
+                                  <span className={`block ${PLACEHOLDER_CLASS}`}>{MISSING_VALUE_PLACEHOLDER}</span>
                                 )}
                               </div>
                               <div className="shrink-0 flex flex-col gap-1">
                                 {hasAnyPower ? (
                                   <>
-                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
-                                      <span className="font-mono text-slate-400 dark:text-slate-500">{t('ONU')}</span>
-                                      <span className={`w-[76px] text-right font-semibold ${hasOnuRx ? onuRxColor : 'text-slate-300 dark:text-slate-600'}`}>{hasOnuRx ? formatPowerValue(onuRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                    <span className="inline-flex items-center gap-1 text-[11px] tabular-nums whitespace-nowrap">
+                                      <span className="font-mono font-bold text-slate-400 dark:text-slate-500">{t('ONU')}</span>
+                                      <span className={`w-[76px] text-right ${hasOnuRx ? `font-semibold ${onuRxColor}` : ''}`}>{hasOnuRx ? formatPowerValue(onuRx) : <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</span>
                                     </span>
-                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold tabular-nums whitespace-nowrap">
-                                      <span className="font-mono text-slate-400 dark:text-slate-500">{t('OLT')}</span>
-                                      <span className={`w-[76px] text-right font-semibold ${hasOltRx ? oltRxColor : 'text-slate-300 dark:text-slate-600'}`}>{hasOltRx ? formatPowerValue(oltRx) : MISSING_VALUE_PLACEHOLDER}</span>
+                                    <span className="inline-flex items-center gap-1 text-[11px] tabular-nums whitespace-nowrap">
+                                      <span className="font-mono font-bold text-slate-400 dark:text-slate-500">{t('OLT')}</span>
+                                      <span className={`w-[76px] text-right ${hasOltRx ? `font-semibold ${oltRxColor}` : ''}`}>{hasOltRx ? formatPowerValue(oltRx) : <span className={PLACEHOLDER_CLASS}>{MISSING_VALUE_PLACEHOLDER}</span>}</span>
                                     </span>
-                                    <span className={`self-stretch text-left text-[10px] font-semibold tabular-nums ${hasReading ? 'text-slate-400 dark:text-slate-500' : 'text-slate-300 dark:text-slate-600'}`}>{readingAt}</span>
+                                    <span className={`self-stretch text-left text-[10px] font-semibold tabular-nums ${readingTone}`}>{readingAt}</span>
                                   </>
                                 ) : (
                                   <span className="text-[11px] font-semibold tabular-nums text-slate-300 dark:text-slate-600">{MISSING_VALUE_PLACEHOLDER}</span>

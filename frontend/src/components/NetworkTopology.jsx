@@ -13,6 +13,22 @@ const asCount = (value) => {
 }
 const asList = (value) => (Array.isArray(value) ? value : Object.values(value || {}))
 const isActiveEntity = (entity) => Boolean(entity) && entity.is_active !== false
+const hasOwn = (entity, key) => Object.prototype.hasOwnProperty.call(entity || {}, key)
+const hasCounterSnapshot = (entity, keys) => keys.some((key) => Number.isFinite(Number(entity?.[key])))
+
+const getSnapshotStats = (entity, level) => {
+  if (level === 'olt') {
+    const online = asCount(entity?.online_count)
+    const offline = asCount(entity?.offline_count)
+    const total = asCount(entity?.onu_count) || (online + offline)
+    return { total, online, offline, linkLoss: 0, dyingGasp: 0, unknown: 0 }
+  }
+
+  const online = asCount(entity?.cached_online_count ?? entity?.online_count)
+  const offline = asCount(entity?.cached_offline_count ?? entity?.offline_count)
+  const total = asCount(entity?.cached_onu_count ?? entity?.onu_count) || (online + offline)
+  return { total, online, offline, linkLoss: 0, dyingGasp: 0, unknown: 0 }
+}
 
 const NODE_CARD_STYLE = {
   // Keep all hierarchy levels visually coherent.
@@ -61,6 +77,20 @@ const getSlotHealthState = (slot, selectedReasons) => {
 }
 
 const aggregateStats = (entity, level) => {
+  if (level === 'olt') {
+    const slots = asList(entity?.slots).filter(isActiveEntity)
+    if (!slots.length && hasCounterSnapshot(entity, ['onu_count', 'online_count', 'offline_count'])) {
+      return getSnapshotStats(entity, 'olt')
+    }
+  }
+
+  if (level === 'slot') {
+    const pons = asList(entity?.pons).filter(isActiveEntity)
+    if (!pons.length && hasCounterSnapshot(entity, ['cached_onu_count', 'cached_online_count', 'cached_offline_count', 'onu_count', 'online_count', 'offline_count'])) {
+      return getSnapshotStats(entity, 'slot')
+    }
+  }
+
   if (level === 'pon') {
     return entity?.stats || getOnuStats(entity?.onus || [])
   }
@@ -233,6 +263,7 @@ export const NetworkTopology = ({
   selectedPonId,
   onPonSelect,
   onAlarmModeChange,
+  onOltExpand,
   oltHealthById = {},
   selectedOltIds = [],
   onSelectedOltIdsChange
@@ -494,9 +525,15 @@ export const NetworkTopology = ({
 
     return searchedOlts
       .map((olt) => {
+        if (!hasOwn(olt, 'slots')) {
+          return olt
+        }
         const slots = asList(olt?.slots)
           .filter(isActiveEntity)
           .map((slot) => {
+            if (!hasOwn(slot, 'pons')) {
+              return slot
+            }
             const pons = asList(slot?.pons).filter(isActiveEntity).filter((pon) => passesAlarmFilter(pon))
             return {
               ...slot,
@@ -512,7 +549,7 @@ export const NetworkTopology = ({
           slot_count: slots.length,
         }
       })
-      .filter((olt) => asList(olt?.slots).length > 0)
+      .filter((olt) => !hasOwn(olt, 'slots') || asList(olt?.slots).length > 0)
   }, [searchedOlts, alarmEnabled, selectedClient, effectiveAlarmMinCount, activeAlarmReasons])
 
   const searchedOltMap = useMemo(() => {
@@ -560,7 +597,12 @@ export const NetworkTopology = ({
           sublabel={`${slotCount} ${t('SLOTS')}`}
           alertCount={redSlotCount}
           isOpen={isOltOpen}
-          onToggle={() => toggleNode(oltId)}
+          onToggle={() => {
+            if (!isOltOpen) {
+              onOltExpand?.(olt.id)
+            }
+            toggleNode(oltId)
+          }}
           healthState={oltHealthState}
           counters={showPonCounts && !isGrayTree ? aggregateStats(sourceOlt, 'olt') : null}
         >

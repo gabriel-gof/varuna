@@ -46,6 +46,7 @@ from topology.services.topology_service import TopologyService
 from topology.services.unm_service import UNMServiceError, unm_service
 from topology.services.vendor_profile import (
     COLLECTOR_TYPE_FIT_TELNET,
+    display_onu_serial,
     get_collector_type,
     map_disconnect_reason,
     map_status_code,
@@ -858,7 +859,13 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
 
     @staticmethod
     def _latest_power_reads_use_zabbix() -> bool:
-        return bool(getattr(settings, 'POWER_LATEST_READS_USE_ZABBIX', False))
+        # Production-grade latest-power reads should automatically prefer the
+        # read-only Zabbix DB path whenever that alias is enabled. The legacy
+        # feature flag remains as an explicit opt-in for non-DB environments.
+        return bool(
+            getattr(settings, 'ZABBIX_DB_ENABLED', False)
+            or getattr(settings, 'POWER_LATEST_READS_USE_ZABBIX', False)
+        )
 
     def _read_latest_power_rows(self, onus):
         normalized_onus = []
@@ -949,10 +956,22 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
 
             for index, onu_ids in index_to_onu_ids.items():
                 payload = live_map.get(index)
-                if not payload:
-                    continue
-                for onu_id in onu_ids:
-                    results[onu_id] = payload
+                has_live_power = (
+                    payload
+                    and (
+                        normalize_power_value(payload.get('onu_rx_power')) is not None
+                        or normalize_power_value(payload.get('olt_rx_power')) is not None
+                    )
+                )
+                if has_live_power:
+                    for onu_id in onu_ids:
+                        results[onu_id] = payload
+                else:
+                    # Fall back to snapshot when Zabbix has no usable power data
+                    for onu_id in onu_ids:
+                        fallback = snapshot_map.get(onu_id)
+                        if fallback:
+                            results[onu_id] = fallback
 
         return results
 
@@ -1034,7 +1053,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                 'pon_ref_id': onu.pon_ref_id,
                 'onu_number': onu.onu_id,
                 'client_name': onu.name or '',
-                'serial': onu.serial or '',
+                'serial': display_onu_serial(onu.olt, onu.serial),
                 'status': onu.status,
                 'onu_rx_power': power_row.get('onu_rx_power'),
                 'olt_rx_power': power_row.get('olt_rx_power'),
@@ -1381,7 +1400,7 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
             {
                 'id': onu.id,
                 'client_name': (onu.name or '').strip() or '-',
-                'serial': onu.serial or '',
+                'serial': display_onu_serial(onu.olt, onu.serial),
                 'olt_id': onu.olt_id,
                 'olt_name': onu.olt.name,
                 'slot_id': onu.slot_id,
@@ -1619,12 +1638,12 @@ class ONUViewSet(viewsets.ReadOnlyModelViewSet):
                     'id': onu.id,
                     'olt_id': onu.olt_id,
                     'olt_name': onu.olt.name,
-                    'slot_id': onu.slot_id,
-                    'pon_id': onu.pon_id,
-                    'onu_number': onu.onu_id,
-                    'client_name': onu.name or '',
-                    'serial': onu.serial or '',
-                },
+                'slot_id': onu.slot_id,
+                'pon_id': onu.pon_id,
+                'onu_number': onu.onu_id,
+                'client_name': onu.name or '',
+                'serial': display_onu_serial(onu.olt, onu.serial),
+            },
                 'stats': stats,
                 'alarm_days': alarm_days if not use_date_range else None,
                 'power_days': power_days if not use_date_range else None,

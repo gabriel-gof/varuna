@@ -33,8 +33,8 @@
     - Zabbix PostgreSQL knobs (`ZBX_PG_*`) applied at container start (`shared_buffers=2GB`, `synchronous_commit=off`, `wal_buffers=64MB`, `checkpoint_timeout=15min`, `effective_io_concurrency=200`, WAL/checkpoint settings).
 
 Backend collection runtime:
-- Default control plane is Zabbix API, but latest status/power hot reads can switch to a direct read-only PostgreSQL path against `pg-zabbix` (`items` latest-value columns) when `ZABBIX_DB_ENABLED=1`.
-- Exception: `FIT / FNCS4000` uses a direct backend Telnet collector because the device does not expose an equivalent Zabbix/SNMP runtime path for the required topology/status/power workflow.
+- Default control plane is Zabbix API, but latest power hot reads automatically switch to a direct read-only PostgreSQL path against `pg-zabbix` (`items` latest-value columns) when `ZABBIX_DB_ENABLED=1`.
+- Exception: `FIT / FNCS4000` uses a direct backend collector because the device does not expose an equivalent Zabbix/SNMP runtime path for the required topology/status/power workflow. HTTP web UI scraping is the default transport; Telnet is explicit fallback only.
 
 Container/runtime health:
 - Backend exposes a public liveness endpoint at `GET /api/healthz/` (`{"status":"ok"}`).
@@ -127,7 +127,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - `OLTSlot` and `OLTPON`: discovered topology map. Empty PONs (0 active ONUs) and empty slots are excluded from topology structure payloads.
 - `ONU`: per-OLT endpoint with active/inactive lifecycle, status, and fast latest-power snapshot fields (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`).
   - Those fields remain the persisted read model for scheduler/manual syncs.
-  - Latest-power UI reads can optionally bypass them and read Zabbix latest values directly when `POWER_LATEST_READS_USE_ZABBIX=true`.
+  - For Zabbix-backed OLTs, latest-power UI reads bypass them automatically and read Zabbix latest values directly whenever the read-only Zabbix DB alias is enabled.
   - Large live latest-power reads can bound history-fallback fanout with `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS` so global report reads stay current without turning into history scans.
 - `ONULog`: offline event history and disconnect reasons.
 - `ONUPowerSample`: persisted ONU power history used by trend/timeline APIs and retained refresh history.
@@ -138,7 +138,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - Reads vendor templates from `VendorProfile.oid_templates`.
 - Uses the configured collector:
   - Zabbix vendors read `oid_templates.zabbix.discovery_item_key`.
-  - FIT `FNCS4000` reads configured EPON interfaces (`0/1..0/4` by default) over Telnet with `show onu info epon 0/x all`. Multi-blade chassis iterate over `blade_ips`; only **authorized** ONUs are kept, so only blades/PONs that return authorized ONUs are materialized in topology.
+  - FIT `FNCS4000` reads configured EPON interfaces (`0/1..0/4` by default) over the device HTTP UI (`onuOverview.asp?oltponno=0/x`) by default. Multi-blade chassis iterate over `blade_ips`; only **authorized** ONUs are kept, so only blades/PONs that return authorized ONUs are materialized in topology. Telnet remains an explicit fallback transport.
 - Manual discovery can request immediate upstream execution before read (`--refresh-upstream`).
 - Discovers ONUs and topology links.
 - Upserts ONUs as active.
@@ -151,7 +151,7 @@ When to split into dedicated `discovery` and `poller` workers:
 ### 2. Polling (`poll_onu_status`)
 - Polls ONU status via the configured collector:
   - Zabbix vendors use per-ONU status/reason item keys (`oid_templates.zabbix.status_item_key_pattern` / `reason_item_key_pattern`).
-  - FIT `FNCS4000` reads `show onu info epon 0/x all` per blade and maps `Up -> online`, `Down -> offline/unknown`. Parser accepts field variants both with and without the `Uptime` column because firmware output differs across blades.
+  - FIT `FNCS4000` reads per-PON HTTP overview pages per blade and maps `Up -> online`, everything else -> offline/unknown. Telnet fallback still accepts both `show onu info` field variants with and without the `Uptime` column because firmware output differs across blades.
 - Manual/scoped polling can request immediate upstream execution before read (`--refresh-upstream`).
 - Maps source values to canonical status/reason.
 - Tracks online/offline transitions with `ONULog`.
@@ -202,10 +202,7 @@ When to split into dedicated `discovery` and `poller` workers:
 - Polling command enforces a runtime budget (`max_runtime_seconds`, default 180s) to prevent long-running jobs.
 - Power service updates the fast `ONU` latest-power snapshot on every collection run and persists fresh `ONUPowerSample` rows for history/trends.
 - Latest-power scheduler sync now uses each OLT `power_interval_seconds` directly for every collector type. For Zabbix-backed OLTs, the normal scheduler path reads only current power items and updates the local latest snapshot without walking history.
-- FIT `FNCS4000` power collection is constrained by the device CLI:
-  - only online ONUs are queried;
-  - only ONU IDs `<= 64` support `show onu optical-ddm`;
-  - only ONU RX is collected; OLT RX is unsupported.
+- FIT `FNCS4000` power collection prefers HTTP overview inline optics and falls back to per-ONU HTTP detail pages, so only ONU RX is collected and OLT RX remains unsupported. The old ONU ID `<= 64` limit now applies only when the FIT transport is explicitly forced back to Telnet.
 
 ## Performance Decisions
 - Removed global `ONU.snmp_index` uniqueness in favor of per-OLT uniqueness (`(olt, snmp_index)`), enabling multi-vendor/multi-OLT scale.

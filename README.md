@@ -4,7 +4,7 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 
 ## What It Does
 - Discovers and maintains OLT → Slot → PON → ONU topology.
-- Polls ONU status via Zabbix item keys with disconnect-reason mapping, or direct Telnet CLI for FIT `FNCS4000`.
+- Polls ONU status via Zabbix item keys with disconnect-reason mapping, or direct HTTP web UI collection for FIT `FNCS4000` (Telnet remains an explicit fallback transport).
 - Persists ONU power history for trend/report APIs.
 - Shows unreachable OLTs clearly (gray state in frontend).
 - Caches only slow-changing topology structure in Redis.
@@ -15,7 +15,7 @@ Varuna is a topology-first FTTH monitoring platform for multi-vendor OLT environ
 - `varuna-db`: PostgreSQL
 - `redis`: Redis
 - Optional (enabled in current dev compose): `zabbix-db`, `zabbix-server`, `zabbix-web`, `zabbix-agent` for Zabbix-based vendors.
-- FIT `FNCS4000` uses direct backend Telnet collection and does not require a Zabbix template.
+- FIT `FNCS4000` uses direct backend HTTP collection against the device web UI and does not require a Zabbix template.
 
 ## Versioning
 - Release version is tracked in the root `VERSION` file.
@@ -199,7 +199,7 @@ Zabbix template files in `zabbix-templates/`:
 - `vsol-like-template.yaml`
 
 Direct collector vendor:
-- `FIT / FNCS4000` uses backend Telnet collection (`show onu info` / `show onu optical-ddm`) instead of a repo-root Zabbix template.
+- `FIT / FNCS4000` uses backend HTTP collection from the device web UI (`onuOverview.asp` / `onuConfig.asp`) instead of a repo-root Zabbix template. Telnet CLI remains available only when the vendor profile transport is explicitly set back to `telnet`.
 
 ## Validation
 ```bash

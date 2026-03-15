@@ -12,7 +12,7 @@ from django.utils import timezone
 from topology.models import OLT, OLTPON, OLTSlot, ONU, ONULog
 from topology.services.cache_service import cache_service
 from topology.services.unm_service import UNMServiceError, unm_service
-from topology.services.vendor_profile import supports_olt_rx_power
+from topology.services.vendor_profile import display_onu_serial, supports_olt_rx_power
 
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class TopologyService:
     STATUS_ONLINE = 'online'
-    STRUCTURE_CACHE_VERSION = 3
+    STRUCTURE_CACHE_VERSION = 4
 
     @staticmethod
     def _as_iso(value) -> str | None:
@@ -110,6 +110,7 @@ class TopologyService:
                         'onus': [],
                     }
                     for onu in onus_by_pon.get(int(pon.id), []):
+                        serial_value = display_onu_serial(olt, onu.serial)
                         pon_payload['onus'].append(
                             {
                                 'id': int(onu.id),
@@ -117,8 +118,8 @@ class TopologyService:
                                 'onu_number': int(onu.onu_id),
                                 'name': onu.name or '',
                                 'client_name': onu.name or '',
-                                'serial': onu.serial or '',
-                                'serial_number': onu.serial or '',
+                                'serial': serial_value,
+                                'serial_number': serial_value,
                                 'last_discovered_at': self._as_iso(onu.last_discovered_at),
                             }
                         )
@@ -304,6 +305,17 @@ class TopologyService:
             return 'offline'
         return 'partial'
 
+    @staticmethod
+    def _compute_parent_status(child_statuses: List[str]) -> str:
+        normalized = [str(status or '').strip().lower() for status in child_statuses if str(status or '').strip()]
+        if not normalized:
+            return 'unknown'
+        if all(status == 'offline' for status in normalized):
+            return 'offline'
+        if any(status == 'offline' for status in normalized):
+            return 'partial'
+        return 'online'
+
     def _overlay_structure(
         self,
         structure: Dict[str, Any],
@@ -324,6 +336,7 @@ class TopologyService:
             slot_online = 0
             slot_offline = 0
             slot_onu_count = 0
+            slot_child_statuses: List[str] = []
             detail_pons: Dict[str, Dict[str, Any]] = {}
             list_pons: List[Dict[str, Any]] = []
 
@@ -364,6 +377,7 @@ class TopologyService:
                     continue
 
                 pon_status = self._compute_status(pon_online, pon_offline)
+                slot_child_statuses.append(pon_status)
                 detail_pons[pon_key] = {
                     'id': int(pon_payload['id']),
                     'pon_id': int(pon_payload['pon_id']),
@@ -386,6 +400,7 @@ class TopologyService:
                         'pon_key': pon_payload.get('pon_key'),
                         'name': pon_payload.get('pon_name') or '',
                         'description': pon_payload.get('description') or '',
+                        'status': pon_status,
                         'onus': list_onus,
                         'onu_count': pon_onu_count,
                         'online_count': pon_online,
@@ -405,7 +420,7 @@ class TopologyService:
             if not list_pons:
                 continue
 
-            slot_status = self._compute_status(slot_online, slot_offline)
+            slot_status = self._compute_parent_status(slot_child_statuses)
             detail_slots[slot_key] = {
                 'id': int(slot_payload['id']),
                 'slot_id': int(slot_payload['slot_id']),
@@ -424,6 +439,7 @@ class TopologyService:
                     'slot_number': int(slot_payload['slot_id']),
                     'slot_key': slot_payload.get('slot_key'),
                     'name': slot_payload.get('slot_name') or '',
+                    'status': slot_status,
                     'pons': list_pons,
                     'pon_count': len(list_pons),
                     'onu_count': slot_onu_count,
@@ -434,6 +450,7 @@ class TopologyService:
             )
             slot_count += 1
 
+        olt_child_statuses = [str(slot.get('status') or '').strip().lower() for slot in detail_slots.values()]
         return {
             'detail_slots': detail_slots,
             'list_slots': list_slots,
@@ -442,7 +459,7 @@ class TopologyService:
             'onu_count': onu_count,
             'online_count': online_count,
             'offline_count': offline_count,
-            'status': self._compute_status(online_count, offline_count),
+            'status': self._compute_parent_status(olt_child_statuses),
         }
 
     def build_topology_rows(self, olts: Iterable[OLT]) -> List[Dict[str, Any]]:
@@ -513,6 +530,7 @@ class TopologyService:
                     'onu_count': overlaid['onu_count'],
                     'online_count': overlaid['online_count'],
                     'offline_count': overlaid['offline_count'],
+                    'status': overlaid['status'],
                     'supports_olt_rx_power': self._supports_olt_rx_power(olt),
                     'is_active': bool(olt.is_active),
                     'created_at': self._as_iso(olt.created_at),

@@ -122,7 +122,7 @@ Template import workflow:
   - `OLT ZTE C300`
   - `OLT ZTE C600`
   - `OLT VSOL GPON 8P`
-- FIT `FNCS4000` does not use a Zabbix template. It is configured in Varuna as a Telnet-backed OLT with mandatory Telnet username/password.
+- FIT `FNCS4000` does not use a Zabbix template. It is configured in Varuna as a direct-collector OLT with mandatory username/password; HTTP web UI scraping is the default transport and Telnet is fallback-only.
 - Varuna controls Zabbix collection cadence through host macros pushed on OLT create/update:
   - `{$VARUNA.DISCOVERY_INTERVAL}`
   - `{$VARUNA.STATUS_INTERVAL}`
@@ -145,7 +145,7 @@ Template import workflow:
   - If malformed discovery rows are already persisted on hosts (for example blank serial plus `cliente 1`), import the updated `zte-template.yaml`, run `Execute now` on ONU discovery for the affected Zabbix host, then re-run Varuna discovery for the OLT. The template/backend fix prevents new bad rows, but existing stale inventory still needs one clean rediscovery to self-heal.
 - Template default macro values are bootstrap-only (`5m`, `1m`, `5m`, `30s`, `7d`) and are overridden per OLT by Varuna settings.
 - Varuna ONU LLD rules in all production ONU templates (`fiberhome-template.yaml`, `huawei-template.yaml`, `zte-template.yaml`, `vsol-like-template.yaml`) are configured with immediate lost-resource cleanup (`Delete lost resources = Immediately` / `lifetime_type: DELETE_IMMEDIATELY`) so stale ONU item prototypes are removed as soon as discovery no longer returns them.
-- FIT `FNCS4000` is Telnet-based (no Zabbix LLD), but follows the same policy in Varuna runtime/vendor profile discovery config: `deactivate_missing=true`, `disable_lost_after_minutes=0`, `delete_lost_after_minutes=10080`.
+- FIT `FNCS4000` is direct-collector based (no Zabbix LLD), but follows the same policy in Varuna runtime/vendor profile discovery config: `deactivate_missing=true`, `disable_lost_after_minutes=0`, `delete_lost_after_minutes=10080`.
 - On OLT create/update, Varuna also synchronizes Zabbix host runtime fields:
   - auto-create missing Zabbix host with vendor template + shared `Varuna SNMP Availability` linkage when possible,
   - host group membership to `ZABBIX_HOST_GROUP_NAME` (legacy names from `ZABBIX_HOST_GROUP_LEGACY_NAMES` are migrated automatically),
@@ -161,15 +161,15 @@ Template import workflow:
   - `blade_ips` stores per-blade `{"ip": "...", "port": ...}` objects; there is no global telnet port;
   - Varuna no longer falls back to legacy `ip_address:23` for FIT. Every blade must be configured explicitly with both IP and Telnet port;
   - fixed EPON interfaces `0/1..0/4`;
-  - Telnet sessions land on `EPON>` and require an `enable` step before collector commands;
-  - discovery reads all configured interfaces from Telnet CLI (`show onu info epon 0/x all`) and keeps only authorized ONUs (`Active` column);
-  - routine status polling keeps Telnet reads scoped to interfaces that currently have active ONUs, reducing poll time on sparse blades;
-  - firmware output can differ per blade: some `show onu info` tables include `Uptime`, others stop at `Active`. Varuna accepts both formats, so a rediscovery should repopulate previously missed ONUs instead of leaving a blade empty;
-  - long `show onu info` output paginates with `--- Enter Key To Continue ----`, so failed discovery on this vendor often points to pager/login handling instead of missing ONUs;
+  - default transport is HTTP Basic auth against the blade web UI. Stored `telnet_username` / `telnet_password` fields are reused as the direct collector credentials;
+  - discovery and routine status polling read `onuOverview.asp?oltponno=0/x`, but if a blade exposes `onuAllPonOnuList.asp` Varuna uses that blade-wide table first to reduce request fanout and harvest inline optics in one read;
+  - power reads prefer inline optical values from `onuAllPonOnuList.asp`, then from per-PON overview pages, and fall back to `onuConfig.asp?onuno=0/x:y&oltponno=0/x` when a blade firmware omits those inline optics;
+  - discovery now stores the FIT MAC address as the ONU serial surrogate because the web UI does not expose a stable serial field;
+  - operator-facing serial fields for FIT are intentionally masked; topology/power/alarm screens must show `-` instead of exposing that MAC surrogate as if it were a true serial;
   - multi-blade failures are surfaced with blade IP context (`Blade <ip>: ...`) in `last_collector_error`, `collector_check`/`snmp_check`, and maintenance output so operators can isolate which blade session is failing;
-  - if status polling returns an empty FIT snapshot after successful Telnet login, Varuna reports polling failure but keeps collector reachability healthy; check `last_poll_at` staleness before treating the OLT as unreachable;
-  - power is per-ONU only (`show onu optical-ddm epon 0/x <onu_id>`) and skips ONU IDs above `64`;
+  - if status polling returns an empty FIT snapshot after successful collector access, Varuna reports polling failure but keeps collector reachability healthy; check `last_poll_at` staleness before treating the OLT as unreachable;
   - no OLT RX power and no vendor-specific disconnect-reason history.
+  - if a stack explicitly reverts FIT to `collector.transport=telnet`, the old CLI behavior still applies: `EPON>` login requires `enable`, `show onu info` can paginate, and power reads above ONU ID `64` are unsupported.
 - UNM alarm-history notes:
   - Varuna resolves the target ONU in UNM inventory by `slot + pon + onu_id` and uses the resulting `cobjectid` for alarm queries; ONU name/serial are not the alarm-history lookup key.
   - UNM alarm history schemas are not consistent across deployments. Some expose `alarmdb.t_alarmloghist_merge`; others expose only `alarmdb.t_alarmloghist` plus partition tables like `t_alarmloghist_1_1`.
@@ -180,11 +180,11 @@ Template import workflow:
   - Default merge window is automatic from `OLT.power_interval_seconds` and capped at `60s`.
   - Per-instance override: `ALARM_HISTORY_POWER_MERGE_WINDOW_SECONDS`.
   - `VIANET` canary value: `90`.
-- Latest-power read canary:
-  - `POWER_LATEST_READS_USE_ZABBIX=1` switches `GET /api/onu/{id}/power/`, `POST /api/onu/batch-power/` with `refresh=false`, and `GET /api/onu/power-report/` from `ONU.latest_*` snapshots to live Zabbix latest-value reads.
-  - The live latest-value path is still DB-first (`ZABBIX_DB_ENABLED=1`), so normal power reads avoid `api_jsonrpc.php` fanout and use JSON-RPC only as fallback.
+- Latest-power read path:
+  - `ZABBIX_DB_ENABLED=1` is now the production-grade switch for `GET /api/onu/{id}/power/`, `POST /api/onu/batch-power/` with `refresh=false`, and `GET /api/onu/power-report/` on Zabbix-backed OLTs.
+  - When that alias is enabled, normal latest-power reads are DB-first and avoid `api_jsonrpc.php` fanout; JSON-RPC is used only as fallback if the DB read fails.
   - `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS` bounds history-fallback fanout on the request path. Keep it high enough for single ONU / PON reads, but low enough that `power-report` stays operational.
-  - Current production rollout is enabled on every Zabbix-backed stack (`VIANET`, `DEMO`, `GABISAT`, `PONTAL`, `FLASHNET`).
+  - `POWER_LATEST_READS_USE_ZABBIX=1` remains only as a legacy opt-in for non-DB environments and should not be the primary production setting.
   - Operational caveat: when a request touches more ONU indexes than `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS`, large reads use only current latest values from Zabbix. This keeps `power-report` fast, but can differ from the latest valid history-backed value when the current item is invalid.
 - Trends are disabled in Varuna templates (`trends=0`) to reduce Zabbix storage overhead.
 - Item history in Varuna templates is driven by `{$VARUNA.HISTORY_DAYS}` (default `7d`) for ONU status and power metrics.
@@ -259,7 +259,7 @@ Recommended practical deployment on one VM:
   - `zabbix-server` + `zabbix-web`.
 - per-client application stack:
   - `frontend` + `backend` + `redis`.
-- When enabling the direct latest-item DB reader on a new canary stack, start with one instance only and keep API fallback enabled. The current production fleet already runs this path on all Zabbix-backed instances (`VIANET`, `DEMO`, `GABISAT`, `PONTAL`, `FLASHNET`).
+- The direct Zabbix DB reader (`ZABBIX_DB_ENABLED=True`) is the only routine read path for Zabbix-backed OLTs — there is no JSON-RPC API fallback. All current production instances (`VIANET`, `DEMO`, `GABISAT`, `PONTAL`, `FLASHNET`) run this path.
 
 Current production observations:
 - If status is stale on `DEMO` or `GABISAT`, treat that as upstream Zabbix/OLT freshness degradation first. Varuna can stay coherent with Zabbix while the source items themselves are already old.
@@ -565,6 +565,7 @@ Latest-power sync contract:
 - Zabbix-backed OLTs keep a fast local latest-power snapshot on `ONU` for UI reads.
 - Scheduler refreshes that snapshot on the configured `power_interval_seconds` for every collector type.
 - Routine Zabbix scheduler sync is a light current-item read only; it does not walk Zabbix history during normal background collection.
+- Latest-power UI/report surfaces now prefer the live Zabbix latest-value read path automatically whenever `ZABBIX_DB_ENABLED=1`; the `ONU.latest_*` snapshot remains the fallback path and the scheduler/manual sync persistence model.
 - Manual/scoped power refresh is the heavier path: it may request immediate Zabbix execution and may use recent-history fallback when current power items are invalid.
 - `ONUPowerSample` remains the retained history/trend store, not the primary latest-value read path.
 

@@ -6,7 +6,7 @@ from rest_framework import serializers
 from topology.models import OLTPON, OLT, OLTSlot, ONU, ONULog, UserProfile, VendorProfile
 from topology.services.history_service import get_latest_power_snapshot_map
 from topology.services.power_values import normalize_power_value
-from topology.services.vendor_profile import get_default_protocol, supports_olt_rx_power
+from topology.services.vendor_profile import display_onu_serial, get_default_protocol, supports_olt_rx_power
 
 
 def _live_count(fallback_fn):
@@ -61,7 +61,7 @@ class ONUNestedSerializer(serializers.ModelSerializer):
 
     onu_number = serializers.IntegerField(source='onu_id', read_only=True)
     client_name = serializers.CharField(source='name', read_only=True)
-    serial_number = serializers.CharField(source='serial', read_only=True)
+    serial_number = serializers.SerializerMethodField()
     disconnect_reason = serializers.ReadOnlyField()
     offline_since = serializers.ReadOnlyField()
     disconnect_window_start = serializers.ReadOnlyField()
@@ -117,6 +117,10 @@ class ONUNestedSerializer(serializers.ModelSerializer):
         return supports_olt_rx_power(obj.olt)
 
     @staticmethod
+    def get_serial_number(obj):
+        return display_onu_serial(obj.olt, obj.serial)
+
+    @staticmethod
     def _as_iso(value):
         if not value:
             return None
@@ -161,7 +165,7 @@ class ONUNestedSerializer(serializers.ModelSerializer):
             'onu_number': obj.onu_id,
             'name': obj.name,
             'client_name': obj.name,
-            'serial_number': obj.serial,
+            'serial_number': self.get_serial_number(obj),
             'status': obj.status,
             'disconnect_reason': disconnect_reason,
             'offline_since': offline_since,
@@ -676,6 +680,7 @@ class OLTSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('blade_ips must be a list of {ip, port} objects.')
         import ipaddress
         cleaned = []
+        seen = set()
         for entry in value:
             if not isinstance(entry, dict):
                 raise serializers.ValidationError('Each blade must be an object with "ip" and "port".')
@@ -695,6 +700,10 @@ class OLTSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(f'Invalid port for blade {ip_str}.')
             if port < 1 or port > 65535:
                 raise serializers.ValidationError(f'Port must be between 1 and 65535 for blade {ip_str}.')
+            blade_key = (ip_str, port)
+            if blade_key in seen:
+                raise serializers.ValidationError(f'Duplicate blade entry: {ip_str}:{port}.')
+            seen.add(blade_key)
             cleaned.append({"ip": ip_str, "port": port})
         return cleaned if cleaned else None
 
@@ -1028,7 +1037,7 @@ class ONUSerializer(serializers.ModelSerializer):
 
     olt_name = serializers.CharField(source='olt.name', read_only=True)
     client_name = serializers.CharField(source='name', read_only=True)
-    serial_number = serializers.CharField(source='serial', read_only=True)
+    serial_number = serializers.SerializerMethodField()
     slot = serializers.IntegerField(source='slot_ref_id', read_only=True)
     pon = serializers.IntegerField(source='pon_ref_id', read_only=True)
     slot_key = serializers.CharField(source='slot_ref.slot_key', read_only=True)
@@ -1060,6 +1069,10 @@ class ONUSerializer(serializers.ModelSerializer):
             'last_discovered_at',
         ]
         read_only_fields = ['id', 'last_discovered_at']
+
+    @staticmethod
+    def get_serial_number(obj):
+        return display_onu_serial(obj.olt, obj.serial)
 
 
 class ONULogSerializer(serializers.ModelSerializer):

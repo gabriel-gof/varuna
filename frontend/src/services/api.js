@@ -2,6 +2,7 @@
  * API Service - Axios instance with interceptors
  */
 import axios from 'axios'
+import { clearStoredAuthToken, getStoredAuthToken } from './authState'
 
 // Create axios instance with base configuration
 const api = axios.create({
@@ -16,7 +17,7 @@ const api = axios.create({
 api.interceptors.request.use(
   (config) => {
     // Add auth token if available
-    const token = localStorage.getItem('auth_token')
+    const token = getStoredAuthToken()
     if (token) {
       config.headers.Authorization = `Token ${token}`
     }
@@ -37,7 +38,7 @@ api.interceptors.response.use(
     if (error.response) {
       switch (error.response.status) {
         case 401:
-          localStorage.removeItem('auth_token')
+          clearStoredAuthToken('unauthorized')
           break
         case 403:
           console.warn('Forbidden request')
@@ -50,7 +51,9 @@ api.interceptors.response.use(
           break
       }
     } else if (error.request) {
-      console.error('No response received:', error.request)
+      if (!error.config?.silentNoResponse) {
+        console.error('No response received:', error.request)
+      }
     } else {
       console.error('Request error:', error.message)
     }

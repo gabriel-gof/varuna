@@ -15,7 +15,12 @@ from topology.services.fit_collector_service import FITCollectorError, fit_colle
 from topology.services.olt_health_service import mark_olt_reachable, mark_olt_unreachable
 from topology.services.topology_counter_service import topology_counter_service
 from topology.services.unm_service import UNMServiceError, unm_service
-from topology.services.vendor_profile import COLLECTOR_TYPE_FIT_TELNET, get_collector_type, parse_onu_index
+from topology.services.vendor_profile import (
+    COLLECTOR_TYPE_FIT_TELNET,
+    get_collector_transport,
+    get_collector_type,
+    parse_onu_index,
+)
 from topology.services.zabbix_service import normalize_discovery_onu_name, zabbix_service
 
 
@@ -443,7 +448,11 @@ class Command(BaseCommand):
                     if entry["name"] and existing.name != entry["name"]:
                         existing.name = entry["name"]
                         dirty = True
-                    elif entry.get("allow_blank_name_update") and existing.name != "":
+                    elif (
+                        not entry["name"]
+                        and entry.get("allow_blank_name_update")
+                        and existing.name != ""
+                    ):
                         existing.name = ""
                         dirty = True
                     elif (
@@ -502,6 +511,7 @@ class Command(BaseCommand):
             topology_counter_service.refresh_olt(olt.id)
         except Exception:
             logger.exception("OLT %s discovery: failed to refresh cached topology counters.", olt.id)
+            topology_counter_service.clear_olt(olt.id)
         cache_service.invalidate_topology_structure_cache(olt.id)
         return created, updated
 
@@ -589,7 +599,7 @@ class Command(BaseCommand):
                 "onu_id": int(row["onu_id"]),
                 "snmp_index": f"{row['slot_id']}/{row['interface']}:{int(row['onu_id'])}",
                 "name": str(row.get("name") or "").strip(),
-                "serial": "",
+                "serial": str(row.get("mac") or "").strip(),
                 "allow_blank_name_update": True,
             }
             for row in fit_rows
@@ -604,8 +614,9 @@ class Command(BaseCommand):
             now=now,
         )
         self._mark_discovery_result(olt, success=True, dry_run=dry_run)
+        transport = str(get_collector_transport(olt) or "collector").strip().upper()
         self.stdout.write(
-            f"OLT {olt.id}: discovered {len(normalized_entries)} ONUs via FIT Telnet "
+            f"OLT {olt.id}: discovered {len(normalized_entries)} ONUs via FIT {transport} "
             f"(created={created}, updated={updated})."
         )
 

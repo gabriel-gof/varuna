@@ -23,6 +23,27 @@ class TopologyCounterService:
     Maintains denormalized topology counters for fast OLT/settings reads.
     """
 
+    def clear_olt(self, olt_id: int) -> None:
+        OLTSlot.objects.filter(olt_id=olt_id, is_active=True).update(
+            cached_pon_count=None,
+            cached_onu_count=None,
+            cached_online_count=None,
+            cached_offline_count=None,
+        )
+        OLTPON.objects.filter(olt_id=olt_id, is_active=True).update(
+            cached_onu_count=None,
+            cached_online_count=None,
+            cached_offline_count=None,
+        )
+        OLT.objects.filter(id=olt_id).update(
+            cached_slot_count=None,
+            cached_pon_count=None,
+            cached_onu_count=None,
+            cached_online_count=None,
+            cached_offline_count=None,
+            cached_counts_at=None,
+        )
+
     @staticmethod
     def _count_online(rows: Iterable[Dict]) -> Dict[int, Dict[str, int]]:
         result: Dict[int, Dict[str, int]] = {}

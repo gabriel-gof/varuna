@@ -285,6 +285,7 @@ class Command(BaseCommand):
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:
                 logger.exception("OLT %s polling: failed to refresh cached topology counters.", olt.id)
+                topology_counter_service.clear_olt(olt.id)
 
         self.stdout.write(
             f"OLT {olt.id}: polled {updated} ONUs "
@@ -828,6 +829,7 @@ class Command(BaseCommand):
                 topology_counter_service.refresh_olt(olt.id)
             except Exception:
                 logger.exception("OLT %s polling: failed to refresh cached topology counters.", olt.id)
+                topology_counter_service.clear_olt(olt.id)
 
         self.stdout.write(
             f"OLT {olt.id}: polled {updated} ONUs "

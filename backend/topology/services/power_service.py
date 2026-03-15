@@ -14,7 +14,12 @@ from django.conf import settings
 from topology.models import ONU
 from topology.services.fit_collector_service import fit_collector_service
 from topology.services.power_values import normalize_power_value
-from topology.services.vendor_profile import COLLECTOR_TYPE_FIT_TELNET, get_collector_type
+from topology.services.vendor_profile import (
+    COLLECTOR_TRANSPORT_TELNET,
+    COLLECTOR_TYPE_FIT_TELNET,
+    get_collector_transport,
+    get_collector_type,
+)
 from topology.services.zabbix_service import zabbix_service
 
 
@@ -82,9 +87,10 @@ class PowerService:
     ) -> None:
         olt = olt_onus[0].olt
         eligible_onus: List[ONU] = []
+        transport = str(get_collector_transport(olt) or "").strip().lower()
 
         for onu in olt_onus:
-            if int(getattr(onu, "onu_id", 0) or 0) > 64:
+            if transport == COLLECTOR_TRANSPORT_TELNET and int(getattr(onu, "onu_id", 0) or 0) > 64:
                 metrics["skipped_unsupported"] = int(metrics.get("skipped_unsupported", 0) or 0) + 1
                 results[onu.id] = self._build_empty_payload(onu, skipped_reason="unsupported_onu_id")
                 continue
