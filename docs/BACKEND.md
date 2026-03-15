@@ -5,9 +5,11 @@
 - PostgreSQL
 - Redis
 - Collector backend:
-  - `zabbix`: Zabbix API (`api_jsonrpc.php`) for standard SNMP/Zabbix-backed vendors.
+  - `zabbix`: Zabbix-backed vendors use two complementary channels:
+    - **Zabbix DB (read-only PostgreSQL)** for ALL routine data reads: `get_items_by_keys()` (bulk item metadata + latest values for status, power, reachability), `get_latest_valid_power_history_samples()` (power history fallback for stale items), `fetch_previous_status_samples()` (disconnect window calculation), `get_items_by_key_prefix()` (discovery fallback reconstruction). `ZABBIX_DB_ENABLED=True` is required for production. If a DB read fails, it is logged and an empty result is returned — there is no silent JSON-RPC API fallback.
+    - **Zabbix API (JSON-RPC)** ONLY for commands and management: `task.create` (type 6, force immediate item check), `host.create`/`host.update`/`host.delete` (OLT host management), template linking, macro sync, tag sync, `discoveryrule.get` (LLD rule metadata for `execute_item_now_by_key`), `host.get` (resolving OLT to Zabbix hostid).
+    - **Timeline reads** (`get_history_series()` in alarm-history detail view) still use the JSON-RPC API — these are low-frequency per-ONU detail views, not hot-path collection.
   - `fit_telnet`: direct FIT collector for `FIT / FNCS4000`, with HTTP web UI scraping as the default transport and Telnet CLI as an explicit fallback.
-- Zabbix-backed latest status/power reads use a read-only PostgreSQL path (`DATABASES['zabbix']`) for `items` latest-value fields, power history, and previous-status-sample lookups when `ZABBIX_DB_ENABLED=1`. There is no JSON-RPC API fallback for these paths; if the DB read fails, the method logs an error and returns empty results.
 
 ## Naming and Boundaries
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
@@ -32,7 +34,7 @@
 - `backend/topology/api/serializers.py`: API serialization.
 - `backend/topology/api/auth_views.py`: auth endpoints (login, logout, me, change-password).
 - `backend/topology/api/auth_utils.py`: role resolution and permission helpers.
-- `backend/topology/services/zabbix_service.py`: Zabbix integration (API host/discovery/manual actions plus optional direct PostgreSQL latest-item reads for status/power hot paths).
+- `backend/topology/services/zabbix_service.py`: Zabbix integration — read-only PostgreSQL for all routine data reads (status, power, reachability, discovery fallback), JSON-RPC API for host management, template sync, and manual upstream actions only.
 - `backend/topology/services/fit_collector_service.py`: FIT `FNCS4000` direct collector (HTTP web UI default, Telnet fallback) for reachability, discovery/status rows, and per-ONU power.
 - `backend/topology/services/collector_service.py`: collector-mode dispatcher (Zabbix vs FIT transport-aware direct collector). `get_collector_transport()` returns transport values (`http` / `telnet`) only; collector type remains a separate decision.
 - `backend/topology/services/vendor_profile.py`: vendor index/status parsing helpers.
@@ -223,8 +225,8 @@ Create semantics were also hardened:
 ## Collector Runtime
 - Direct backend SNMP polling/walk code was removed from runtime services and commands.
 - Runtime is collector-aware:
-  - Zabbix vendors use Zabbix API for discovery, history lookups, and manual upstream actions.
-  - Zabbix vendors use direct PostgreSQL latest-item reads and power history reads when `ZABBIX_DB_ENABLED=1`; there is no JSON-RPC API fallback -- if the DB read fails, the service logs an error and returns empty results.
+  - Zabbix vendors use direct PostgreSQL reads (read-only Zabbix DB alias) for all routine data: latest item values (status/power/reachability), power history samples, previous status samples, and discovery fallback item enumeration. `ZABBIX_DB_ENABLED=1` is required for production; there is no JSON-RPC API fallback for these paths.
+  - Zabbix vendors use Zabbix API (JSON-RPC) only for commands and management: host CRUD, template linking, macro sync, `task.create` (immediate item execution), `discoveryrule.get`, `host.get`, and per-ONU alarm-history timeline reads (`get_history_series`).
   - FIT `FNCS4000` uses direct HTTP reads from the device web UI for discovery/status and per-ONU power by default. Explicit `collector.transport=telnet` keeps the legacy CLI path available.
 - Manual and scoped refresh paths request immediate upstream execution only on Zabbix-backed vendors.
 - First-ever discovery (no ONUs exist yet) automatically triggers upstream Zabbix LLD execution (`refresh_upstream`) on Zabbix-backed vendors so newly created OLTs don't wait for the Zabbix LLD schedule.
@@ -461,9 +463,9 @@ Operational read paths now use a hybrid model: structure cache for slow-changing
   - Zabbix-backed OLTs automatically read the latest power already stored in Zabbix whenever the read-only Zabbix DB alias is enabled (`ZABBIX_DB_ENABLED=1`);
   - otherwise the backend falls back to the fast local `ONU.latest_*` snapshot read;
   - the legacy `POWER_LATEST_READS_USE_ZABBIX=true` switch remains available only as an explicit opt-in for non-DB environments and should not be used as the primary production mode.
-- The Zabbix latest-value path is DB-first:
+- The Zabbix latest-value path is DB-only:
   - current item values come through `ZabbixService.get_items_by_keys()` (`items` + `item_rtdata` + `history_*` on the read-only Zabbix DB alias),
-  - if the current power value is invalid/sentinel, Varuna can look for the latest valid history sample through the same read-only Zabbix DB path first and falls back to JSON-RPC history only if the DB read fails.
+  - if the current power value is invalid/sentinel, Varuna looks for the latest valid history sample through `get_latest_valid_power_history_samples()` on the same read-only Zabbix DB path. There is no JSON-RPC API fallback; if the DB read fails or returns no data, the result stays empty.
 - Large live latest-power reads can cap history fallback fanout:
   - `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS` (default `256`) keeps history fallback enabled for small selections like single ONU / typical PON reads,
   - larger reads skip history fallback and use only current latest values from Zabbix to keep report latency bounded.
@@ -512,7 +514,7 @@ These fields are used by the frontend for stale-data validation and interval-dri
 Power refresh contract:
 - Power readings displayed in topology sidebar/latest-report surfaces come from the latest synced `ONU` snapshot (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`), not from historical `ONUPowerSample`.
 - Scheduler latest-power sync now respects each OLT `power_interval_seconds` directly for every collector type, including Zabbix-backed OLTs. Varuna no longer overrides a slower configured power cadence with a separate fast-sync cap.
-- Scheduled Zabbix power sync is intentionally a light current-item read only. It uses `item.get` latest values to update the local `ONU` snapshot and does not walk Zabbix history in the normal scheduler path.
+- Scheduled Zabbix power sync is intentionally a light current-item read only. It uses `get_items_by_keys()` (Zabbix DB latest values) to update the local `ONU` snapshot and does not walk Zabbix history in the normal scheduler path.
 - Manual/scoped power refresh may still use history fallback for invalid current Zabbix power items (`0`, `-80`, unsupported, or missing clock) after an explicit upstream refresh request, because that is an operator-driven live-read path rather than routine background sync.
 - Scheduler snapshot sync preserves an existing online ONU power snapshot when the current Zabbix power item is empty/invalid, so a bad current item does not wipe a previously good snapshot during routine sync. Offline/unknown ONUs still clear their latest snapshot.
 - Manual PON power refresh remains a live `refresh=true` read path; it should improve freshness by collecting and persisting a newer sample, not by repopulating cache.
