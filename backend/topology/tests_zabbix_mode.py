@@ -6820,3 +6820,49 @@ var lineNum=(onutable.length)/22;
         self.assertEqual(len(power_history), 1)
         self.assertEqual(power_history[0].get("onu_rx_power"), -21.94)
         self.assertEqual(power_history[0].get("olt_rx_power"), -27.75)
+
+    # ------------------------------------------------------------------
+    # get_items_by_key_prefix — DB-only (no API fallback)
+    # ------------------------------------------------------------------
+
+    @override_settings(ZABBIX_DB_ENABLED=True)
+    @patch.object(ZabbixService, "_call")
+    def test_get_items_by_key_prefix_uses_db_not_api(self, api_call_mock):
+        """When ZABBIX_DB_ENABLED=True, get_items_by_key_prefix queries the DB
+        directly and never calls the JSON-RPC API."""
+        service = ZabbixService()
+        with patch.object(
+            service,
+            "_get_latest_history_rows_from_db",
+            return_value={
+                9001: {"lastvalue": "online", "lastclock": 1772000100, "prevvalue": "offline"},
+            },
+        ) as db_history_mock:
+            with patch("topology.services.zabbix_service.connections") as mock_conns:
+                mock_cursor = mock_conns.__getitem__.return_value.cursor.return_value.__enter__.return_value
+                mock_cursor.fetchall.return_value = [
+                    (9001, 'onuStatusValue[1/1:1]', 'ONU 1/1:1 Status', 0, 1, 0),
+                ]
+                result = service.get_items_by_key_prefix("10001", 'onuStatusValue[')
+
+        api_call_mock.assert_not_called()
+        db_history_mock.assert_called_once()
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["itemid"], "9001")
+        self.assertEqual(result[0]["key_"], "onuStatusValue[1/1:1]")
+        self.assertEqual(result[0]["name"], "ONU 1/1:1 Status")
+        self.assertEqual(result[0]["lastvalue"], "online")
+        self.assertEqual(result[0]["lastclock"], 1772000100)
+        self.assertEqual(result[0]["state"], "0")
+
+    @override_settings(ZABBIX_DB_ENABLED=False)
+    @patch.object(ZabbixService, "_call")
+    def test_get_items_by_key_prefix_returns_empty_when_db_disabled(self, api_call_mock):
+        """When ZABBIX_DB_ENABLED=False, get_items_by_key_prefix returns []
+        and does not call the API."""
+        service = ZabbixService()
+        result = service.get_items_by_key_prefix("10001", 'onuStatusValue[')
+
+        self.assertEqual(result, [])
+        api_call_mock.assert_not_called()

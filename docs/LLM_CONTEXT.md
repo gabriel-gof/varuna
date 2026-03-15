@@ -45,7 +45,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - ONU item prototypes should carry `slot={#SLOT}` and `pon={#PON}` tags so operators can filter item data by slot/PON directly in Zabbix.
 - Template-first hygiene is mandatory: serial/status/power normalization belongs to Zabbix template preprocessing. Frontend must not implement vendor-specific data repair.
 - Manual/scoped refresh can request immediate Zabbix item execution; this is capped by `ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS` (default `512`) to avoid overload on global runs.
-- Direct latest-item DB reads are intentionally limited to normal status/power hot paths. Discovery control, manual `Execute now`, and history/timeline queries remain on the Zabbix API path.
+- Direct latest-item DB reads cover status/power hot paths and discovery-fallback prefix searches. Discovery control, manual `Execute now`, and history/timeline queries remain on the Zabbix API path.
 - `get_collector_transport()` is transport-only (`http` / `telnet`). Do not reuse collector-type values like `zabbix` where a transport string is expected.
 - Reachability is sentinel-only: shared template `Varuna SNMP Availability` provides `varunaSnmpAvailability` (sysName.0) at 30s cadence, and backend uses that item as the single source of truth for OLT SNMP availability.
 - Sentinel checks are fail-closed: item must be present, enabled, supported, and fresh (`ZABBIX_AVAILABILITY_STALE_SECONDS`).
@@ -62,6 +62,7 @@ Varuna is an OLT/ONU monitoring platform focused on topology-first operational v
 - `GET /api/onu/{id}/power/`, `POST /api/onu/batch-power/` with `refresh=false`, and `GET /api/onu/power-report/` automatically use live Zabbix latest values for Zabbix-backed OLTs whenever `ZABBIX_DB_ENABLED=1`; otherwise they fall back to the persisted `ONU.latest_*` snapshot (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`). When `ZABBIX_DB_ENABLED=1` and the Zabbix live read returns no data for a specific ONU (e.g. missing Zabbix item), the persisted snapshot is used as fallback for that ONU.
 - Live Zabbix latest-power reads are DB-only: both current item reads and power history sample reads use the read-only Zabbix DB alias exclusively. There is no JSON-RPC API fallback; if the DB read fails or returns partial results, only the DB-provided data is returned.
 - Previous-status-sample lookups (for disconnect window calculation during online-to-offline transitions) also use direct Zabbix DB queries (`history_str` then `history_uint`). No JSON-RPC API fallback; if DB is disabled or fails, the disconnect window falls back to detection-point mode.
+- `get_items_by_key_prefix()` (rare discovery fallback) uses direct Zabbix DB queries (`items` + `item_rtdata` + `history_*` via `LIKE` prefix match). No JSON-RPC API fallback; if DB is disabled or fails, returns empty list.
 - Large live latest-power reads can skip history fallback with `POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS`; this keeps `power-report` bounded while smaller reads still preserve the richer fallback path.
 - Production caveat: on very large OLT reads, this bound can make `power-report` differ from the latest valid history-backed sample if the current Zabbix power item is invalid.
 - `refresh=true` still runs live collection and persists both the fast snapshot and historical `ONUPowerSample`.

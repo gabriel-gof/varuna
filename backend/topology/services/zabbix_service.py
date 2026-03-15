@@ -1485,24 +1485,93 @@ class ZabbixService:
         normalized_prefix = str(key_prefix or "").strip()
         if not normalized_prefix:
             return []
-        rows = self._call(
-            "item.get",
-            {
-                "output": ["itemid", "key_", "name", "lastclock", "lastvalue", "state"],
-                "hostids": [hostid],
-                "search": {"key_": normalized_prefix},
-                "startSearch": True,
-                "searchByAny": True,
-                "sortfield": "itemid",
-                "limit": max(int(limit or 0), 1),
-            },
-        )
-        filtered: List[Dict] = []
-        for row in rows:
-            key = str((row or {}).get("key_", "")).strip()
-            if key.startswith(normalized_prefix):
-                filtered.append(row)
-        return filtered
+
+        normalized_hostid = _to_int_or_none(hostid)
+        if normalized_hostid is None:
+            return []
+
+        if not self._db_latest_items_enabled():
+            logger.warning(
+                "get_items_by_key_prefix: ZABBIX_DB_ENABLED is False; returning empty."
+            )
+            return []
+
+        try:
+            zabbix_conn = connections["zabbix"]
+        except Exception:
+            logger.error(
+                "get_items_by_key_prefix: could not obtain Zabbix DB connection."
+            )
+            return []
+
+        effective_limit = max(int(limit or 0), 1)
+
+        try:
+            with zabbix_conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        i.itemid,
+                        i.key_,
+                        i.name,
+                        i.status,
+                        i.value_type,
+                        COALESCE(r.state, 0)
+                    FROM items i
+                    LEFT JOIN item_rtdata r ON r.itemid = i.itemid
+                    WHERE i.hostid = %s
+                      AND i.key_ LIKE %s
+                      AND i.status = 0
+                    ORDER BY i.itemid
+                    LIMIT %s
+                    """,
+                    [normalized_hostid, normalized_prefix + "%", effective_limit],
+                )
+                metadata_rows = cursor.fetchall()
+
+                itemids_by_value_type: Dict[int, List[int]] = defaultdict(list)
+                for row in metadata_rows:
+                    value_type = _to_int_or_none(row[4])
+                    itemid = _to_int_or_none(row[0])
+                    if value_type is None or itemid is None:
+                        continue
+                    itemids_by_value_type[value_type].append(itemid)
+
+                history_by_itemid = self._get_latest_history_rows_from_db(
+                    cursor,
+                    itemids_by_value_type=itemids_by_value_type,
+                )
+                if history_by_itemid is None:
+                    history_by_itemid = {}
+
+                filtered: List[Dict] = []
+                for row in metadata_rows:
+                    itemid = _to_int_or_none(row[0])
+                    if itemid is None:
+                        continue
+                    key = str(row[1] or "").strip()
+                    if not key.startswith(normalized_prefix):
+                        continue
+                    history_row = history_by_itemid.get(itemid, {})
+                    filtered.append({
+                        "itemid": str(itemid),
+                        "key_": key,
+                        "name": str(row[2] or "").strip(),
+                        "lastvalue": history_row.get("lastvalue"),
+                        "lastclock": history_row.get("lastclock"),
+                        "state": str(row[5]) if row[5] is not None else "0",
+                    })
+                return filtered
+        except Exception:
+            logger.exception(
+                "get_items_by_key_prefix: Zabbix DB query failed for hostid=%s.",
+                normalized_hostid,
+            )
+            try:
+                zabbix_conn.close_if_unusable_or_obsolete()
+            except Exception:
+                pass
+            return []
 
     def get_latest_item_by_key_prefix(self, hostid: str, key_prefix: str) -> Optional[Dict]:
         normalized_prefix = str(key_prefix or "").strip()
