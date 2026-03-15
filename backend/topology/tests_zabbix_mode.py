@@ -4326,32 +4326,6 @@ var lineNum=(onutable.length)/22;
         db_reader_mock.assert_called_once_with("10001", ["onuStatusValue[1]"])
         api_call_mock.assert_not_called()
 
-    def test_get_items_by_keys_falls_back_to_api_when_zabbix_db_reader_unavailable(self):
-        service = ZabbixService()
-        api_rows = [
-            {
-                "itemid": "5002",
-                "key_": "onuStatusValue[2]",
-                "lastvalue": "online",
-                "prevvalue": "offline",
-                "lastclock": "1710000300",
-                "state": "0",
-                "status": "0",
-                "error": "",
-                "value_type": "4",
-            }
-        ]
-
-        with (
-            patch.object(service, "_get_items_by_keys_from_db", return_value=None) as db_reader_mock,
-            patch.object(service, "_call", return_value=api_rows) as api_call_mock,
-        ):
-            rows = service.get_items_by_keys("10002", ["onuStatusValue[2]"])
-
-        self.assertEqual(rows.get("onuStatusValue[2]", {}).get("itemid"), "5002")
-        db_reader_mock.assert_called_once_with("10002", ["onuStatusValue[2]"])
-        api_call_mock.assert_called_once()
-
     @override_settings(ZABBIX_DB_ENABLED=True)
     @patch.object(ZabbixService, "_call")
     @patch.object(ZabbixService, "_get_items_by_keys_from_db", return_value=None)

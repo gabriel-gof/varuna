@@ -701,5 +701,6 @@ Current tests validate:
 - history/report APIs (`power-report`, `alarm-clients`, `alarm-history`) and `prune_history` retention behavior, alarm-history `start_date`/`end_date` date-range filtering and invalid-date fallback, Zabbix-timeline source selection (`source=zabbix|varuna`) and interval reconstruction,
 - serializer returns `unknown` disconnect reason for offline ONUs without active log,
 - Fiberhome OID-column index parsing (`index_from: oid_columns` with `column_map` and byte2 onu_id extraction), status mapping (0-3), unmapped status defaults, nameless discovery (empty `onu_name_oid`), OLT Rx index translation (`olt_rx_index_formula: fiberhome_pon_onu`), and total index-parse failure guard (all-skipped preserves existing ONUs).
+- Zabbix DB-only read paths: `get_items_by_keys()` returns empty when DB reader is unavailable (no API fallback), `get_items_by_keys()` prefers DB rows when DB is enabled, `get_items_by_key_prefix()` returns empty when DB is disabled, and `get_latest_valid_power_history_samples()` returns empty on DB failure (no API fallback).
 
 Files: `backend/topology/tests.py` (entrypoint) and `backend/topology/tests_zabbix_mode.py` (active suite)
