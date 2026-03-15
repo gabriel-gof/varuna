@@ -1573,36 +1573,6 @@ class ZabbixService:
                 pass
             return []
 
-    def get_latest_item_by_key_prefix(self, hostid: str, key_prefix: str) -> Optional[Dict]:
-        normalized_prefix = str(key_prefix or "").strip()
-        if not normalized_prefix:
-            return None
-        # Some Zabbix versions reject sort by "lastclock" in item.get.
-        # Fetch a bounded prefix set and pick the newest clock client-side.
-        rows = self._call(
-            "item.get",
-            {
-                "output": ["itemid", "key_", "lastclock", "lastvalue"],
-                "hostids": [hostid],
-                "search": {"key_": normalized_prefix},
-                "startSearch": True,
-                "searchByAny": True,
-                "sortfield": "itemid",
-                "limit": 20000,
-            },
-        )
-        latest_row = None
-        latest_clock = -1
-        for row in rows:
-            key = str((row or {}).get("key_", "")).strip()
-            if not key.startswith(normalized_prefix):
-                continue
-            row_clock = _to_int_or_none((row or {}).get("lastclock")) or 0
-            if row_clock > latest_clock:
-                latest_clock = row_clock
-                latest_row = row
-        return latest_row
-
     def get_discovery_rule(self, hostid: str, key: str) -> Optional[Dict]:
         rows = self._call(
             "discoveryrule.get",
@@ -1667,29 +1637,6 @@ class ZabbixService:
             if read_at:
                 return None, read_at
         return None, None
-
-    def get_latest_valid_power_history_sample(
-        self,
-        *,
-        itemid: str,
-        value_type: Optional[str] = None,
-        time_from: Optional[int] = None,
-        limit: int = 10,
-    ) -> Tuple[Optional[float], Optional[str], Optional[int]]:
-        rows = self.get_history_series(
-            itemid=itemid,
-            value_type=value_type,
-            time_from=time_from,
-            sortorder="DESC",
-            limit=max(int(limit or 0), 1),
-        )
-        for row in rows:
-            value = normalize_power_value(_to_float_or_none((row or {}).get("value")))
-            clock_epoch = _to_int_or_none((row or {}).get("clock_epoch"))
-            if value is None or clock_epoch is None or clock_epoch <= 0:
-                continue
-            return value, _from_epoch_to_iso(clock_epoch), clock_epoch
-        return None, None, None
 
     def get_latest_valid_power_history_samples(
         self,

@@ -3620,52 +3620,6 @@ var lineNum=(onutable.length)/22;
         self.assertEqual(row.get("power_read_at"), "2026-03-08T00:00:37+00:00")
         self.assertEqual(read_at, "2026-03-08T00:00:37+00:00")
 
-    def test_get_latest_valid_power_history_samples_falls_back_per_item_when_batch_result_is_incomplete(self):
-        service = ZabbixService()
-        with (
-            patch.object(
-                service,
-                "_call",
-                return_value=[
-                    {"itemid": "2001", "clock": "1772928037", "value": "-23.01"},
-                    {"itemid": "2002", "clock": "1772928012", "value": "0"},
-                ],
-            ) as call_mock,
-            patch.object(
-                service,
-                "get_latest_valid_power_history_sample",
-                return_value=(-26.90, "2026-03-08T00:00:12+00:00", 1772928012),
-            ) as single_fallback_mock,
-        ):
-            rows = service.get_latest_valid_power_history_samples(
-                item_specs={"2001": "0", "2002": "0"},
-                time_from=1772000000,
-                limit_per_item=10,
-            )
-
-        call_mock.assert_called_once()
-        single_fallback_mock.assert_called_once_with(
-            itemid="2002",
-            value_type="0",
-            time_from=1772000000,
-            limit=10,
-        )
-        self.assertEqual(
-            rows,
-            {
-                "2001": {
-                    "value": -23.01,
-                    "clock": "2026-03-08T00:00:37+00:00",
-                    "clock_epoch": 1772928037,
-                },
-                "2002": {
-                    "value": -26.90,
-                    "clock": "2026-03-08T00:00:12+00:00",
-                    "clock_epoch": 1772928012,
-                },
-            },
-        )
-
     @override_settings(ZABBIX_DB_ENABLED=True)
     def test_get_latest_valid_power_history_samples_prefers_db_before_api(self):
         service = ZabbixService()
