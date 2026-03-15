@@ -1129,7 +1129,7 @@ export const SettingsPanel = ({
                                         updated[idx] = { ...updated[idx], port: e.target.value }
                                         setField('blade_ips', updated)
                                       }}
-                                      placeholder="55523"
+                                      placeholder="80"
                                     />
                                     {arr.length > 1 && (
                                     <button
@@ -1615,7 +1615,7 @@ export const SettingsPanel = ({
                                         updated[idx] = { ...updated[idx], port: e.target.value }
                                         setEditField(oltId, 'blade_ips', updated)
                                       }}
-                                      placeholder="55523"
+                                      placeholder="80"
                                     />
                                     {arr.length > 1 && (
                                     <button

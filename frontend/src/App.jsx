@@ -645,6 +645,7 @@ const App = () => {
   const selectedOltIdsInitializedRef = useRef(false)
   const [olts, setOlts] = useState([])
   const [vendorProfiles, setVendorProfiles] = useState([])
+  const vendorProfilesRef = useRef([])
   const [loading, setLoading] = useState(false)
   const [vendorLoading, setVendorLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -854,10 +855,12 @@ const App = () => {
   }, [hydrateOltTopologiesInBackground, hydrateOltTopology, selectedOltIds, selectedPonContext, selectedPonId, t])
 
   const fetchVendorProfiles = useCallback(async () => {
-    setVendorLoading(true)
+    setVendorLoading((prev) => vendorProfilesRef.current.length === 0 ? true : prev)
     try {
       const res = await api.get('/vendor-profiles/')
-      setVendorProfiles(normalizeList(res.data))
+      const profiles = normalizeList(res.data)
+      setVendorProfiles(profiles)
+      vendorProfilesRef.current = profiles
     } catch {
       // Keep previously loaded vendor profiles if refresh fails.
     } finally {

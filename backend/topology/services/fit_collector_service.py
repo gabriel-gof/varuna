@@ -210,15 +210,18 @@ class _FITTelnetSession:
 
 
 class _FITHTTPSession:
-    def __init__(self, olt: OLT, *, host: str | None = None):
+    def __init__(self, olt: OLT, *, host: str | None = None, port: int | None = None):
         self.olt = olt
         self.host = str(host or olt.ip_address or "").strip()
+        self.port = int(port or 80)
         self.username = str(getattr(olt, "telnet_username", "") or "")
         self.password = str(getattr(olt, "telnet_password", "") or "")
         self.timeout = float(getattr(settings, "FIT_HTTP_TIMEOUT_SECONDS", 12) or 12)
 
     def _url(self, path: str) -> str:
         normalized_path = str(path or "").lstrip("/")
+        if self.port and self.port != 80:
+            return f"http://{self.host}:{self.port}/{normalized_path}"
         return f"http://{self.host}/{normalized_path}"
 
     def get_page(self, path: str) -> str:
@@ -465,7 +468,7 @@ class FITCollectorService:
         errors: List[str] = []
         for blade in blades:
             try:
-                session = _FITHTTPSession(olt, host=blade["ip"])
+                session = _FITHTTPSession(olt, host=blade["ip"], port=blade.get("port"))
                 session.get_page(probe_path)
             except FITCollectorError as exc:
                 errors.append(str(self._blade_error(blade["ip"], exc)))
@@ -686,7 +689,7 @@ class FITCollectorService:
             else:
                 slot_interfaces = default_interfaces
             try:
-                session = _FITHTTPSession(olt, host=blade["ip"])
+                session = _FITHTTPSession(olt, host=blade["ip"], port=blade.get("port"))
                 all_rows = self._parse_http_all_status_page(
                     session.get_page(self._http_all_onu_path()),
                     slot_id=slot_id,
@@ -780,7 +783,7 @@ class FITCollectorService:
                 errors.append(str(exc))
                 continue
             try:
-                session = _FITHTTPSession(olt, host=blade["ip"])
+                session = _FITHTTPSession(olt, host=blade["ip"], port=blade.get("port"))
                 all_rows = self._parse_http_all_status_page(
                     session.get_page(self._http_all_onu_path()),
                     slot_id=slot_id,
