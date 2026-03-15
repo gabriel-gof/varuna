@@ -3706,6 +3706,63 @@ var lineNum=(onutable.length)/22;
             },
         )
 
+    @override_settings(ZABBIX_DB_ENABLED=True)
+    def test_get_latest_valid_power_history_samples_partial_db_returns_only_db_results(self):
+        """When DB returns partial data (only some items), the method returns
+        ONLY what DB gave -- no API call for remaining items."""
+        service = ZabbixService()
+        partial_db_results = {
+            "2001": {
+                "value": -23.01,
+                "clock": "2026-03-08T00:00:37+00:00",
+                "clock_epoch": 1772928037,
+            }
+            # item "2002" intentionally missing from DB results
+        }
+        with (
+            patch.object(
+                service,
+                "_get_latest_valid_power_history_samples_from_db",
+                return_value=partial_db_results,
+            ) as db_mock,
+            patch.object(service, "_call") as call_mock,
+        ):
+            rows = service.get_latest_valid_power_history_samples(
+                item_specs={"2001": "0", "2002": "0"},
+                time_from=1772000000,
+                limit_per_item=10,
+            )
+
+        db_mock.assert_called_once_with(
+            item_specs={"2001": "0", "2002": "0"},
+            time_from=1772000000,
+            limit_per_item=10,
+        )
+        call_mock.assert_not_called()
+        self.assertEqual(rows, partial_db_results)
+
+    @override_settings(ZABBIX_DB_ENABLED=True)
+    @patch.object(ZabbixService, "_call")
+    @patch.object(
+        ZabbixService,
+        "_get_latest_valid_power_history_samples_from_db",
+        return_value=None,
+    )
+    def test_get_latest_valid_power_history_samples_returns_empty_on_db_failure_no_api_fallback(
+        self, db_mock, call_mock
+    ):
+        """When DB returns None (failure), the method returns {} with no API fallback."""
+        service = ZabbixService()
+        rows = service.get_latest_valid_power_history_samples(
+            item_specs={"2001": "0"},
+            time_from=1772000000,
+            limit_per_item=10,
+        )
+
+        db_mock.assert_called_once()
+        call_mock.assert_not_called()
+        self.assertEqual(rows, {})
+
     def test_discovery_rows_fallback_to_status_items_huawei(self):
         service = ZabbixService()
         with (

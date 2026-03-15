@@ -1639,94 +1639,25 @@ class ZabbixService:
         if not normalized_specs:
             return {}
 
-        results: Dict[str, Dict[str, Any]] = {}
         db_results = self._get_latest_valid_power_history_samples_from_db(
             item_specs=normalized_specs,
             time_from=time_from,
             limit_per_item=limit_per_item,
         )
         if db_results is not None:
-            results.update(db_results)
-            normalized_specs = {
-                itemid: value_type
-                for itemid, value_type in normalized_specs.items()
-                if itemid not in results
-            }
-            if not normalized_specs:
-                return results
+            return db_results
 
-        normalized_time_from = _to_int_or_none(time_from)
-        normalized_limit_per_item = max(int(limit_per_item or 0), 1)
-        unresolved = set(normalized_specs.keys())
-        grouped_itemids: Dict[int, List[str]] = defaultdict(list)
-
-        for itemid, value_type in normalized_specs.items():
-            history_types = self._history_type_candidates(value_type=value_type)
-            primary_history_type = history_types[0] if history_types else 0
-            grouped_itemids[primary_history_type].append(itemid)
-
-        for history_type, group_itemids in grouped_itemids.items():
-            pending_itemids = [itemid for itemid in group_itemids if itemid in unresolved]
-            if not pending_itemids:
-                continue
-
-            limit = min(
-                max(len(pending_itemids) * normalized_limit_per_item * 4, len(pending_itemids)),
-                20000,
+        if self._db_latest_items_enabled():
+            logger.error(
+                "get_latest_valid_power_history_samples: DB read returned None for %d items; no API fallback",
+                len(normalized_specs),
             )
-            params: Dict[str, Any] = {
-                "output": ["itemid", "clock", "value"],
-                "history": history_type,
-                "itemids": pending_itemids,
-                "sortfield": "clock",
-                "sortorder": "DESC",
-                "limit": limit,
-            }
-            if normalized_time_from is not None and normalized_time_from >= 0:
-                params["time_from"] = normalized_time_from
-
-            rows = self._call("history.get", params)
-            if not isinstance(rows, list) or not rows:
-                continue
-
-            seen_rows_by_itemid: Dict[str, int] = defaultdict(int)
-            pending_set = set(pending_itemids)
-            for row in rows:
-                itemid = str((row or {}).get("itemid") or "").strip()
-                if not itemid or itemid not in pending_set or itemid not in unresolved:
-                    continue
-                if seen_rows_by_itemid[itemid] >= normalized_limit_per_item:
-                    continue
-                seen_rows_by_itemid[itemid] += 1
-
-                value = normalize_power_value(_to_float_or_none((row or {}).get("value")))
-                clock_epoch = _to_int_or_none((row or {}).get("clock"))
-                if value is None or clock_epoch is None or clock_epoch <= 0:
-                    continue
-
-                results[itemid] = {
-                    "value": value,
-                    "clock": _from_epoch_to_iso(clock_epoch),
-                    "clock_epoch": clock_epoch,
-                }
-                unresolved.discard(itemid)
-
-        for itemid in list(unresolved):
-            value, read_at, clock_epoch = self.get_latest_valid_power_history_sample(
-                itemid=itemid,
-                value_type=normalized_specs.get(itemid),
-                time_from=normalized_time_from,
-                limit=normalized_limit_per_item,
+        else:
+            logger.warning(
+                "get_latest_valid_power_history_samples: DB reader disabled and no API fallback for %d items",
+                len(normalized_specs),
             )
-            if value is None or clock_epoch is None or clock_epoch <= 0:
-                continue
-            results[itemid] = {
-                "value": value,
-                "clock": read_at or _from_epoch_to_iso(clock_epoch),
-                "clock_epoch": clock_epoch,
-            }
-
-        return results
+        return {}
 
     @staticmethod
     def _history_type_candidates(value_type: Optional[str] = None) -> List[int]:

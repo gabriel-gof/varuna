@@ -7,7 +7,7 @@
 - Collector backend:
   - `zabbix`: Zabbix API (`api_jsonrpc.php`) for standard SNMP/Zabbix-backed vendors.
   - `fit_telnet`: direct FIT collector for `FIT / FNCS4000`, with HTTP web UI scraping as the default transport and Telnet CLI as an explicit fallback.
-- Zabbix-backed latest status/power reads can optionally use a read-only PostgreSQL path (`DATABASES['zabbix']`) for `items` latest-value fields when `ZABBIX_DB_ENABLED=1`; JSON-RPC fallback remains automatic.
+- Zabbix-backed latest status/power reads use a read-only PostgreSQL path (`DATABASES['zabbix']`) for `items` latest-value fields and power history when `ZABBIX_DB_ENABLED=1`. There is no JSON-RPC API fallback for these paths; if the DB read fails, the method logs an error and returns empty results.
 
 ## Naming and Boundaries
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
@@ -224,7 +224,7 @@ Create semantics were also hardened:
 - Direct backend SNMP polling/walk code was removed from runtime services and commands.
 - Runtime is collector-aware:
   - Zabbix vendors use Zabbix API for discovery, history lookups, and manual upstream actions.
-  - Zabbix vendors can use direct PostgreSQL latest-item reads for normal status/power collection when `ZABBIX_DB_ENABLED=1`; JSON-RPC fallback remains automatic if the DB reader is unavailable or fails.
+  - Zabbix vendors use direct PostgreSQL latest-item reads and power history reads when `ZABBIX_DB_ENABLED=1`; there is no JSON-RPC API fallback -- if the DB read fails, the service logs an error and returns empty results.
   - FIT `FNCS4000` uses direct HTTP reads from the device web UI for discovery/status and per-ONU power by default. Explicit `collector.transport=telnet` keeps the legacy CLI path available.
 - Manual and scoped refresh paths request immediate upstream execution only on Zabbix-backed vendors.
 - First-ever discovery (no ONUs exist yet) automatically triggers upstream Zabbix LLD execution (`refresh_upstream`) on Zabbix-backed vendors so newly created OLTs don't wait for the Zabbix LLD schedule.
