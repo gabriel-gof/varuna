@@ -2284,47 +2284,82 @@ class ZabbixService:
     ) -> Dict[str, Dict[str, Optional[str]]]:
         """
         For each status itemid, fetch the most recent history sample older than the
-        provided current clock (epoch seconds).
+        provided current clock (epoch seconds).  Uses Zabbix DB directly.
         """
-        results: Dict[str, Dict[str, Optional[str]]] = {}
-        for raw_itemid, raw_current_clock in (item_clock_by_itemid or {}).items():
-            itemid = str(raw_itemid or "").strip()
-            current_clock = _to_int_or_none(raw_current_clock)
-            if not itemid or current_clock is None or current_clock <= 0:
-                continue
-
-            rows = self._call(
-                "history.get",
-                {
-                    "output": ["clock", "value"],
-                    "history": 1,
-                    "itemids": [itemid],
-                    "sortfield": "clock",
-                    "sortorder": "DESC",
-                    "limit": 5,
-                },
+        if not self._db_latest_items_enabled():
+            logger.warning(
+                "fetch_previous_status_samples: ZABBIX_DB_ENABLED is False; returning empty."
             )
+            return {}
 
-            previous_value = None
-            previous_clock = None
-            for row in rows:
-                sample_clock = _to_int_or_none((row or {}).get("clock"))
-                if sample_clock is None:
-                    continue
-                if sample_clock >= current_clock:
-                    continue
-                previous_clock = sample_clock
-                previous_value = str((row or {}).get("value") or "").strip().lower()
-                break
-
-            if previous_clock is None:
+        # --- normalise inputs ---
+        normalized: Dict[int, int] = {}
+        for raw_itemid, raw_current_clock in (item_clock_by_itemid or {}).items():
+            itemid = _to_int_or_none(raw_itemid)
+            current_clock = _to_int_or_none(raw_current_clock)
+            if itemid is None or itemid <= 0:
                 continue
+            if current_clock is None or current_clock <= 0:
+                continue
+            normalized[itemid] = current_clock
 
-            results[itemid] = {
-                "status": previous_value,
-                "clock_epoch": previous_clock,
-                "clock": _from_epoch_to_iso(previous_clock),
-            }
+        if not normalized:
+            return {}
+
+        try:
+            zabbix_conn = connections["zabbix"]
+        except Exception:
+            logger.error(
+                "fetch_previous_status_samples: could not obtain Zabbix DB connection."
+            )
+            return {}
+
+        results: Dict[str, Dict[str, Optional[str]]] = {}
+        try:
+            with zabbix_conn.cursor() as cursor:
+                for itemid, current_clock in normalized.items():
+                    # Try history_str first (value_type 1 — string statuses)
+                    cursor.execute(
+                        "SELECT clock, value FROM history_str "
+                        "WHERE itemid = %s AND clock < %s "
+                        "ORDER BY clock DESC LIMIT 1",
+                        [itemid, current_clock],
+                    )
+                    row = cursor.fetchone()
+
+                    if row is None:
+                        # Fallback: try history_uint (value_type 3)
+                        cursor.execute(
+                            "SELECT clock, value::text FROM history_uint "
+                            "WHERE itemid = %s AND clock < %s "
+                            "ORDER BY clock DESC LIMIT 1",
+                            [itemid, current_clock],
+                        )
+                        row = cursor.fetchone()
+
+                    if row is None:
+                        continue
+
+                    previous_clock = _to_int_or_none(row[0])
+                    previous_value = str(row[1] or "").strip().lower()
+                    if previous_clock is None or previous_clock <= 0:
+                        continue
+
+                    results[str(itemid)] = {
+                        "status": previous_value,
+                        "clock_epoch": previous_clock,
+                        "clock": _from_epoch_to_iso(previous_clock),
+                    }
+        except Exception:
+            logger.exception(
+                "fetch_previous_status_samples: Zabbix DB query failed."
+            )
+            try:
+                zabbix_conn.close_if_unusable_or_obsolete()
+            except Exception:
+                pass
+            return {}
+
         return results
 
     def fetch_power_by_index(

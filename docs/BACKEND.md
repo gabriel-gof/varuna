@@ -7,7 +7,7 @@
 - Collector backend:
   - `zabbix`: Zabbix API (`api_jsonrpc.php`) for standard SNMP/Zabbix-backed vendors.
   - `fit_telnet`: direct FIT collector for `FIT / FNCS4000`, with HTTP web UI scraping as the default transport and Telnet CLI as an explicit fallback.
-- Zabbix-backed latest status/power reads use a read-only PostgreSQL path (`DATABASES['zabbix']`) for `items` latest-value fields and power history when `ZABBIX_DB_ENABLED=1`. There is no JSON-RPC API fallback for these paths; if the DB read fails, the method logs an error and returns empty results.
+- Zabbix-backed latest status/power reads use a read-only PostgreSQL path (`DATABASES['zabbix']`) for `items` latest-value fields, power history, and previous-status-sample lookups when `ZABBIX_DB_ENABLED=1`. There is no JSON-RPC API fallback for these paths; if the DB read fails, the method logs an error and returns empty results.
 
 ## Naming and Boundaries
 - Project database is `varuna_*` (`POSTGRES_DB` controls environment-specific name).
@@ -301,7 +301,7 @@ Default global policy (any OLT/vendor profile):
 - Offline/online transitions create/close `ONULog` correctly.
 - Disconnection timestamp reliability contract:
   - on a proven `online -> offline` transition, polling stores a disconnection window in `ONULog`:
-    - `disconnect_window_start` = previous Zabbix status sample clock with `value=online`,
+    - `disconnect_window_start` = previous Zabbix status sample clock with `value=online` (fetched via direct Zabbix DB query on `history_str`/`history_uint`),
     - `disconnect_window_end` = current Zabbix status sample clock with `value=offline` (or reason-encoded offline).
   - trust rule is Zabbix-sample based (not local polling clock based):
     - previous sample must exist and be `online`,
@@ -627,6 +627,7 @@ Power collection (`backend/topology/services/power_service.py`) includes:
 - Discards stale samples beyond the configured freshness window instead of masking them with cached values.
 - Keeps empty/stale reads empty, including upstream-forced refreshes, so operators can distinguish “no fresh sample” from a successful live collection.
 - Shared hot-path primitive: `ZabbixService.get_items_by_keys()` is used by both `fetch_status_by_index()` and `fetch_power_by_index()`. It reads latest rows exclusively from the read-only Zabbix DB alias in configurable chunks (`ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE`, default `1000`). There is no JSON-RPC `item.get` fallback -- if the DB read fails, the method logs an error and returns an empty map.
+- `fetch_previous_status_samples()` reads the previous status sample (for disconnect window calculation during online-to-offline transitions) directly from Zabbix DB (`history_str` first, then `history_uint` as fallback). There is no JSON-RPC API fallback -- if the DB is disabled or fails, the method returns empty results and the disconnect window falls back to detection-point mode.
 
 ## History Retention and Reporting APIs
 - Fast latest-power snapshot model still lives on `ONU` (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`), but it is no longer the only latest-value source.

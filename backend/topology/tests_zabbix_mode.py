@@ -3763,6 +3763,44 @@ var lineNum=(onutable.length)/22;
         call_mock.assert_not_called()
         self.assertEqual(rows, {})
 
+    @override_settings(ZABBIX_DB_ENABLED=True)
+    @patch.object(ZabbixService, "_call")
+    def test_fetch_previous_status_samples_uses_db_not_api(self, call_mock):
+        """fetch_previous_status_samples must NOT call _call (the API) when
+        ZABBIX_DB_ENABLED=True.  It should return a dict (possibly empty if
+        the test DB lacks the item)."""
+        service = ZabbixService()
+        result = service.fetch_previous_status_samples(
+            item_clock_by_itemid={"99999": 1772928000},
+        )
+        call_mock.assert_not_called()
+        self.assertIsInstance(result, dict)
+
+    @override_settings(ZABBIX_DB_ENABLED=True)
+    @patch.object(ZabbixService, "_call")
+    def test_fetch_previous_status_samples_skips_invalid_inputs(self, call_mock):
+        """Invalid / empty inputs are silently skipped and no API call is made."""
+        service = ZabbixService()
+        result = service.fetch_previous_status_samples(
+            item_clock_by_itemid={"": 100, "abc": 200, "0": 300, "1": -5},
+        )
+        call_mock.assert_not_called()
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {})
+
+    @override_settings(ZABBIX_DB_ENABLED=False)
+    @patch.object(ZabbixService, "_call")
+    def test_fetch_previous_status_samples_returns_empty_when_db_disabled(self, call_mock):
+        """When ZABBIX_DB_ENABLED is False the method must return {} without
+        calling the API."""
+        service = ZabbixService()
+        result = service.fetch_previous_status_samples(
+            item_clock_by_itemid={"100": 1772928000},
+        )
+        call_mock.assert_not_called()
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {})
+
     def test_discovery_rows_fallback_to_status_items_huawei(self):
         service = ZabbixService()
         with (
