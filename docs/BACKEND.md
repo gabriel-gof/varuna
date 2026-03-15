@@ -6,7 +6,7 @@
 - Redis
 - Collector backend:
   - `zabbix`: Zabbix API (`api_jsonrpc.php`) for standard SNMP/Zabbix-backed vendors.
-  - `fit_telnet`: direct backend Telnet CLI collector for `FIT / FNCS4000`.
+  - `fit_telnet`: direct FIT collector for `FIT / FNCS4000`, with HTTP web UI scraping as the default transport and Telnet CLI as an explicit fallback.
 - Zabbix-backed latest status/power reads can optionally use a read-only PostgreSQL path (`DATABASES['zabbix']`) for `items` latest-value fields when `ZABBIX_DB_ENABLED=1`; JSON-RPC fallback remains automatic.
 
 ## Naming and Boundaries
@@ -33,8 +33,8 @@
 - `backend/topology/api/auth_views.py`: auth endpoints (login, logout, me, change-password).
 - `backend/topology/api/auth_utils.py`: role resolution and permission helpers.
 - `backend/topology/services/zabbix_service.py`: Zabbix integration (API host/discovery/manual actions plus optional direct PostgreSQL latest-item reads for status/power hot paths).
-- `backend/topology/services/fit_collector_service.py`: FIT `FNCS4000` Telnet CLI collection (reachability, discovery/status rows, per-ONU power).
-- `backend/topology/services/collector_service.py`: collector-mode dispatcher (Zabbix vs FIT Telnet).
+- `backend/topology/services/fit_collector_service.py`: FIT `FNCS4000` direct collector (HTTP web UI default, Telnet fallback) for reachability, discovery/status rows, and per-ONU power.
+- `backend/topology/services/collector_service.py`: collector-mode dispatcher (Zabbix vs FIT transport-aware direct collector). `get_collector_transport()` returns transport values (`http` / `telnet`) only; collector type remains a separate decision.
 - `backend/topology/services/vendor_profile.py`: vendor index/status parsing helpers.
 - `backend/topology/services/olt_health_service.py`: OLT collector health persistence.
 - `backend/topology/services/maintenance_runtime.py`: shared maintenance runtime helpers (status snapshot pre-checks + power collection payloads).
@@ -164,7 +164,7 @@ Parser supports:
 - `history_days` (default 7, range 7–30): configurable history retention in days. It drives:
   - frontend Alarm History default window for ONUs of this OLT,
   - Zabbix host macro `{$VARUNA.HISTORY_DAYS}` used by template item `history`.
-  Exposed by `OLTSerializer` (read/write), validated by `validate_history_days`, and included in `alarm-clients` response per row.
+  Exposed by `OLTSerializer` (read/write), validated by `validate_history_days` plus model validators, and included in `alarm-clients` response per row.
 
 Updated from:
 - `collector_check` API action (with legacy `snmp_check` alias),
@@ -174,7 +174,7 @@ Updated from:
 - connectivity state is overlaid at response time on cached topology payloads (no topology-cache flush required for pure runtime collector reachability updates).
 
 `collector_check` is mode-aware:
-- implementation dispatches to the configured collector (Zabbix sentinel or FIT Telnet login) and updates the same OLT health fields.
+- implementation dispatches to the configured collector (Zabbix sentinel or FIT direct collector) and updates the same OLT health fields.
 - `snmp_check` remains as a compatibility alias for older callers.
 
 ## Cached Topology Counters
@@ -187,6 +187,7 @@ Counter lifecycle contract:
 - Migration `0017_backfill_topology_cached_counts` backfills existing runtime data.
 - Discovery and polling commands rebuild counters at the end of each successful non-dry-run OLT pass.
 - API serializers read cached counters first and safely fall back to live counts when cache fields are null.
+- If a counter rebuild fails after discovery/polling already mutated topology state, Varuna clears cached OLT/slot/PON counters back to `null` so API reads fall back to live aggregates instead of serving stale cached totals.
 
 This keeps API responses consistent while making `/api/olts/` and `include_topology=true` reads cheaper under high ONU volume.
 
@@ -200,14 +201,15 @@ The OLT configuration API now enforces strict runtime-safe validation:
 - `protocol` is vendor-driven:
   - Zabbix-backed profiles require `snmp`.
   - FIT `FNCS4000` requires `telnet`.
-- `snmp_version` must be `v2c` for SNMP/Zabbix-backed vendors (v3 credentials are not represented yet in the data model).
+- `snmp_version` is `v2c`-only for SNMP/Zabbix-backed vendors. That restriction now exists in both serializer validation and the model field choices; v3 credentials are not represented in the current runtime contract.
 - `snmp_port` must be in `[1, 65535]`.
 - Telnet port is per-blade inside `blade_ips` entries (each `{"ip": ..., "port": ...}`); there is no global `telnet_port`.
 - `name` is normalized and cannot be empty.
 - SNMP vendors require non-empty `snmp_community`.
-- FIT `FNCS4000` requires non-empty `telnet_username` and `telnet_password`.
+- FIT `FNCS4000` requires non-empty `telnet_username` and `telnet_password`; those fields are reused as the direct collector credentials for HTTP Basic auth and for Telnet fallback.
 - FIT `FNCS4000` also requires at least one explicit `blade_ips` entry, and each blade entry must include both `ip` and `port`. Varuna no longer invents a legacy fallback like `ip_address:23` when blade configuration is missing.
-- `blade_ips` is a JSON list of per-blade objects (`{"ip": "...", "port": 55523}`). For FIT, `ip_address` is derived from the first blade only for compatibility/display; runtime Telnet collection uses `blade_ips` exclusively. Changing `blade_ips` resets runtime connectivity state.
+- Duplicate FIT `blade_ips` entries (`same ip + port`) are rejected at the API boundary.
+- `blade_ips` is a JSON list of per-blade objects (`{"ip": "...", "port": 55523}`). For FIT, `ip_address` is derived from the first blade only for compatibility/display; runtime collection uses blade IPs directly, and the stored per-blade port remains for explicit Telnet fallback. Changing `blade_ips` resets runtime connectivity state.
 - Blank password updates preserve the currently stored Telnet/UNM secret instead of clearing it.
 - Intervals must be positive and bounded:
   - `discovery_interval_minutes` <= `10080` (7 days)
@@ -223,7 +225,7 @@ Create semantics were also hardened:
 - Runtime is collector-aware:
   - Zabbix vendors use Zabbix API for discovery, history lookups, and manual upstream actions.
   - Zabbix vendors can use direct PostgreSQL latest-item reads for normal status/power collection when `ZABBIX_DB_ENABLED=1`; JSON-RPC fallback remains automatic if the DB reader is unavailable or fails.
-  - FIT `FNCS4000` uses direct Telnet CLI reads for discovery/status and per-ONU power.
+  - FIT `FNCS4000` uses direct HTTP reads from the device web UI for discovery/status and per-ONU power by default. Explicit `collector.transport=telnet` keeps the legacy CLI path available.
 - Manual and scoped refresh paths request immediate upstream execution only on Zabbix-backed vendors.
 - First-ever discovery (no ONUs exist yet) automatically triggers upstream Zabbix LLD execution (`refresh_upstream`) on Zabbix-backed vendors so newly created OLTs don't wait for the Zabbix LLD schedule.
 - Failed discovery retries in 2 minutes (not the full discovery interval) so transient upstream delays don't block topology for hours.
@@ -234,24 +236,25 @@ Create semantics were also hardened:
   This reduces false "no ONUs discovered" results when Zabbix LLD item creation lags a few seconds after execution request.
 - FIT `FNCS4000` collector contract:
   - discovery queries the configured EPON interfaces (`0/1..0/4` by default) on each blade IP, but only materializes slots/PONs that actually return ONUs. Empty branches are not kept active in topology.
-  - discovery keeps only **authorized** ONUs from FIT CLI rows (`Active` column); unauthorized rows are ignored and therefore do not keep PON/slot branches active.
-  - multi-blade: each blade IP opens a separate Telnet session; blade index+1 becomes `slot_id`. Slots are named `"Blade N"` when multi-blade and only appear when at least one ONU is discovered on that blade.
+  - default HTTP discovery/status source is `onuOverview.asp?oltponno=0/x`; when a blade exposes `onuAllPonOnuList.asp`, Varuna uses that blade-wide page first because it includes status plus inline optics for all ONUs at once. Detail/power fallback source is `onuConfig.asp?onuno=0/x:y&oltponno=0/x`.
+  - discovery keeps only **authorized** ONUs from FIT HTTP overview rows (`Activate` column). Unauthorized rows are ignored and therefore do not keep PON/slot branches active.
+  - multi-blade: each blade IP opens a separate HTTP session (or Telnet session when transport is overridden). Blade index+1 becomes `slot_id`. Slots are named `"Blade N"` when multi-blade and only appear when at least one ONU is discovered on that blade.
   - `snmp_index` format: `"{slot_id}/{interface}:{onu_id}"` (e.g. `"2/0/3:7"`). Includes slot_id prefix to avoid UniqueConstraint collision across blades.
-  - discovery source: `show onu info epon 0/x all` on every configured interface;
-  - status polling source: `show onu info epon 0/x all` only for interfaces (PONs) that currently have active ONUs in Varuna topology, reducing routine polling latency;
-  - `show onu info` row parsing accepts both firmware formats seen in the field: rows with an `Uptime` column and rows that end immediately after the `Active` column;
-  - Telnet login reaches `EPON>` first and the collector must issue `enable` before command execution;
-  - `show onu info` output paginates with `--- Enter Key To Continue ----`, and the collector must advance that pager during reads;
+  - status polling reads only the interfaces (PONs) that currently have active ONUs in Varuna topology, reducing routine polling latency.
   - ONU identity: `OLT + slot_id + PON + ONU ID`;
-  - name comes from CLI when present and is allowed to stay blank;
-  - serial is unsupported;
-  - power source: `show onu optical-ddm epon 0/x <onu_id>` for online ONUs only; ONUs are grouped by slot_id and queried on the corresponding blade IP;
-  - ONU IDs above `64` are skipped as unsupported for power reads;
+  - name comes from CLI/HTTP when present and is allowed to stay blank;
+  - FIT discovery may clear a stored ONU name only when the current collector row is explicitly blank; an unchanged non-empty incoming name must never be wiped during rediscovery;
+  - serial is normalized from the FIT MAC address when available, but only as an internal identity surrogate because the device does not expose a proper serial contract in these pages;
+  - FIT-facing API payloads (`topology`, `power-report`, `alarm-clients`, `alarm-history`) must not expose that MAC surrogate as `serial`; they serialize it as empty so the frontend can render a plain `-` placeholder instead of a misleading pseudo-serial;
+  - power source prefers inline optical values from the HTTP “All ONU” page when the blade firmware exposes it, then falls back to per-PON overview tables and finally per-ONU detail pages for missing optics. Telnet fallback continues to use `show onu optical-ddm epon 0/x <onu_id>`.
   - only ONU RX is collected; OLT RX is always `null`;
-  - reachability check tests all blade IPs; any failure marks OLT unreachable;
+  - power collection tolerates partial blade failures: if some blades succeed but others fail, the collected results are returned with a warning log. Only when ALL blades fail does the power collection raise `FITCollectorError`. This prevents a single flaky blade from hiding power data for the entire chassis.
+  - reachability check tests all blade IPs against a known-good HTTP overview path; any failure marks OLT unreachable;
   - collector failures preserve blade context in error text (`Blade <ip>: ...`) for reachability, discovery, polling, and power reads so multi-blade faults are visible in `last_collector_error` and maintenance output;
-  - an empty FIT status snapshot after a successful Telnet session fails polling, but it does not mark the OLT unreachable; collector reachability stays `true` and `last_poll_at` remains stale until a usable snapshot lands;
+  - scoped status/power reads fail closed when a request references a slot without a configured blade entry; Varuna must never silently reuse blade 1 for another slot;
+  - an empty FIT status snapshot after a successful collector session fails polling, but it does not mark the OLT unreachable; collector reachability stays `true` and `last_poll_at` remains stale until a usable snapshot lands;
   - offline disconnect reason remains `unknown`.
+  - when `collector.transport=telnet`, legacy CLI behavior still applies: login reaches `EPON>` first, the collector must issue `enable`, `show onu info` output paginates with `--- Enter Key To Continue ----`, and telnet power reads remain limited to ONU IDs `<= 64`.
 
 ## ONU Lifecycle
 `ONU.is_active` is used to keep history without polluting live topology.
@@ -359,7 +362,7 @@ Auth endpoints (all under `/api/`):
 - `GET /api/auth/me/` — returns `{id, username, role, can_modify_settings, can_operate_topology}` for the authenticated user.
 - `POST /api/auth/change-password/` — accepts `{current_password, new_password}`, validates current password, enforces Django password policy, rotates token. Returns new `{token}`.
 
-Frontend stores the token in `localStorage` as `auth_token` and sends it as `Authorization: Token <key>` on every request via an Axios interceptor. On 401 responses, the interceptor clears the stored token and the app returns to the login screen.
+Frontend stores the token in `localStorage` as `auth_token` and sends it as `Authorization: Token <key>` on every request via an Axios interceptor. On 401 responses, the interceptor clears the stored token, emits the shared auth-clear browser event, and the app returns to the login screen immediately.
 
 Auth views: `backend/topology/api/auth_views.py`.
 Auth helpers: `backend/topology/api/auth_utils.py` (`resolve_user_role`, `can_modify_settings`, `can_operate_topology`).
@@ -446,13 +449,18 @@ Operational read paths now use a hybrid model: structure cache for slow-changing
   - Cache is invalidated on successful discovery, OLT create/update/delete/reactivation, and PON description edits.
   - Cache misses/corrupt entries/Redis outages fail open to live DB rebuilds; topology reads never hard-fail on cache availability.
   - Only populated branches are materialized: PONs with `0` active ONUs and slots with `0` populated PONs are omitted from the payload for every collector type.
+- Topology `status` fields exposed by `GET /api/olts/?include_topology=true` and `GET /api/olts/{id}/topology/` follow the same roll-up contract as the UI:
+  - PON `status=partial` only when that PON itself mixes online and non-online ONUs;
+  - slot/OLT `status=partial` only when at least one direct child is fully offline (`status=offline`);
+  - mixed-but-not-fully-offline child branches do not escalate parent status by themselves.
 - Topology power fields (`onu_rx_power`, `olt_rx_power`, `power_read_at`) stay present for payload compatibility but default to `null` in topology responses. The topology read path no longer loads full-tree power snapshots.
 - `GET /api/onu/{id}/power/`, `POST /api/onu/batch-power/`, and `GET /api/onu/power-report/` are split by mode:
   - `refresh=true`: manual live collection path (same as before) with upstream execution + persistence.
   - `refresh=false`: latest-value read path.
-- Latest-value power read path is flag-driven:
-  - default path: fast local `ONU.latest_*` snapshot read,
-  - when `POWER_LATEST_READS_USE_ZABBIX=true`: read the latest power already stored in Zabbix for the requested ONUs and serialize that directly.
+- Latest-value power read path is collector-aware:
+  - Zabbix-backed OLTs automatically read the latest power already stored in Zabbix whenever the read-only Zabbix DB alias is enabled (`ZABBIX_DB_ENABLED=1`);
+  - otherwise the backend falls back to the fast local `ONU.latest_*` snapshot read;
+  - the legacy `POWER_LATEST_READS_USE_ZABBIX=true` switch remains available only as an explicit opt-in for non-DB environments and should not be used as the primary production mode.
 - The Zabbix latest-value path is DB-first:
   - current item values come through `ZabbixService.get_items_by_keys()` (`items` + `item_rtdata` + `history_*` on the read-only Zabbix DB alias),
   - if the current power value is invalid/sentinel, Varuna can look for the latest valid history sample through the same read-only Zabbix DB path first and falls back to JSON-RPC history only if the DB read fails.
@@ -522,6 +530,7 @@ Power refresh contract:
 - `stored_count` reflects rows that are actually new for `ONUPowerSample` after `(onu, read_at)` dedupe, not just the number of candidate payload rows.
 - Power collection reads key-patterned item values from Zabbix (`oid_templates.zabbix.onu_rx_item_key_pattern` / `olt_rx_item_key_pattern`).
 - Stale power safety: samples older than `power_interval_seconds * 3 + ZABBIX_POWER_STALE_MARGIN_SECONDS` (default margin `90s`) are discarded for refresh responses.
+- Frontend power views do not apply a separate stale classification. Operators infer sample age from the `Leitura` timestamp, while backend discard rules for accepted samples still use the margin-bearing threshold above.
 - Power refresh shares the same upstream execution cap (`ZABBIX_REFRESH_UPSTREAM_MAX_ITEMS`) and supports forced bypass via `force_upstream=True` in maintenance runtime for explicit manual refresh flows.
 - Scoped/manual topology power refreshes (`GET /api/onu/{id}/power/?refresh=true`, `POST /api/onu/batch-power/` with `refresh=true`) also force upstream execution, so operator-triggered live reads do not silently fall back to stale snapshots on large selections.
 - For `refresh_upstream=true`, power refresh now uses the same short upstream wait window as status refresh (`ZABBIX_REFRESH_UPSTREAM_WAIT_SECONDS`, `ZABBIX_REFRESH_UPSTREAM_WAIT_STEP_SECONDS`, `ZABBIX_REFRESH_CLOCK_GRACE_SECONDS`) and retries Zabbix reads before returning.
@@ -617,7 +626,7 @@ Power collection (`backend/topology/services/power_service.py`) includes:
 - Reads power directly from Zabbix item keys for the requested ONU set.
 - Discards stale samples beyond the configured freshness window instead of masking them with cached values.
 - Keeps empty/stale reads empty, including upstream-forced refreshes, so operators can distinguish “no fresh sample” from a successful live collection.
-- Shared hot-path primitive: `ZabbixService.get_items_by_keys()` is used by both `fetch_status_by_index()` and `fetch_power_by_index()`. When the read-only Zabbix DB alias is enabled, it bulk-reads latest rows from `items` in configurable chunks (`ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE`, default `1000`) and falls back to JSON-RPC `item.get` only on DB disable/failure.
+- Shared hot-path primitive: `ZabbixService.get_items_by_keys()` is used by both `fetch_status_by_index()` and `fetch_power_by_index()`. It reads latest rows exclusively from the read-only Zabbix DB alias in configurable chunks (`ZABBIX_DB_LATEST_ITEMS_CHUNK_SIZE`, default `1000`). There is no JSON-RPC `item.get` fallback -- if the DB read fails, the method logs an error and returns an empty map.
 
 ## History Retention and Reporting APIs
 - Fast latest-power snapshot model still lives on `ONU` (`latest_onu_rx_power`, `latest_olt_rx_power`, `latest_power_read_at`), but it is no longer the only latest-value source.
@@ -634,7 +643,7 @@ Power collection (`backend/topology/services/power_service.py`) includes:
   - keeps active alarms (`offline_until` null).
 - Report endpoints:
   - `GET /api/onu/power-report/?search=<term>`: flattened power rows per active ONU, with optional backend search on ONU name/serial/OLT name.
-    - row contract includes `status` (ONU runtime status), `power_interval_seconds` (OLT power cadence), and topology references (`slot_ref_id`, `pon_ref_id`) so frontend can derive stale/fresh power classes and drill into the exact topology path.
+    - row contract includes `status` (ONU runtime status), `power_interval_seconds` (OLT power cadence), and topology references (`slot_ref_id`, `pon_ref_id`) so frontend can preserve exact topology path/context for each reading and still expose collection cadence metadata when needed.
     - source contract for `refresh=false` follows the latest-power mode above: snapshot by default, live Zabbix latest values when `POWER_LATEST_READS_USE_ZABBIX=true`.
   - `GET /api/onu/alarm-clients/?search=<term>&limit=<n>`: lightweight searchable ONU suggestions. Each result includes `history_days` (from the ONU's OLT) so the frontend renders the correct rolling window without an extra OLT fetch.
   - `GET /api/onu/{id}/alarm-history/`: ONU event history + downsampled power trend points.

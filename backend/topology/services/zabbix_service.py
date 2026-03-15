@@ -1434,39 +1434,19 @@ class ZabbixService:
         if db_item_map is not None:
             return db_item_map
 
-        item_map: Dict[str, Dict] = {}
-        chunk_size = 200
-        for start in range(0, len(deduped_keys), chunk_size):
-            chunk = deduped_keys[start:start + chunk_size]
-            rows = self._call(
-                "item.get",
-                {
-                    "output": [
-                        "itemid",
-                        "key_",
-                        "lastvalue",
-                        "prevvalue",
-                        "lastclock",
-                        "state",
-                        "status",
-                        "error",
-                        "value_type",
-                    ],
-                    "hostids": [hostid],
-                    "filter": {"key_": chunk},
-                    "sortfield": "itemid",
-                },
+        if self._db_latest_items_enabled():
+            logger.error(
+                "get_items_by_keys: DB read returned None for hostid=%s (%d keys); no API fallback",
+                hostid,
+                len(deduped_keys),
             )
-            for row in rows:
-                key = str(row.get("key_", "")).strip()
-                if not key:
-                    continue
-                current = item_map.get(key)
-                current_clock = _to_int_or_none((current or {}).get("lastclock"))
-                next_clock = _to_int_or_none(row.get("lastclock"))
-                if current is None or (next_clock or 0) >= (current_clock or 0):
-                    item_map[key] = row
-        return item_map
+        else:
+            logger.warning(
+                "get_items_by_keys: DB reader disabled and no API fallback for hostid=%s (%d keys)",
+                hostid,
+                len(deduped_keys),
+            )
+        return {}
 
     def execute_items_now(self, itemids: Iterable[str]) -> int:
         executed = 0

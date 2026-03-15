@@ -3,6 +3,7 @@ import json
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone as dt_timezone
 
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
@@ -24,6 +25,7 @@ from topology.services.maintenance_runtime import (
 )
 from topology.services.unm_service import UNMService, UNMServiceError, _UNM_TIMEZONE_CACHE
 from topology.services.power_service import power_service
+from topology.services.vendor_profile import get_collector_transport
 from topology.services.zabbix_service import (
     DEFAULT_AVAILABILITY_ITEM_KEY,
     VARUNA_HOST_TAG_MODEL,
@@ -177,6 +179,14 @@ class ZabbixModeTests(TestCase):
             is_active=True,
         )
 
+    def _set_fit_transport(self, transport: str):
+        templates = json.loads(json.dumps(self.fit_vendor.oid_templates or {}))
+        collector_cfg = templates.get("collector") if isinstance(templates.get("collector"), dict) else {}
+        collector_cfg["transport"] = str(transport).strip().lower()
+        templates["collector"] = collector_cfg
+        self.fit_vendor.oid_templates = templates
+        self.fit_vendor.save(update_fields=["oid_templates"])
+
     def _create_fit_onu(
         self,
         fit_olt,
@@ -185,6 +195,7 @@ class ZabbixModeTests(TestCase):
         onu_id=1,
         status=ONU.STATUS_UNKNOWN,
         name="",
+        serial="",
     ):
         slot, _ = OLTSlot.objects.get_or_create(
             olt=fit_olt,
@@ -207,7 +218,7 @@ class ZabbixModeTests(TestCase):
             pon_id=pon_id,
             onu_id=onu_id,
             snmp_index=f"0/{pon_id}:{onu_id}",
-            serial="",
+            serial=serial,
             name=name,
             status=status,
             is_active=True,
@@ -537,6 +548,113 @@ class ZabbixModeTests(TestCase):
         self.assertIsNone(onu_row.get("olt_rx_power"))
         self.assertIsNone(onu_row.get("power_read_at"))
 
+    def test_olt_list_include_topology_rolls_up_parent_status_from_child_states(self):
+        slot_one, pon_one, _ = self._create_topology_onu(
+            slot_id=1,
+            pon_id=1,
+            onu_id=1,
+            snmp_index="11.1",
+            serial="TPLG00000001",
+            status=ONU.STATUS_ONLINE,
+        )
+        offline_slot_1_pon_1 = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=slot_one,
+            pon_ref=pon_one,
+            slot_id=1,
+            pon_id=1,
+            onu_id=2,
+            snmp_index="11.2",
+            serial="TPLG00000002",
+            name="cliente-topologia",
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+        pon_two = OLTPON.objects.create(
+            olt=self.olt,
+            slot=slot_one,
+            pon_id=2,
+            pon_key="1/2",
+            is_active=True,
+        )
+        ONU.objects.create(
+            olt=self.olt,
+            slot_ref=slot_one,
+            pon_ref=pon_two,
+            slot_id=1,
+            pon_id=2,
+            onu_id=1,
+            snmp_index="12.1",
+            serial="TPLG00000003",
+            name="cliente-topologia",
+            status=ONU.STATUS_ONLINE,
+            is_active=True,
+        )
+        slot_two = OLTSlot.objects.create(
+            olt=self.olt,
+            slot_id=2,
+            slot_key="2",
+            is_active=True,
+        )
+        pon_three = OLTPON.objects.create(
+            olt=self.olt,
+            slot=slot_two,
+            pon_id=1,
+            pon_key="2/1",
+            is_active=True,
+        )
+        offline_slot_2_pon_1 = ONU.objects.create(
+            olt=self.olt,
+            slot_ref=slot_two,
+            pon_ref=pon_three,
+            slot_id=2,
+            pon_id=1,
+            onu_id=1,
+            snmp_index="21.1",
+            serial="TPLG00000004",
+            name="cliente-topologia",
+            status=ONU.STATUS_OFFLINE,
+            is_active=True,
+        )
+
+        offline_since = timezone.now() - timedelta(minutes=5)
+        ONULog.objects.create(
+            onu=offline_slot_1_pon_1,
+            offline_since=offline_since,
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+            disconnect_window_start=offline_since,
+            disconnect_window_end=offline_since,
+        )
+        ONULog.objects.create(
+            onu=offline_slot_2_pon_1,
+            offline_since=offline_since,
+            disconnect_reason=ONULog.REASON_LINK_LOSS,
+            disconnect_window_start=offline_since,
+            disconnect_window_end=offline_since,
+        )
+
+        request = self.api_factory.get("/api/olts/", {"include_topology": "true"})
+        force_authenticate(request, user=self.user)
+        response = OLTViewSet.as_view({"get": "list"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data.get("results") if isinstance(response.data, dict) else response.data
+        olt_row = next((row for row in (rows or []) if row.get("id") == self.olt.id), None)
+        self.assertIsNotNone(olt_row)
+
+        slot_one = next((slot for slot in olt_row["slots"] if int(slot["slot_number"]) == 1), None)
+        slot_two = next((slot for slot in olt_row["slots"] if int(slot["slot_number"]) == 2), None)
+        self.assertIsNotNone(slot_one)
+        self.assertIsNotNone(slot_two)
+
+        pon_one = next((pon for pon in slot_one["pons"] if int(pon["pon_number"]) == 1), None)
+        pon_two = next((pon for pon in slot_one["pons"] if int(pon["pon_number"]) == 2), None)
+        self.assertEqual(pon_one["status"], "partial")
+        self.assertEqual(pon_two["status"], "online")
+        self.assertEqual(slot_one["status"], "online")
+        self.assertEqual(slot_two["status"], "offline")
+        self.assertEqual(olt_row["status"], "partial")
+
     def test_olt_topology_detail_uses_cached_structure_and_live_status(self):
         _, _, onu = self._create_topology_onu(
             slot_id=2,
@@ -780,6 +898,88 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(olt_row["slots"][0]["pons"][0]["onus"][0].get("name"), "cliente-novo")
         self.assertIsNotNone(cache_service.get_topology_structure(self.olt.id))
 
+    @patch("topology.management.commands.discover_onus.topology_counter_service.refresh_olt", side_effect=RuntimeError("boom"))
+    @patch("topology.management.commands.discover_onus.zabbix_service.fetch_discovery_rows")
+    def test_discover_onus_clears_cached_counters_when_counter_refresh_fails(
+        self,
+        fetch_discovery_rows_mock,
+        _refresh_counters_mock,
+    ):
+        slot, pon, _onu = self._create_topology_onu(
+            slot_id=2,
+            pon_id=8,
+            onu_id=30,
+            snmp_index="28.30",
+            serial="TPLGDISC0030",
+            name="cliente-antigo",
+        )
+        self.olt.cached_slot_count = 9
+        self.olt.cached_pon_count = 18
+        self.olt.cached_onu_count = 90
+        self.olt.cached_online_count = 80
+        self.olt.cached_offline_count = 10
+        self.olt.cached_counts_at = timezone.now()
+        self.olt.save(
+            update_fields=[
+                "cached_slot_count",
+                "cached_pon_count",
+                "cached_onu_count",
+                "cached_online_count",
+                "cached_offline_count",
+                "cached_counts_at",
+            ]
+        )
+        slot.cached_pon_count = 8
+        slot.cached_onu_count = 64
+        slot.cached_online_count = 60
+        slot.cached_offline_count = 4
+        slot.save(
+            update_fields=[
+                "cached_pon_count",
+                "cached_onu_count",
+                "cached_online_count",
+                "cached_offline_count",
+            ]
+        )
+        pon.cached_onu_count = 64
+        pon.cached_online_count = 60
+        pon.cached_offline_count = 4
+        pon.save(update_fields=["cached_onu_count", "cached_online_count", "cached_offline_count"])
+
+        fetch_discovery_rows_mock.return_value = (
+            [
+                {
+                    "{#SLOT}": "2",
+                    "{#PON}": "8",
+                    "{#ONU_ID}": "30",
+                    "{#PON_ID}": "28",
+                    "{#SNMPINDEX}": "28.30",
+                    "{#SERIAL}": "TPLGDISC0030",
+                    "{#ONU_NAME}": "cliente-novo",
+                }
+            ],
+            timezone.now().isoformat(),
+        )
+
+        call_command("discover_onus", olt_id=self.olt.id, force=True)
+
+        self.olt.refresh_from_db()
+        slot.refresh_from_db()
+        pon.refresh_from_db()
+        self.assertIsNone(self.olt.cached_slot_count)
+        self.assertIsNone(self.olt.cached_pon_count)
+        self.assertIsNone(self.olt.cached_onu_count)
+        self.assertIsNone(self.olt.cached_online_count)
+        self.assertIsNone(self.olt.cached_offline_count)
+        self.assertIsNone(self.olt.cached_counts_at)
+        self.assertIsNone(slot.cached_pon_count)
+        self.assertIsNone(slot.cached_onu_count)
+        self.assertIsNone(slot.cached_online_count)
+        self.assertIsNone(slot.cached_offline_count)
+        self.assertIsNone(pon.cached_onu_count)
+        self.assertIsNone(pon.cached_online_count)
+        self.assertIsNone(pon.cached_offline_count)
+
     @patch("topology.api.views.zabbix_service.sync_olt_host_runtime", return_value=True)
     def test_olt_update_invalidates_topology_structure_cache(self, _sync_runtime_mock):
         self._create_topology_onu(
@@ -888,19 +1088,37 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(self.olt.unm_mneid, 13172741)
         self.assertEqual(self.olt.unm_password, "existing-secret")
 
-    def test_seeded_fit_profile_exposes_telnet_defaults(self):
+    def test_seeded_fit_profile_exposes_http_collector_defaults(self):
         serializer = VendorProfileSerializer(instance=self.fit_vendor)
+        collector_cfg = (self.fit_vendor.oid_templates or {}).get("collector") or {}
         discovery_cfg = (self.fit_vendor.oid_templates or {}).get("discovery") or {}
 
         self.assertEqual(serializer.data["vendor"], "FIT")
         self.assertEqual(serializer.data["model_name"], "FNCS4000")
         self.assertEqual(serializer.data["default_protocol"], "telnet")
         self.assertFalse(serializer.data["supports_olt_rx_power"])
-        self.assertEqual((self.fit_vendor.oid_templates or {}).get("collector", {}).get("type"), "fit_telnet")
+        self.assertEqual(collector_cfg.get("type"), "fit_telnet")
+        self.assertEqual(collector_cfg.get("transport"), "http")
         self.assertTrue(discovery_cfg.get("deactivate_missing"))
         self.assertIn("disable_lost_after_minutes", discovery_cfg)
         self.assertEqual(int(discovery_cfg.get("disable_lost_after_minutes") or 0), 0)
         self.assertEqual(self.fit_vendor.default_thresholds.get("power_interval_seconds"), 1800)
+
+    def test_zabbix_vendors_default_to_http_transport_contract(self):
+        self.assertEqual(get_collector_transport(self.vendor), "http")
+
+    def test_olt_model_history_days_enforces_range_on_full_clean(self):
+        self.olt.history_days = 31
+
+        with self.assertRaises(ValidationError) as ctx:
+            self.olt.full_clean()
+
+        self.assertIn("history_days", ctx.exception.message_dict)
+
+    def test_olt_model_snmp_version_choices_match_serializer_contract(self):
+        field = OLT._meta.get_field("snmp_version")
+
+        self.assertEqual(list(field.choices), [("v2c", "v2c")])
 
     def test_olt_create_requires_telnet_credentials_for_fit_vendor(self):
         admin_user = User.objects.create_superuser(
@@ -956,12 +1174,12 @@ class ZabbixModeTests(TestCase):
         self.assertEqual(fit_olt.telnet_username, "new-bifrost")
         self.assertEqual(fit_olt.telnet_password, "acaidosdeuses%gabisat")
 
-    @patch("topology.services.fit_collector_service.telnetlib.Telnet")
-    def test_fit_status_inventory_error_lists_each_failed_blade(self, telnet_mock):
+    @patch("topology.services.fit_collector_service._FITHTTPSession.get_page", autospec=True)
+    def test_fit_http_status_inventory_error_lists_each_failed_blade(self, get_page_mock):
         fit_olt = self._create_fit_olt(name="OLT-FIT-BLADES")
         fit_olt.blade_ips = [{"ip": "192.168.100.2", "port": 23}, {"ip": "192.168.100.4", "port": 23}]
         fit_olt.save(update_fields=["blade_ips"])
-        telnet_mock.side_effect = ConnectionRefusedError(111, "Connection refused")
+        get_page_mock.side_effect = FITCollectorError("HTTP request failed: timed out")
 
         with self.assertRaises(FITCollectorError) as ctx:
             fit_collector_service.fetch_status_inventory(fit_olt)
@@ -996,6 +1214,26 @@ class ZabbixModeTests(TestCase):
         self.assertIn("blade_ips", serializer.errors)
         self.assertIn("Port is required for blade 192.168.100.40.", str(serializer.errors["blade_ips"]))
 
+    def test_fit_olt_serializer_rejects_duplicate_blade_entries(self):
+        serializer = OLTSerializer(
+            data={
+                "name": "OLT-FIT-SERIALIZER-DUP",
+                "vendor_profile": self.fit_vendor.id,
+                "protocol": "telnet",
+                "ip_address": "192.168.100.40",
+                "telnet_username": "bifrost",
+                "telnet_password": "acaidosdeuses%gabisat",
+                "blade_ips": [
+                    {"ip": "192.168.100.40", "port": 23},
+                    {"ip": "192.168.100.40", "port": 23},
+                ],
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("blade_ips", serializer.errors)
+        self.assertIn("Duplicate blade entry: 192.168.100.40:23.", str(serializer.errors["blade_ips"]))
+
     def test_fit_parse_status_output_accepts_rows_with_and_without_uptime(self):
         raw_output = """
 OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Active Uptime Name
@@ -1018,6 +1256,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                     "interface": "0/1",
                     "status": ONU.STATUS_OFFLINE,
                     "name": "",
+                    "mac": "70:B6:4F:A4:6A:68",
                 },
                 {
                     "slot_id": 3,
@@ -1026,6 +1265,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                     "interface": "0/1",
                     "status": ONU.STATUS_ONLINE,
                     "name": "client-a",
+                    "mac": "58:D2:37:EA:F4:00",
                 },
                 {
                     "slot_id": 3,
@@ -1034,6 +1274,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                     "interface": "0/2",
                     "status": ONU.STATUS_ONLINE,
                     "name": "",
+                    "mac": "58:D2:37:EA:DA:00",
                 },
                 {
                     "slot_id": 3,
@@ -1042,6 +1283,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                     "interface": "0/2",
                     "status": ONU.STATUS_OFFLINE,
                     "name": "client-b",
+                    "mac": "58:D2:37:EA:DB:00",
                 },
             ],
         )
@@ -1068,6 +1310,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                     "interface": "0/1",
                     "status": ONU.STATUS_OFFLINE,
                     "name": "",
+                    "mac": "70:B6:4F:A4:6A:68",
                 },
                 {
                     "slot_id": 2,
@@ -1076,9 +1319,203 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                     "interface": "0/2",
                     "status": ONU.STATUS_OFFLINE,
                     "name": "client-b",
+                    "mac": "58:D2:37:EA:DB:00",
                 },
             ],
         )
+
+    def test_fit_parse_http_status_page_accepts_legacy_overview_layout(self):
+        page = """
+<script>
+var onutable=new Array(
+'0/1:1','NA','70:B6:4F:A4:6A:68','Up','3230','9125','2','CtcNegDone','21','Activate','7943',
+'0/1:2','cliente-fit','58:D2:37:EA:F4:00','Down','c41f','6878','3','MpcpDiscovery','21','Activate','1',
+'0/1:3','NA','58:D2:37:EA:F4:01','Up','c41f','6878','3','CtcNegDone','21','Deactivate','7592'
+);
+var lineNum=(onutable.length)/11;
+</script>
+"""
+
+        rows = fit_collector_service.parse_http_status_page(page, slot_id=2)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "slot_id": 2,
+                    "pon_id": 1,
+                    "onu_id": 1,
+                    "interface": "0/1",
+                    "status": ONU.STATUS_ONLINE,
+                    "name": "",
+                    "mac": "70:B6:4F:A4:6A:68",
+                    "onu_rx_power": None,
+                },
+                {
+                    "slot_id": 2,
+                    "pon_id": 1,
+                    "onu_id": 2,
+                    "interface": "0/1",
+                    "status": ONU.STATUS_OFFLINE,
+                    "name": "cliente-fit",
+                    "mac": "58:D2:37:EA:F4:00",
+                    "onu_rx_power": None,
+                },
+            ],
+        )
+
+    def test_fit_parse_http_status_page_accepts_inline_optics_layout(self):
+        page = """
+<script>
+var onutable=new Array(
+'0/2:1','NA','94:02:6B:65:E5:85','Up','312e','9602','2','CtcNegDone','21','Activate','7943','34.00','3.00','13.00','2.06','-26.20',
+'0/2:2','NA','A0:94:6A:0E:31:CB','Down','312e','9601','2','MpcpDiscovery','21','Activate','1','--','--','--','--','--'
+);
+var lineNum=(onutable.length)/16;
+</script>
+"""
+
+        rows = fit_collector_service.parse_http_status_page(page, slot_id=1)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "slot_id": 1,
+                    "pon_id": 2,
+                    "onu_id": 1,
+                    "interface": "0/2",
+                    "status": ONU.STATUS_ONLINE,
+                    "name": "",
+                    "mac": "94:02:6B:65:E5:85",
+                    "onu_rx_power": -26.2,
+                },
+                {
+                    "slot_id": 1,
+                    "pon_id": 2,
+                    "onu_id": 2,
+                    "interface": "0/2",
+                    "status": ONU.STATUS_OFFLINE,
+                    "name": "",
+                    "mac": "A0:94:6A:0E:31:CB",
+                    "onu_rx_power": None,
+                },
+            ],
+        )
+
+    def test_fit_parse_http_status_page_accepts_all_onu_layout(self):
+        page = """
+<script>
+var onutable=new Array(
+'0/2:1','NA','E0:E8:E6:A0:69:09','Up','0101','9125','2','5','21','0','1163','30.00','3.00','14.00','1.72','-28.86','2026-03-11 16:14:06','2026-03-11 16:13:30','1','166365','5','1',
+'0/2:2','NA','94:02:6B:E4:BD:CB','Down','1002','1601','2','5','21','2','1389','38.00','3.00','22.00','1.78','-30.97','2026-03-11 16:12:52','2026-03-11 16:11:50','1','166439','6','1'
+);
+var lineNum=(onutable.length)/22;
+</script>
+"""
+
+        rows = fit_collector_service.parse_http_status_page(page, slot_id=2)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "slot_id": 2,
+                    "pon_id": 2,
+                    "onu_id": 1,
+                    "interface": "0/2",
+                    "status": ONU.STATUS_ONLINE,
+                    "name": "",
+                    "mac": "E0:E8:E6:A0:69:09",
+                    "onu_rx_power": -28.86,
+                },
+            ],
+        )
+
+    def test_fit_parse_http_detail_page_extracts_optical_values(self):
+        page = """
+<script>
+var onuinfo=new Array(
+'0/1:1','NA','70:B6:4F:A4:6A:68','Up','','','','2026-03-06 18:11:42','2026-03-09 15:44:09','2026-03-09 13:27:45'
+);
+var onuOpmInfo=new Array('0/1:1','34.00','3.00','13.00','2.06','-26.20');
+</script>
+"""
+
+        detail = fit_collector_service.parse_http_detail_page(page)
+
+        self.assertEqual(
+            detail,
+            {
+                "interface": "0/1",
+                "pon_id": 1,
+                "onu_id": 1,
+                "name": "",
+                "mac": "70:B6:4F:A4:6A:68",
+                "status": ONU.STATUS_ONLINE,
+                "first_up_time": "2026-03-06 18:11:42",
+                "last_up_time": "2026-03-09 15:44:09",
+                "last_off_time": "2026-03-09 13:27:45",
+                "temperature_c": 34.0,
+                "voltage_v": 3.0,
+                "bias_current_ma": 13.0,
+                "tx_power_dbm": 2.06,
+                "onu_rx_power": -26.2,
+            },
+        )
+
+    @patch("topology.services.fit_collector_service._FITHTTPSession.get_page", autospec=True)
+    def test_fit_http_power_uses_all_onu_page_when_available(self, get_page_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-HTTP-ALL")
+        onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=1,
+            status=ONU.STATUS_ONLINE,
+        )
+        all_page = """
+<script>
+var onutable=new Array(
+'0/2:1','NA','E0:E8:E6:A0:69:09','Up','0101','9125','2','5','21','0','1163','30.00','3.00','14.00','1.72','-28.86','2026-03-11 16:14:06','2026-03-11 16:13:30','1','166365','5','1'
+);
+var lineNum=(onutable.length)/22;
+</script>
+"""
+
+        def _fake_get_page(_session, path):
+            self.assertEqual(path, "onuAllPonOnuList.asp")
+            return all_page
+
+        get_page_mock.side_effect = _fake_get_page
+
+        result = fit_collector_service.fetch_power_for_onus(fit_olt, [onu])
+
+        self.assertEqual(result[onu.id]["onu_rx_power"], -28.86)
+        self.assertIsNone(result[onu.id]["olt_rx_power"])
+
+    def test_fit_http_power_rejects_slot_without_configured_blade(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-HTTP-MISSING-BLADE")
+        onu = self._create_fit_onu(fit_olt, pon_id=2, onu_id=1, status=ONU.STATUS_ONLINE)
+        onu.slot_id = 2
+        onu.save(update_fields=["slot_id"])
+
+        with self.assertRaises(FITCollectorError) as ctx:
+            fit_collector_service.fetch_power_for_onus(fit_olt, [onu])
+
+        self.assertIn("Slot 2:", str(ctx.exception))
+        self.assertIn("No configured FIT blade", str(ctx.exception))
+
+    def test_fit_status_inventory_rejects_requested_slot_without_configured_blade(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-STATUS-MISSING-BLADE")
+
+        with self.assertRaises(FITCollectorError) as ctx:
+            fit_collector_service.fetch_status_inventory_for_interfaces(
+                fit_olt,
+                interfaces_by_slot={2: ["0/1"]},
+            )
+
+        self.assertIn("Slot 2:", str(ctx.exception))
+        self.assertIn("No configured FIT blade", str(ctx.exception))
 
     @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
     def test_olt_list_include_topology_keeps_fit_telnet_config_and_hides_empty_branches(self, fetch_status_inventory_mock):
@@ -1320,9 +1757,9 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(response.data.get("power_read_at"), snapshot_read_at.isoformat())
         refresh_for_onus_mock.assert_not_called()
 
-    @override_settings(POWER_LATEST_READS_USE_ZABBIX=True)
+    @override_settings(ZABBIX_DB_ENABLED=True)
     @patch("topology.api.views.zabbix_service.fetch_power_by_index")
-    def test_onu_power_without_refresh_reads_live_zabbix_power_when_enabled(self, fetch_power_mock):
+    def test_onu_power_without_refresh_reads_live_zabbix_power_when_zabbix_db_enabled(self, fetch_power_mock):
         templates = dict(self.vendor.oid_templates or {})
         templates["power"] = {"supports_olt_rx_power": True}
         self.vendor.oid_templates = templates
@@ -1412,9 +1849,9 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertIsNone(row_b.get("power_read_at"))
         refresh_for_onus_mock.assert_not_called()
 
-    @override_settings(POWER_LATEST_READS_USE_ZABBIX=True)
+    @override_settings(ZABBIX_DB_ENABLED=True)
     @patch("topology.api.views.zabbix_service.fetch_power_by_index")
-    def test_batch_power_without_refresh_reads_live_zabbix_power_when_enabled(self, fetch_power_mock):
+    def test_batch_power_without_refresh_reads_live_zabbix_power_when_zabbix_db_enabled(self, fetch_power_mock):
         slot, pon, onu_a = self._create_topology_onu(
             slot_id=2,
             pon_id=8,
@@ -1821,6 +2258,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                 "interface": "0/2",
                 "status": ONU.STATUS_ONLINE,
                 "name": "",
+                "mac": "70:B6:4F:27:3F:60",
             },
             {
                 "slot_id": 1,
@@ -1829,6 +2267,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
                 "interface": "0/4",
                 "status": ONU.STATUS_OFFLINE,
                 "name": "cliente-fit",
+                "mac": "58:D2:37:EA:DB:00",
             },
         ]
 
@@ -1849,9 +2288,10 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         blank_onu = ONU.objects.get(olt=fit_olt, pon_id=2, onu_id=13)
         named_onu = ONU.objects.get(olt=fit_olt, pon_id=4, onu_id=5)
         self.assertEqual(blank_onu.name, "")
-        self.assertEqual(blank_onu.serial, "")
+        self.assertEqual(blank_onu.serial, "70:B6:4F:27:3F:60")
         self.assertEqual(blank_onu.snmp_index, "1/0/2:13")
         self.assertEqual(named_onu.name, "cliente-fit")
+        self.assertEqual(named_onu.serial, "58:D2:37:EA:DB:00")
         self.assertEqual(named_onu.snmp_index, "1/0/4:5")
 
     @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
@@ -1879,6 +2319,32 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
 
         onu.refresh_from_db()
         self.assertEqual(onu.name, "")
+
+    @patch("topology.management.commands.discover_onus.fit_collector_service.fetch_status_inventory")
+    def test_fit_discover_onus_preserves_unchanged_non_empty_name(self, fetch_status_inventory_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-PRESERVE-NAME")
+        onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=13,
+            name="elizangela.fibra",
+            status=ONU.STATUS_ONLINE,
+        )
+        fetch_status_inventory_mock.return_value = [
+            {
+                "slot_id": 1,
+                "pon_id": 2,
+                "onu_id": 13,
+                "interface": "0/2",
+                "status": ONU.STATUS_ONLINE,
+                "name": "elizangela.fibra",
+            }
+        ]
+
+        call_command("discover_onus", olt_id=fit_olt.id, force=True)
+
+        onu.refresh_from_db()
+        self.assertEqual(onu.name, "elizangela.fibra")
 
     @patch("topology.management.commands.poll_onu_status.fit_collector_service.fetch_status_inventory_for_interfaces")
     def test_fit_poll_onu_status_maps_down_to_offline_unknown(self, fetch_status_inventory_mock):
@@ -1918,8 +2384,31 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         active_log = ONULog.objects.get(onu=onu_down, offline_until__isnull=True)
         self.assertEqual(active_log.disconnect_reason, ONULog.REASON_UNKNOWN)
 
+    def test_fit_topology_detail_hides_mac_serial_surrogate(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-TOPOLOGY-SERIAL")
+        self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=13,
+            status=ONU.STATUS_ONLINE,
+            serial="70:B6:4F:27:3F:60",
+        )
+
+        request = self.api_factory.get(f"/api/olts/{fit_olt.id}/topology/")
+        force_authenticate(request, user=self.user)
+        response = OLTViewSet.as_view({"get": "topology"})(request, pk=str(fit_olt.id))
+
+        self.assertEqual(response.status_code, 200)
+        slots = response.data["slots"]
+        first_slot = slots[0] if isinstance(slots, list) else next(iter(slots.values()))
+        pons = first_slot["pons"]
+        first_pon = pons[0] if isinstance(pons, list) else next(iter(pons.values()))
+        onu_rows = first_pon["onus"]
+        self.assertEqual(onu_rows[0]["serial"], "")
+
     @patch("topology.services.power_service.fit_collector_service.fetch_power_for_onus")
-    def test_fit_power_service_skips_online_onu_ids_above_64(self, fetch_power_for_onus_mock):
+    def test_fit_power_service_telnet_skips_online_onu_ids_above_64(self, fetch_power_for_onus_mock):
+        self._set_fit_transport("telnet")
         fit_olt = self._create_fit_olt(name="OLT-FIT-POWER")
         supported_onu = self._create_fit_onu(
             fit_olt,
@@ -1956,8 +2445,93 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertIsNone(result[supported_onu.id]["olt_rx_power"])
         self.assertEqual(result[unsupported_onu.id]["skipped_reason"], "unsupported_onu_id")
 
-    @patch("topology.api.views.check_olt_reachability", return_value=(True, "Telnet login succeeded."))
-    def test_collector_check_reports_telnet_collector_for_fit_vendor(self, _check_reachability_mock):
+    @patch("topology.services.power_service.fit_collector_service.fetch_power_for_onus")
+    def test_fit_power_service_http_allows_online_onu_ids_above_64(self, fetch_power_for_onus_mock):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-POWER-HTTP")
+        onu_64 = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=64,
+            status=ONU.STATUS_ONLINE,
+        )
+        onu_65 = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=65,
+            status=ONU.STATUS_ONLINE,
+        )
+
+        def _fake_power_fetch(_olt, onus):
+            self.assertEqual([onu.onu_id for onu in onus], [64, 65])
+            now = timezone.now().isoformat()
+            return {
+                onu_64.id: {
+                    "onu_id": onu_64.id,
+                    "slot_id": onu_64.slot_id,
+                    "pon_id": onu_64.pon_id,
+                    "onu_number": onu_64.onu_id,
+                    "onu_rx_power": -29.5,
+                    "olt_rx_power": None,
+                    "power_read_at": now,
+                },
+                onu_65.id: {
+                    "onu_id": onu_65.id,
+                    "slot_id": onu_65.slot_id,
+                    "pon_id": onu_65.pon_id,
+                    "onu_number": onu_65.onu_id,
+                    "onu_rx_power": -28.1,
+                    "olt_rx_power": None,
+                    "power_read_at": now,
+                },
+            }
+
+        fetch_power_for_onus_mock.side_effect = _fake_power_fetch
+
+        result = power_service.refresh_for_onus([onu_64, onu_65], force_refresh=True)
+
+        self.assertEqual(result[onu_64.id]["onu_rx_power"], -29.5)
+        self.assertEqual(result[onu_65.id]["onu_rx_power"], -28.1)
+        self.assertNotIn("skipped_reason", result[onu_65.id])
+
+    def test_fit_power_report_hides_mac_serial_surrogate(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-POWER-REPORT-SERIAL")
+        onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=13,
+            status=ONU.STATUS_ONLINE,
+            serial="70:B6:4F:27:3F:60",
+        )
+
+        request = self.api_factory.get("/api/onu/power-report/")
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "power_report"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        row = next(row for row in response.data["results"] if row["id"] == onu.id)
+        self.assertEqual(row["serial"], "")
+
+    def test_fit_alarm_clients_hides_mac_serial_surrogate(self):
+        fit_olt = self._create_fit_olt(name="OLT-FIT-ALARM-SERIAL")
+        onu = self._create_fit_onu(
+            fit_olt,
+            pon_id=2,
+            onu_id=13,
+            status=ONU.STATUS_ONLINE,
+            name="cliente-fit",
+            serial="70:B6:4F:27:3F:60",
+        )
+
+        request = self.api_factory.get("/api/onu/alarm-clients/", {"search": "cliente-fit"})
+        force_authenticate(request, user=self.user)
+        response = ONUViewSet.as_view({"get": "alarm_clients"})(request)
+
+        self.assertEqual(response.status_code, 200)
+        row = next(row for row in response.data["results"] if row["id"] == onu.id)
+        self.assertEqual(row["serial"], "")
+
+    @patch("topology.api.views.check_olt_reachability", return_value=(True, "HTTP UI request succeeded."))
+    def test_collector_check_reports_http_collector_for_fit_vendor(self, _check_reachability_mock):
         fit_olt = self._create_fit_olt(name="OLT-FIT-CHECK")
         admin_user = User.objects.create_superuser(
             username="admin-fit-check",
@@ -1969,7 +2543,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         response = OLTViewSet.as_view({"post": "collector_check"})(request, pk=str(fit_olt.id))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data.get("collector"), "telnet")
+        self.assertEqual(response.data.get("collector"), "http")
         fit_olt.refresh_from_db()
         self.assertTrue(fit_olt.collector_reachable)
 
@@ -2008,6 +2582,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
 
     @patch("topology.services.fit_collector_service.telnetlib.Telnet")
     def test_fit_telnet_login_enters_enable_mode_before_commands(self, telnet_mock):
+        self._set_fit_transport("telnet")
         fit_olt = self._create_fit_olt(name="OLT-FIT-LOGIN")
         fake_telnet = _FakeFITTelnet(
             [
@@ -2034,6 +2609,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
 
     @patch("topology.services.fit_collector_service.telnetlib.Telnet")
     def test_fit_telnet_run_command_advances_enter_key_pager(self, telnet_mock):
+        self._set_fit_transport("telnet")
         fit_olt = self._create_fit_olt(name="OLT-FIT-PAGER")
         fake_telnet = _FakeFITTelnet(
             [
@@ -2118,6 +2694,90 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(open_log.disconnect_reason, ONULog.REASON_LINK_LOSS)
         self.olt.refresh_from_db()
         self.assertTrue(self.olt.collector_reachable)
+
+    @patch("topology.management.commands.poll_onu_status.topology_counter_service.refresh_olt", side_effect=RuntimeError("boom"))
+    @patch("topology.management.commands.poll_onu_status.zabbix_service.fetch_status_by_index")
+    def test_poll_onu_status_clears_cached_counters_when_counter_refresh_fails(
+        self,
+        fetch_status_mock,
+        _refresh_counters_mock,
+    ):
+        slot, pon, onu = self._create_topology_onu(
+            slot_id=1,
+            pon_id=2,
+            onu_id=3,
+            snmp_index="11.3",
+            serial="ABCD12345678",
+            status=ONU.STATUS_ONLINE,
+        )
+        self.olt.cached_slot_count = 9
+        self.olt.cached_pon_count = 18
+        self.olt.cached_onu_count = 90
+        self.olt.cached_online_count = 80
+        self.olt.cached_offline_count = 10
+        self.olt.cached_counts_at = timezone.now()
+        self.olt.save(
+            update_fields=[
+                "cached_slot_count",
+                "cached_pon_count",
+                "cached_onu_count",
+                "cached_online_count",
+                "cached_offline_count",
+                "cached_counts_at",
+            ]
+        )
+        slot.cached_pon_count = 8
+        slot.cached_onu_count = 64
+        slot.cached_online_count = 60
+        slot.cached_offline_count = 4
+        slot.save(
+            update_fields=[
+                "cached_pon_count",
+                "cached_onu_count",
+                "cached_online_count",
+                "cached_offline_count",
+            ]
+        )
+        pon.cached_onu_count = 64
+        pon.cached_online_count = 60
+        pon.cached_offline_count = 4
+        pon.save(update_fields=["cached_onu_count", "cached_online_count", "cached_offline_count"])
+        self.olt.last_poll_at = timezone.now() - timedelta(minutes=1)
+        self.olt.collector_reachable = True
+        self.olt.save(update_fields=["last_poll_at", "collector_reachable"])
+
+        fetch_status_mock.return_value = (
+            {
+                "11.3": {
+                    "status": "offline",
+                    "reason": ONULog.REASON_LINK_LOSS,
+                    "status_clock_epoch": int(timezone.now().timestamp()),
+                    "status_itemid": "901",
+                }
+            },
+            timezone.now().isoformat(),
+        )
+
+        call_command("poll_onu_status", olt_id=self.olt.id, force=True)
+
+        self.olt.refresh_from_db()
+        slot.refresh_from_db()
+        pon.refresh_from_db()
+        onu.refresh_from_db()
+        self.assertEqual(onu.status, ONU.STATUS_OFFLINE)
+        self.assertIsNone(self.olt.cached_slot_count)
+        self.assertIsNone(self.olt.cached_pon_count)
+        self.assertIsNone(self.olt.cached_onu_count)
+        self.assertIsNone(self.olt.cached_online_count)
+        self.assertIsNone(self.olt.cached_offline_count)
+        self.assertIsNone(self.olt.cached_counts_at)
+        self.assertIsNone(slot.cached_pon_count)
+        self.assertIsNone(slot.cached_onu_count)
+        self.assertIsNone(slot.cached_online_count)
+        self.assertIsNone(slot.cached_offline_count)
+        self.assertIsNone(pon.cached_onu_count)
+        self.assertIsNone(pon.cached_online_count)
+        self.assertIsNone(pon.cached_offline_count)
 
     @patch("topology.management.commands.poll_onu_status.unm_service.fetch_current_alarm_state_map")
     @patch("topology.management.commands.poll_onu_status.zabbix_service.fetch_status_by_index")
@@ -3642,6 +4302,19 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(rows.get("onuStatusValue[2]", {}).get("itemid"), "5002")
         db_reader_mock.assert_called_once_with("10002", ["onuStatusValue[2]"])
         api_call_mock.assert_called_once()
+
+    @override_settings(ZABBIX_DB_ENABLED=True)
+    @patch.object(ZabbixService, "_call")
+    @patch.object(ZabbixService, "_get_items_by_keys_from_db", return_value=None)
+    def test_get_items_by_keys_returns_empty_on_db_failure_no_api_fallback(
+        self, db_reader_mock, api_call_mock
+    ):
+        service = ZabbixService()
+        result = service.get_items_by_keys("10099", ["onuStatusValue[1]"])
+
+        self.assertEqual(result, {})
+        db_reader_mock.assert_called_once_with("10099", ["onuStatusValue[1]"])
+        api_call_mock.assert_not_called()
 
     @patch("topology.services.power_service.zabbix_service.fetch_power_by_index")
     def test_collect_power_persists_recent_zabbix_readings(self, fetch_power_mock):
@@ -5781,9 +6454,9 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertEqual(row.get("power_read_at"), live_read_at.isoformat())
         refresh_for_onus_mock.assert_not_called()
 
-    @override_settings(POWER_LATEST_READS_USE_ZABBIX=True)
+    @override_settings(ZABBIX_DB_ENABLED=True)
     @patch("topology.api.views.zabbix_service.fetch_power_by_index")
-    def test_power_report_reads_live_zabbix_power_when_enabled(self, fetch_power_mock):
+    def test_power_report_reads_live_zabbix_power_when_zabbix_db_enabled(self, fetch_power_mock):
         templates = dict(self.vendor.oid_templates or {})
         templates["power"] = {"supports_olt_rx_power": True}
         self.vendor.oid_templates = templates
@@ -5828,7 +6501,7 @@ OnuId    Mac               Status Firmware ChipId GE FE POTS CTCStatus CTCVer Ac
         self.assertTrue(fetch_power_mock.call_args.kwargs.get("history_fallback"))
 
     @override_settings(
-        POWER_LATEST_READS_USE_ZABBIX=True,
+        ZABBIX_DB_ENABLED=True,
         POWER_LATEST_READS_HISTORY_FALLBACK_MAX_ITEMS=1,
     )
     @patch("topology.api.views.zabbix_service.fetch_power_by_index")
